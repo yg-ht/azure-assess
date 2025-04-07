@@ -410,6 +410,7 @@ def run_az_cli(cmd):
                 "is experimental and under development",
                 "is in preview and under development",
                 "is scheduled for retirement by",
+                "command requires the extension",
             ]
             matched_sigs = [sig for sig in output_warning_signatures if sig in result["stdout"].lower()]
             if matched_sigs:
