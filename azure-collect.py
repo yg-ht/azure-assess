@@ -66,9 +66,9 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Application Gateways", "cli_command": "az network application-gateway list", "needs_pagination": False},
     {"name": "Application Insights", "cli_command": "az monitor app-insights component show", "needs_pagination": False},
     {"name": "Application Insights web tests", "cli_command": "az monitor app-insights web-test list", "needs_pagination": False},
-    {"name": "Active Directory Applications", "cli_command": "az ad app list --all", "needs_pagination": True},
-    {"name": "Active Directory Groups", "cli_command": "az ad group list --all", "needs_pagination": True},
-    {"name": "Active Directory Service Principals", "cli_command": "az ad sp list --all", "needs_pagination": True},
+    {"name": "Active Directory Applications", "cli_command": "az ad app list", "needs_pagination": True},
+    {"name": "Active Directory Groups", "cli_command": "az ad group list", "needs_pagination": True},
+    {"name": "Active Directory Service Principals", "cli_command": "az ad sp list", "needs_pagination": True},
     {"name": "Active Directory Users", "cli_command": "az ad user list", "needs_pagination": False},
     {"name": "Advisor Recommendations", "cli_command": "az advisor recommendation list", "needs_pagination": False},
     {"name": "Backups", "cli_command": "az backup vault list", "needs_pagination": False},
@@ -140,6 +140,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Data Lake Store Accounts", "cli_command": "az dls account list", "needs_pagination": False},
     {"name": "Kubernetes Environments", "cli_command": "az appservice kube list", "needs_pagination": False},
     {"name": "Management Groups", "cli_command": "az account management-group list", "needs_pagination": False},
+    {"name": "Workspaces", "cli_command": "az monitor account list", "needs_pagination": False},
     {"name": "Action Groups", "cli_command": "az monitor action-group list", "needs_pagination": False},
     {"name": "Data Collection", "cli_command": "az monitor data-collection endpoint list", "needs_pagination": False},
     {"name": "Data Collection Rules", "cli_command": "az monitor data-collection rule list", "needs_pagination": False},
@@ -154,86 +155,72 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     {
         "name": "App Service Environment Details",
         "cli_command": "az appservice ase show --name {name}",
-        "required_params": ["name"],
-        "param_source": "az_appservice_ase_list"
+        "required_params": {"name": "az_appservice_ase_list"}
     },
     {
         "name": "App Service Environment VIPs",
         "cli_command": "az appservice ase list-addresses --name {name}",
-        "required_params": ["name"],
-        "param_source": "az_appservice_ase_list"
+        "required_params": {"name": "az_appservice_ase_list"}
     },
     {
         "name": "App Service Plan Details",
         "cli_command": "az appservice plan show --name {name} --resource-group {resource_group}",
-        "required_params": ["name", "resource_group"],
-        "param_source": "az_appservice_plan_list"
+        "required_params": {"name": "az_appservice_plan_list", "resource_group": "az_appservice_plan_list"}
     },
     {
         "name": "App Service Plans in ASE",
         "cli_command": "az appservice ase list-plans --name {name}",
-        "required_params": ["name"],
-        "param_source": "az_appservice_ase_list"
+        "required_params": {"name": "az_appservice_ase_list"}
     },
     {
         "name": "Azure Metrics Namespaces",
         "cli_command": "az monitor metrics list-namespaces --resource {resource_uri}",
-        "required_params": ["resource_uri"],
-        "param_source": "az_resource_list"
+        "required_params": {"resource_uri": "az_resource_list"}
     },
     {
         "name": "Azure Network Resources",
-        "cli_command": "az network list-service-tags --location {location}",
-        "required_params": ["location"],
-        "param_source": "az_account_list-locations"
+        "cli_command": "az network list-service-tags --location {name}",
+        "required_params": {"name": "az_account_list-locations"}
     },
     {
         "name": "Azure Subnet Resources",
         "cli_command": "az network vnet subnet list --resource-group {resource_group} --vnet-name {vnet_name}",
-        "required_params": ["resource_group", "vnet_name"],
-        "param_source": "az_network_vnet_list"
+        "required_params": {"resourceGroup": "az_network_vnet_list", "name": "az_network_vnet_list"}
     },
     {
         "name": "Deployment (Resource Group Scope)",
         "cli_command": "az deployment group list --resource-group {resource_group}",
-        "required_params": ["resource_group"],
-        "param_source": "az_group_list"
+        "required_params": {"resource_group": "az_group_list"}
     },
     {
         "name": "Kubernetes Environment Details",
         "cli_command": "az appservice kube show --name {name} --resource-group {resource_group}",
-        "required_params": ["name", "resource_group"],
-        "param_source": "az_appservice_kube_list"
+        "required_params": {"name": "az_appservice_kube_list", "resource_group": "az_appservice_kube_list"}
     },
     {
         "name": "VM Details",
         "cli_command": "az vm show --name {name} --resource-group {resourceGroup}",
-        "required_params": ["name", "resourceGroup"],
-        "param_source": "az_vm_list"
+        "required_params": {"name": "az_vm_list", "resourceGroup": "az_vm_list"}
     },
     {
         "name": "VM NIC IDs",
         "cli_command": "az vm nic list --resource-group {resourceGroup} --vm-name {name}",
-        "required_params": ["resourceGroup", "name"],
-        "param_source": "az_vm_list"
+        "required_params": {"resourceGroup": "az_vm_list", "name": "az_vm_list"}
     },
     {
         "name": "VM Secrets",
         "cli_command": "az vm secret list --resource-group {resourceGroup} --name {name}",
-        "required_params": ["resourceGroup", "name"],
-        "param_source": "az_vm_list"
+        "required_params": {"resourceGroup": "az_vm_list", "name": "az_vm_list"}
     },
     {
         "name": "VM NIC details",
         "cli_command": "az vm nic show --resource-group {resourceGroup} --vm-name {name} --nic {id}",
-        "required_params": ["resourceGroup", "name", "id"],
-        "param_source": "az_vm_nic_list"
+        "required_params": {"resourceGroup": "az_vm_nic_list", "name": "az_vm_list", "id": "az_vm_nic_list"}
     },
     {
         "name": "VNet Integrations",
         "cli_command": "az appservice vnet-integration list --resource-group {resource_group} --plan {plan}",
-        "required_params": ["resource_group", "plan"],
-        "param_source": ""
+        "required_params": {"resource_group": "NOTIDENTIFIED", "plan": "NOTIDENTIFIED"}
     }
 ]
 
@@ -417,7 +404,7 @@ def run_az_cli(cmd):
                 "is experimental and under development",
                 "is in preview and under development",
                 "is scheduled for retirement by",
-                "command requires the extension",
+                "command requires the extension"
             ]
             matched_sigs = [sig for sig in output_warning_signatures if sig in result["stdout"].lower()]
             if matched_sigs:
@@ -553,9 +540,6 @@ def collect_data_with_params(param_endpoints):
     Args:
         param_endpoints: List of endpoint dictionaries with `cli_command` and `required_params`
     """
-    import os
-    from pathlib import Path
-    from itertools import product
     global OUTPUT_DIR
 
     print("\n[*] Starting parameterized CLI commands...\n")
@@ -563,39 +547,41 @@ def collect_data_with_params(param_endpoints):
     for endpoint in tqdm(param_endpoints, desc="parameter collection tasks", unit="endpoint"):
         name = endpoint["name"]
         cli_template = endpoint["cli_command"]
-        required_params = endpoint.get("required_params", [])
-        source_name = endpoint.get("param_source", name)
-        filename_prefix = source_name.lower().replace(" ", "_").replace("(", "").replace(")", "")
+        required_param_sources = endpoint.get("required_params", {})
+        required_params = list(required_param_sources.keys())
 
         if DEBUG:
             print(f"[DEBUG] Processing endpoint: {name}")
-            print(f"[DEBUG] Required parameters: {required_params}")
-            print(f"[DEBUG] Parameter source: {source_name}")
-            print(f"[DEBUG] Filename prefix: {filename_prefix}")
+            print(f"[DEBUG] Required parameters and sources: {required_param_sources}")
 
-        param_values = {k: set() for k in required_params}
+        param_values = {param: set() for param in required_param_sources}
 
-        for file in os.listdir(OUTPUT_DIR):
-            if not file.startswith(filename_prefix) or not file.endswith(".json"):
-                continue
+        for param, source in required_param_sources.items():
+            filename_prefix = source.lower().replace(" ", "_").replace("(", "").replace(")", "")
 
-            filepath = Path(OUTPUT_DIR) / file
             if DEBUG:
-                print(f"[DEBUG] Scanning file for parameters: {filepath}")
+                print(f"[DEBUG] Looking for param '{param}' in files prefixed with: {filename_prefix}")
 
-            try:
-                with open(filepath) as f:
-                    data = json.load(f)
-                if not isinstance(data, list):
+            for file in os.listdir(OUTPUT_DIR):
+                if not file.startswith(filename_prefix) or not file.endswith(".json"):
                     continue
 
-                for item in data:
-                    for key in required_params:
-                        value = item.get(key)
+                filepath = Path(OUTPUT_DIR) / file
+                if DEBUG:
+                    print(f"[DEBUG] Scanning file for parameter '{param}': {filepath}")
+
+                try:
+                    with open(filepath) as f:
+                        data = json.load(f)
+                    if not isinstance(data, list):
+                        continue
+
+                    for item in data:
+                        value = item.get(param)
                         if value and isinstance(value, str):
-                            param_values[key].add(value)
-            except Exception as e:
-                print(f"[!] Failed to parse {file}: {e}")
+                            param_values[param].add(value)
+                except Exception as e:
+                    print(f"[!] Failed to parse {file}: {e}")
 
         if DEBUG:
             print(f"[DEBUG] Collected parameter values: {param_values}")
@@ -605,17 +591,48 @@ def collect_data_with_params(param_endpoints):
             print(f"[~] Skipping {name}: Missing required parameters: {required_params}")
             continue
 
-        # Build all combinations of required parameter values
-        param_lists = [list(param_values[k]) for k in required_params]
-        param_combinations = list(product(*param_lists))
+        from collections import defaultdict
+
+        # Group params by their source file
+        grouped_params = defaultdict(list)
+        for param, source in required_param_sources.items():
+            grouped_params[source].append(param)
+
+        zipped_groups = []
+
+        for source, params_in_group in grouped_params.items():
+            lists = [list(param_values[p]) for p in params_in_group]
+
+            if all(len(l) == len(lists[0]) for l in lists):
+                # Zip aligned values from the same file
+                zipped = [dict(zip(params_in_group, values)) for values in zip(*lists)]
+                if DEBUG:
+                    print(f"[DEBUG] Zipped aligned group from {source}: {zipped}")
+                zipped_groups.append(zipped)
+            else:
+                # Fall back to Cartesian product for this group
+                product_group = []
+                for combo in product(*lists):
+                    product_group.append(dict(zip(params_in_group, combo)))
+                if DEBUG:
+                    print(f"[DEBUG] Product group from {source}: {product_group}")
+                zipped_groups.append(product_group)
+
+        # Cartesian product across the zipped groups
+        param_combinations = []
+        for combo in product(*zipped_groups):
+            merged = {}
+            for d in combo:
+                merged.update(d)
+            param_combinations.append(merged)
 
         if DEBUG:
+            print(f"[DEBUG] Hybrid-aligned param combinations: {param_combinations}")
             print(f"[DEBUG] Generated {len(param_combinations)} parameter combinations for {name}")
 
         all_results = []
 
-        for combo in param_combinations:
-            param_set = dict(zip(required_params, combo))
+        for param_set in param_combinations:
             try:
                 cli_command = cli_template.format(**param_set)
             except KeyError as e:
@@ -747,7 +764,7 @@ if __name__ == "__main__":
     START_TIMESTAMP = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     args = parse_arguments()
 
-    if args.debug:
+    if args.debug == True:
         DEBUG = True
     else:
         DEBUG = False
