@@ -20,7 +20,14 @@
 # Usage:           pipenv run python azure-present.py [-i ./data_directory]
 # Requirements:    Install the libraries from the requirements file (e.g. pipenv install -r requirements.txt)
 #                  Python 3.8+ (tested with Python 3.11)
-#                  az cli installed from package manager and accessible via the PATH
+#                  az cli installed from Microsoft repository and accessible via the PATH, for example:
+#
+#                  curl -sL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
+#                  sudo install -o root -g root -m 644 packages.microsoft.gpg /etc/apt/trusted.gpg.d/
+#                  rm packages.microsoft.gpg
+#                  sudo sh -c 'echo "deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/azure-cli.list'
+#                  sudo apt update
+#                  sudo apt install azure-cli
 #
 # Notes:           See the README.md for configuration options and examples.
 # ---------------------------------------------------------------------------
