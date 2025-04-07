@@ -31,7 +31,15 @@
 #
 # Requirements:    Install the libraries from the requirements file (e.g. pipenv install -r requirements.txt)
 #                  Python 3.8+ (tested with Python 3.11)
-#                  az cli installed from package manager and accessible via the PATH
+#                  az cli installed from Microsoft repository and accessible via the PATH, for example:
+#
+#                  curl -sL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
+#                  sudo install -o root -g root -m 644 packages.microsoft.gpg /etc/apt/trusted.gpg.d/
+#                  rm packages.microsoft.gpg
+#                  sudo sh -c 'echo "deb [arch=amd64] https://packages.microsoft.com/repos/azure-cli/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/azure-cli.list'
+#                  sudo apt update
+#                  sudo apt install azure-cli
+
 #
 # Notes:           See the README.md for configuration options and examples.
 # ---------------------------------------------------------------------------
@@ -58,9 +66,9 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Application Gateways", "cli_command": "az network application-gateway list", "needs_pagination": False},
     {"name": "Application Insights", "cli_command": "az monitor app-insights component show", "needs_pagination": False},
     {"name": "Application Insights web tests", "cli_command": "az monitor app-insights web-test list", "needs_pagination": False},
-    {"name": "Active Directory Applications", "cli_command": "az ad app list", "needs_pagination": True},
-    {"name": "Active Directory Groups", "cli_command": "az ad group list", "needs_pagination": True},
-    {"name": "Active Directory Service Principals", "cli_command": "az ad sp list", "needs_pagination": True},
+    {"name": "Active Directory Applications", "cli_command": "az ad app list --all", "needs_pagination": True},
+    {"name": "Active Directory Groups", "cli_command": "az ad group list --all", "needs_pagination": True},
+    {"name": "Active Directory Service Principals", "cli_command": "az ad sp list --all", "needs_pagination": True},
     {"name": "Active Directory Users", "cli_command": "az ad user list", "needs_pagination": False},
     {"name": "Advisor Recommendations", "cli_command": "az advisor recommendation list", "needs_pagination": False},
     {"name": "Backups", "cli_command": "az backup vault list", "needs_pagination": False},
@@ -132,7 +140,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Data Lake Store Accounts", "cli_command": "az dls account list", "needs_pagination": False},
     {"name": "Kubernetes Environments", "cli_command": "az appservice kube list", "needs_pagination": False},
     {"name": "Management Groups", "cli_command": "az account management-group list", "needs_pagination": False},
-    {"name": "Workspaces", "cli_command": "az monitor account list", "needs_pagination": False},
     {"name": "Action Groups", "cli_command": "az monitor action-group list", "needs_pagination": False},
     {"name": "Data Collection", "cli_command": "az monitor data-collection endpoint list", "needs_pagination": False},
     {"name": "Data Collection Rules", "cli_command": "az monitor data-collection rule list", "needs_pagination": False},
