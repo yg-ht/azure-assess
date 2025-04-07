@@ -7,7 +7,7 @@
 # the GNU Affero General Public License, version 3 or later.
 # For details, see: https://www.gnu.org/licenses/agpl-3.0.html
 # ---------------------------------------------------------------------------
-# Filename:        azure-collect.py
+# Filename:        azure-present.py
 # Description:     Presents the JSON Azure configuration details from the Azure Collect script in an easy to examine format
 # Author:          Felix of You Gotta Hack That
 # Created:         2025-04-02
