@@ -1,0 +1,3 @@
+Flask>=3.1.0          # Used in azure-present.py (Web interface)
+json2html>=1.3.0      # Used in azure-present.py (Converts JSON to HTML tables)
+tqdm>=4.66.5          # Used in azure-collect.py (Shows progress bars during Azure CLI enumeration)
