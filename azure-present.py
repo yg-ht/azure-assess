@@ -17,7 +17,7 @@
 # Purpose:         This script is part of the YGHT audit toolkit for secure
 #                  Azure visibility. Designed for extensible JSON enrichment.
 #
-# Usage:           pipenv run python azure-collect.py -i ./audit_output
+# Usage:           pipenv run python azure-present.py [-i ./data_directory]
 # Requirements:    Install the libraries from the requirements file (e.g. pipenv install -r requirements.txt)
 #                  Python 3.8+ (tested with Python 3.11)
 #                  az cli installed from package manager and accessible via the PATH
