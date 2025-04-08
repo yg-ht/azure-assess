@@ -415,7 +415,7 @@ def contains_nested_list_of_dicts(obj):
     return False
 
 
-def ensure_horizontal_json_table_format(data, debug=True):
+def ensure_horizontal_json_table_format(data, debug=False):
     """
     Ensures input is shaped as a list of dicts suitable for horizontal table rendering by json2html.
     Adds instrumentation for debugging.
@@ -601,4 +601,4 @@ if __name__ == '__main__':
     args = parse_arguments()
     global DATA_DIR
     DATA_DIR = Path(args.input_dir)
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    app.run(host='127.0.0.1', port=5000, debug=False)
