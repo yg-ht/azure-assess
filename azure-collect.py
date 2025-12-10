@@ -47,16 +47,13 @@
 import json
 import subprocess
 import argparse
-import logging
 import os
-from time import sleep
-from flask import Flask, request, render_template_string
-from json2html import *
-from pathlib import Path
-from tqdm import tqdm
-from datetime import datetime
-from pathlib import Path
 from collections import Counter
+from datetime import datetime
+from itertools import product
+from pathlib import Path
+from time import sleep
+from tqdm import tqdm
 
 AZURE_CLI_ENDPOINTS = [
     {"name": "API Management Services", "cli_command": "az apim list", "needs_pagination": False},
@@ -343,9 +340,12 @@ def ensure_az_login():
 
 def run_az_cli(cmd):
     """Run an Azure CLI command and return structured output with stderr and parsed JSON."""
+    if '--output json' not in cmd:
+        cmd = cmd + '--output json'
     global DEBUG
     must_exit = False
     error_message = None
+    result = None
     try:
         process = subprocess.Popen(
             cmd,
@@ -475,9 +475,9 @@ def save_json(data, filename, append=False):
 def resolve_principal(object_id):
     """Resolve an Azure AD object ID to a readable name/type with status classification."""
     for entity_type, cmd in {
-        "User": f"az ad user show --id {object_id} --output json",
-        "Group": f"az ad group show --group {object_id} --output json",
-        "ServicePrincipal": f"az ad sp show --id {object_id} --output json"
+        "User": f"az ad user show --id {object_id}",
+        "Group": f"az ad group show --group {object_id}",
+        "ServicePrincipal": f"az ad sp show --id {object_id}"
     }.items():
         result = run_and_parse(cmd, entity_type, object_id)
         if result and result["status"] != "unknown":
@@ -748,8 +748,9 @@ def filter_endpoints(keyword=None, endpoints=None):
 
     print(f"Searching for endpoint match {keyword}.")
     filtered = []
+    keyword_lowered = str(keyword).lower()
     for ep in endpoints:
-        if str(keyword) in ep["cli_command"].lower():
+        if str(keyword_lowered) in ep["cli_command"].lower():
             filtered.append(ep)
             print(f"Selecting {ep['name']} endpoint")
     if not filtered:
