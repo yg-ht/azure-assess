@@ -110,7 +110,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Policy Events", "cli_command": "az policy event list", "needs_pagination": True},
     {"name": "Policy Metadata", "cli_command": "az policy metadata list", "needs_pagination": True},
     {"name": "Policy States", "cli_command": "az policy state list --all", "needs_pagination": True},
-    {"name": "PostgreSQL Servers", "cli_command": "az postgres server list", "needs_pagination": False},
+    {"name": "PostgreSQL Servers", "cli_command": "az postgres flexible-server list", "needs_pagination": False},
     {"name": "Private DNS Zones", "cli_command": "az network private-dns zone list", "needs_pagination": False},
     {"name": "Private Endpoints", "cli_command": "az network private-endpoint list", "needs_pagination": False},
     {"name": "Purview Accounts", "cli_command": "az purview account list", "needs_pagination": False},
@@ -218,7 +218,81 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "VNet Integrations",
         "cli_command": "az appservice vnet-integration list --resource-group {resource_group} --plan {plan}",
         "required_params": {"resource_group": "NOTIDENTIFIED", "plan": "NOTIDENTIFIED"}
-    }
+    },
+    {
+        "name": "Function App Config",
+        "cli_command": "az functionapp config show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Function App AppSettings",
+        "cli_command": "az functionapp config appsettings list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Function App Access Restrictions",
+        "cli_command": "az functionapp config access-restriction show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Key Vault Details",
+        "cli_command": "az keyvault show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
+    },
+    {
+        "name": "Key Vault Network Rules",
+        "cli_command": "az keyvault network-rule list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
+    },
+    {
+        "name": "Key Vault Private Endpoint Connections",
+        "cli_command": "az keyvault show --name {name} --resource-group {resourceGroup} --query privateEndpointConnections",
+        "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
+    },
+    {
+        "name": "Application Gateway Details",
+        "cli_command": "az network application-gateway show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Application Gateway WAF Config",
+        "cli_command": "az network application-gateway waf-config show --gateway-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "App Service Private Endpoint Connections",
+        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.Web/sites",
+        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
+    },
+    {
+        "name": "Private Endpoint Details",
+        "cli_command": "az network private-endpoint show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_private-endpoint_list",
+                            "resourceGroup": "az_network_private-endpoint_list"},
+    },
+    {
+        "name": "Private Endpoint DNS Zone Groups",
+        "cli_command": "az network private-endpoint dns-zone-group list --endpoint-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_private-endpoint_list",
+                            "resourceGroup": "az_network_private-endpoint_list"},
+    },
+    {
+        "name": "NSG Details",
+        "cli_command": "az network nsg show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_nsg_list", "resourceGroup": "az_network_nsg_list"},
+    },
+    {
+        "name": "NSG Rule List",
+        "cli_command": "az network nsg rule list --nsg-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_nsg_list", "resourceGroup": "az_network_nsg_list"},
+    },
+    {
+        "name": "NAT Gateway Details",
+        "cli_command": "az network nat gateway show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_nat_gateway_list", "resourceGroup": "az_network_nat_gateway_list"},
+    },
 ]
 
 
@@ -341,7 +415,7 @@ def ensure_az_login():
 def run_az_cli(cmd):
     """Run an Azure CLI command and return structured output with stderr and parsed JSON."""
     if '--output json' not in cmd:
-        cmd = cmd + '--output json'
+        cmd = cmd + ' --output json'
     global DEBUG
     must_exit = False
     error_message = None
