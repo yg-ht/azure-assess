@@ -147,6 +147,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Metric-based alert rules", "cli_command": "az monitor metrics alert list", "needs_pagination": False},
     {"name": "Scheduled Queries", "cli_command": "az monitor scheduled-query list", "needs_pagination": False},
     {"name": "Application Gateway WAF Policies", "cli_command": "az network application-gateway waf-policy list", "needs_pagination": False},
+    {"name": "Network Watchers", "cli_command": "az network watcher list", "needs_pagination": False},
 ]
 
 AZURE_CLI_ENDPOINTS_PARAMS = [
@@ -293,6 +294,170 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "NAT Gateway Details",
         "cli_command": "az network nat gateway show --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_network_nat_gateway_list", "resourceGroup": "az_network_nat_gateway_list"},
+    },
+    {
+        "name": "Diagnostic Settings",
+        "cli_command": "az monitor diagnostic-settings list --resource {id}",
+        "required_params": {"id": "az_resource_list"},
+    },
+    {
+        "name": "Diagnostic Settings Categories",
+        "cli_command": "az monitor diagnostic-settings categories list --resource {id}",
+        "required_params": {"id": "az_resource_list"},
+    },
+    {
+        "name": "Application Insights Details",
+        "cli_command": "az monitor app-insights component show --app {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_monitor_app-insights_component_list",
+                            "resourceGroup": "az_monitor_app-insights_component_list"},
+    },
+    {
+        "name": "App Configuration KeyValues",
+        "cli_command": "az appconfig kv list --name {name} --all",
+        "required_params": {"name": "az_appconfig_list"},
+    },
+    {
+        "name": "App Configuration KeyValue Revisions",
+        "cli_command": "az appconfig kv revision list --name {name} --all",
+        "required_params": {"name": "az_appconfig_list"},
+    },
+    {
+        "name": "App Configuration Feature Flags",
+        "cli_command": "az appconfig feature list --name {name} --all",
+        "required_params": {"name": "az_appconfig_list"},
+    },
+    {
+        "name": "App Configuration Snapshots",
+        "cli_command": "az appconfig snapshot list --name {name} --all",
+        "required_params": {"name": "az_appconfig_list"},
+    },
+    {
+        "name": "App Configuration Private Endpoint Connections",
+        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.AppConfiguration/configurationStores",
+        "required_params": {"name": "az_appconfig_list", "resourceGroup": "az_appconfig_list"},
+    },
+    {
+        "name": "Function App Identity",
+        "cli_command": "az functionapp identity show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Function App VNet Integration",
+        "cli_command": "az functionapp vnet-integration list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Function App CORS",
+        "cli_command": "az functionapp cors show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Function App Slots",
+        "cli_command": "az functionapp deployment slot list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Web App VNet Integration",
+        "cli_command": "az webapp vnet-integration list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
+    },
+    {
+        "name": "Web App Access Restrictions",
+        "cli_command": "az webapp config access-restriction show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
+    },
+    {
+        "name": "Web App Config",
+        "cli_command": "az webapp config show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
+    },
+    {
+        "name": "Web App AppSettings",
+        "cli_command": "az webapp config appsettings list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
+    },
+    {
+        "name": "App Service Plan VNet Integrations",
+        "cli_command": "az appservice vnet-integration list --resource-group {resourceGroup} --plan {name}",
+        "required_params": {"name": "az_appservice_plan_list", "resourceGroup": "az_appservice_plan_list"},
+    },
+    {
+        "name": "Key Vault Private Link Resources",
+        "cli_command": "az keyvault private-link-resource list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
+    },
+    {
+        "name": "Key Vault Private Endpoint Connections (explicit)",
+        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.KeyVault/vaults",
+        "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
+    },
+    {
+        "name": "Application Gateway SSL Certs",
+        "cli_command": "az network application-gateway ssl-cert list --gateway-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Application Gateway SSL Policy",
+        "cli_command": "az network application-gateway ssl-policy show --gateway-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Application Gateway SSL Profiles",
+        "cli_command": "az network application-gateway ssl-profile list --gateway-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Application Gateway HTTP Settings",
+        "cli_command": "az network application-gateway http-settings list --gateway-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Application Gateway Rules",
+        "cli_command": "az network application-gateway rule list --gateway-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Application Gateway URL Path Maps",
+        "cli_command": "az network application-gateway url-path-map list --gateway-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Application Gateway Rewrite Rule Sets",
+        "cli_command": "az network application-gateway rewrite-rule set list --gateway-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Application Gateway Private Endpoint Connections",
+        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.Network/applicationGateways",
+        "required_params": {"name": "az_network_application-gateway_list",
+                            "resourceGroup": "az_network_application-gateway_list"},
+    },
+    {
+        "name": "Private Endpoint IP Configs",
+        "cli_command": "az network private-endpoint ip-config list --ids {id}",
+        "required_params": {"id": "az_network_private-endpoint_list"},
+    },
+    {
+        "name": "NIC Effective NSG",
+        "cli_command": "az network nic list-effective-nsg --ids {id}",
+        "required_params": {"id": "az_network_nic_list"},
+    },
+    {
+        "name": "NIC Effective Route Table",
+        "cli_command": "az network nic show-effective-route-table --ids {id}",
+        "required_params": {"id": "az_network_nic_list"},
+    },
+    {
+        "name": "Flow Logs (by location)",
+        "cli_command": "az network watcher flow-log list --location {name}",
+        "required_params": {"name": "az_account_list-locations"},
     },
 ]
 
