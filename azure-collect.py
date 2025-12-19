@@ -65,7 +65,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Application Insights web tests", "cli_command": "az monitor app-insights web-test list", "needs_pagination": False},
     {"name": "Active Directory Applications", "cli_command": "az ad app list", "needs_pagination": True},
     {"name": "Active Directory Groups", "cli_command": "az ad group list", "needs_pagination": True},
-    {"name": "Active Directory Service Principals", "cli_command": "az ad sp list", "needs_pagination": True},
+    {"name": "Active Directory Service Principals", "cli_command": "az ad sp list --all", "needs_pagination": True},
     {"name": "Active Directory Users", "cli_command": "az ad user list", "needs_pagination": False},
     {"name": "Advisor Recommendations", "cli_command": "az advisor recommendation list", "needs_pagination": False},
     {"name": "Backups", "cli_command": "az backup vault list", "needs_pagination": False},
@@ -146,6 +146,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Log Profiles", "cli_command": "az monitor log-profiles list", "needs_pagination": False},
     {"name": "Metric-based alert rules", "cli_command": "az monitor metrics alert list", "needs_pagination": False},
     {"name": "Scheduled Queries", "cli_command": "az monitor scheduled-query list", "needs_pagination": False},
+    {"name": "Application Gateway WAF Policies", "cli_command": "az network application-gateway waf-policy list", "needs_pagination": False},
 ]
 
 AZURE_CLI_ENDPOINTS_PARAMS = [
