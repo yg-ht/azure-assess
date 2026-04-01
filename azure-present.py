@@ -48,7 +48,7 @@ FINDING_STATUS_OPTIONS = OrderedDict(
     [
         ("confirmed", {"label": "Confirmed Findings", "statuses": {"confirmed", "supported"}}),
         ("not_found", {"label": "Not Found Items", "statuses": {"not_found"}}),
-        ("not_evaluated", {"label": "Not Evaluated Items", "statuses": {"not_evaluated"}}),
+        ("not_evaluated", {"label": "Not Evaluated / Unimplemented", "statuses": {"not_evaluated"}}),
         ("all", {"label": "All Findings", "statuses": None}),
     ]
 )
@@ -474,6 +474,8 @@ def normalize_findings_status_filter(value):
     normalized = str(value).strip().lower().replace(" ", "_")
     if normalized in {"supported", "confirmed_findings"}:
         normalized = "confirmed"
+    if normalized in {"not_implemented", "unimplemented", "unsupported"}:
+        normalized = "not_evaluated"
     if normalized not in FINDING_STATUS_OPTIONS:
         return "confirmed"
     return normalized

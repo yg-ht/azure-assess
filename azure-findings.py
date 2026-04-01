@@ -534,6 +534,16 @@ def as_list(payload):
     return [payload]
 
 
+def expand_value_records(records):
+    expanded = []
+    for record in records:
+        if isinstance(record, dict) and isinstance(record.get("value"), list):
+            expanded.extend(record.get("value") or [])
+        else:
+            expanded.extend(as_list(record))
+    return expanded
+
+
 def dataset_records(catalog, *fragments):
     fragments = [fragment.lower() for fragment in fragments]
     matched = []
@@ -2437,9 +2447,654 @@ def find_vmss_without_load_balancer(vm_scale_sets):
     )
 
 
+def find_appservice_auth_not_configured(web_app_auth_settings):
+    evidence = []
+    for auth in web_app_auth_settings:
+        enabled = first_value(auth, "enabled", ("properties", "enabled"))
+        if enabled is not True:
+            params = collection_parameters(auth)
+            evidence.append({"webApp": params.get("name"), "resourceGroup": params.get("resourceGroup"), "enabled": enabled})
+    return result(
+        "Azure App Services do not have authentication configured",
+        "Low",
+        "Uses Web App auth settings to flag apps where built-in authentication is disabled or unset.",
+        evidence,
+    )
+
+
+def find_webapp_missing_app_insights(web_apps, web_app_appsettings):
+    settings_by_app = {}
+    for setting in web_app_appsettings:
+        key = collection_key(setting)
+        if key and key != "::":
+            settings_by_app.setdefault(key, []).append(setting)
+
+    evidence = []
+    for app in web_apps:
+        names = {normalize_text(item.get("name")) for item in settings_by_app.get(record_key(app), [])}
+        if not names.intersection({"applicationinsights_connection_string", "appinsights_instrumentationkey"}):
+            evidence.append(resource_brief(app))
+    return result(
+        "Azure App Services are missing Application Insights configuration",
+        "Low",
+        "Checks Web App application settings for Application Insights connection details.",
+        evidence,
+    )
+
+
+def find_functionapp_missing_access_keys(function_apps, function_app_keys):
+    keys_by_app = {}
+    for item in function_app_keys:
+        key = collection_key(item)
+        if key and key != "::":
+            keys_by_app[key] = item
+
+    evidence = []
+    for app in function_apps:
+        payload = keys_by_app.get(record_key(app))
+        function_keys = first_value(payload or {}, "functionKeys", ("functionKeys",))
+        master_key = first_value(payload or {}, "masterKey", ("masterKey",))
+        system_keys = first_value(payload or {}, "systemKeys", ("systemKeys",))
+        if not function_keys and not master_key and not system_keys:
+            evidence.append(resource_brief(app))
+    return result(
+        "Function Apps do not have access keys configured",
+        "Low",
+        "Checks Function App host keys output for master, function, or system keys.",
+        evidence,
+    )
+
+
+def find_cognitive_services_local_auth_enabled(accounts):
+    evidence = []
+    for account in accounts:
+        disable_local_auth = first_value(account, "disableLocalAuth", ("properties", "disableLocalAuth"))
+        if disable_local_auth is not True:
+            evidence.append(compact_dict(account, disableLocalAuth=disable_local_auth))
+    return result(
+        "Cognitive Services accounts permit local authentication",
+        "Low",
+        "Checks Cognitive Services accounts for the disableLocalAuth setting.",
+        evidence,
+    )
+
+
+def find_acr_without_private_link(container_registries, private_endpoint_connections):
+    connected = parameterised_record_keys(private_endpoint_connections)
+    evidence = []
+    for registry in container_registries:
+        if record_key(registry) not in connected:
+            evidence.append(resource_brief(registry))
+    return result(
+        "Azure Container Registries do not use private link",
+        "Low",
+        "Compares the registry inventory with collected private endpoint connection records.",
+        evidence,
+    )
+
+
+def find_cosmosdb_without_aad_rbac(cosmosdb_accounts, role_assignments):
+    assignments_by_account = {}
+    for item in role_assignments:
+        key = collection_key(item)
+        if key and key != "::":
+            assignments_by_account.setdefault(key, []).append(item)
+
+    evidence = []
+    for account in cosmosdb_accounts:
+        disable_local_auth = first_value(account, "disableLocalAuth", ("properties", "disableLocalAuth"))
+        if disable_local_auth is True and assignments_by_account.get(record_key(account)):
+            continue
+        evidence.append(
+            compact_dict(
+                account,
+                disableLocalAuth=disable_local_auth,
+                sqlRoleAssignmentCount=len(assignments_by_account.get(record_key(account), [])),
+            )
+        )
+    return result(
+        "Cosmos DB accounts do not use Microsoft Entra ID and RBAC",
+        "Low",
+        "Flags Cosmos DB accounts that do not both disable local auth and expose SQL RBAC role assignments.",
+        evidence,
+    )
+
+
+def find_databricks_without_cmk(workspaces):
+    evidence = []
+    for workspace in workspaces:
+        cmk = first_value(
+            workspace,
+            ("parameters", "prepareEncryption", "value"),
+            ("properties", "parameters", "prepareEncryption", "value"),
+            ("parameters", "encryption", "value"),
+            ("properties", "parameters", "encryption", "value"),
+        )
+        if cmk is not True:
+            evidence.append(compact_dict(workspace, cmkPrepared=cmk))
+    return result(
+        "Databricks workspaces do not enable customer-managed key encryption",
+        "Low",
+        "Checks Databricks workspace detail parameters for CMK-related settings.",
+        evidence,
+    )
+
+
+def find_databricks_without_vnet_injection(workspaces):
+    evidence = []
+    for workspace in workspaces:
+        vnet_id = first_value(
+            workspace,
+            ("parameters", "customVirtualNetworkId", "value"),
+            ("properties", "parameters", "customVirtualNetworkId", "value"),
+        )
+        if not vnet_id:
+            evidence.append(compact_dict(workspace, customVirtualNetworkId=vnet_id))
+    return result(
+        "Databricks workspaces do not use VNet injection",
+        "Low",
+        "Checks Databricks workspace detail parameters for a custom virtual network ID.",
+        evidence,
+    )
+
+
+def find_defender_auto_provisioning_disabled(settings):
+    evidence = []
+    for setting in settings:
+        state = normalize_text(first_value(setting, "autoProvision", ("properties", "autoProvision")))
+        if state not in {"on", "enabled"}:
+            evidence.append({"name": setting.get("name"), "id": setting.get("id"), "autoProvision": first_value(setting, "autoProvision", ("properties", "autoProvision"))})
+    return result(
+        "Defender auto provisioning for Log Analytics agents is not enabled",
+        "Low",
+        "Checks Defender auto-provisioning settings for an enabled state.",
+        evidence,
+    )
+
+
+def find_security_contacts_not_notifying_owners(security_contacts):
+    evidence = []
+    for contact in security_contacts:
+        enabled = first_value(
+            contact,
+            ("alertNotifications", "state"),
+            ("properties", "alertNotifications", "state"),
+            ("notificationsByRole", "state"),
+            ("properties", "notificationsByRole", "state"),
+        )
+        if normalize_text(enabled) not in {"on", "enabled"}:
+            evidence.append({"name": contact.get("name"), "id": contact.get("id"), "notificationsByRole": enabled})
+    return result(
+        "Microsoft Defender security contacts do not notify subscription owners",
+        "Low",
+        "Checks Defender security contact notification settings for owner-role notifications.",
+        evidence,
+    )
+
+
+def find_entra_security_defaults_disabled(policy_records):
+    evidence = []
+    for policy in policy_records:
+        enabled = first_value(policy, "isEnabled", ("isEnabled",))
+        if enabled is not True:
+            evidence.append({"id": policy.get("id"), "displayName": policy.get("displayName"), "isEnabled": enabled})
+    return result(
+        "Microsoft Entra security defaults are not enabled",
+        "Low",
+        "Checks the Graph security defaults enforcement policy.",
+        evidence,
+    )
+
+
+def find_entra_named_locations_missing(named_locations):
+    evidence = []
+    if len(named_locations) == 0:
+        evidence.append({"scope": "tenant"})
+    return result(
+        "Microsoft Entra trusted named locations are not configured",
+        "Low",
+        "Checks whether any Graph named location records were returned.",
+        evidence,
+    )
+
+
+def find_entra_users_can_create_apps(auth_policy_records):
+    evidence = []
+    for policy in auth_policy_records:
+        allowed = first_value(policy, "defaultUserRolePermissions", "defaultUserRolePermissions.allowedToCreateApps")
+        if allowed is not False:
+            evidence.append({"id": policy.get("id"), "allowedToCreateApps": allowed})
+    return result(
+        "Microsoft Entra default users can create applications",
+        "Low",
+        "Checks the authorization policy default user permissions for app creation.",
+        evidence,
+    )
+
+
+def find_entra_users_can_create_tenants(auth_policy_records):
+    evidence = []
+    for policy in auth_policy_records:
+        allowed = first_value(policy, "defaultUserRolePermissions", "defaultUserRolePermissions.allowedToCreateTenants")
+        if allowed is not False:
+            evidence.append({"id": policy.get("id"), "allowedToCreateTenants": allowed})
+    return result(
+        "Microsoft Entra default users can create tenants",
+        "Low",
+        "Checks the authorization policy default user permissions for tenant creation.",
+        evidence,
+    )
+
+
+def find_entra_guest_invites_not_admin_only(auth_policy_records):
+    evidence = []
+    for policy in auth_policy_records:
+        value = normalize_text(first_value(policy, "allowInvitesFrom", ("allowInvitesFrom",)))
+        if value not in {"adminsandguestinviters", "admins"}:
+            evidence.append({"id": policy.get("id"), "allowInvitesFrom": first_value(policy, "allowInvitesFrom", ("allowInvitesFrom",))})
+    return result(
+        "Microsoft Entra guest invites are not restricted to admins",
+        "Low",
+        "Checks the authorization policy allowInvitesFrom setting.",
+        evidence,
+    )
+
+
+def find_entra_guest_access_not_restricted(auth_policy_records):
+    evidence = []
+    for policy in auth_policy_records:
+        value = normalize_text(first_value(policy, "guestUserRoleId", ("guestUserRoleId",)))
+        if not value:
+            evidence.append({"id": policy.get("id"), "guestUserRoleId": value})
+    return result(
+        "Microsoft Entra guest user access restrictions are not configured",
+        "Low",
+        "Checks the authorization policy for a guest user role restriction.",
+        evidence,
+    )
+
+
+def find_eventgrid_domains_public_network_enabled(domains):
+    evidence = []
+    for domain in domains:
+        public_network = normalize_text(first_value(domain, "publicNetworkAccess", ("properties", "publicNetworkAccess")))
+        if public_network in {"", "enabled"}:
+            evidence.append(compact_dict(domain, publicNetworkAccess=first_value(domain, "publicNetworkAccess", ("properties", "publicNetworkAccess"))))
+    return result(
+        "Event Grid Domains allow public network access",
+        "Low",
+        "Flags Event Grid Domains whose public network access setting is enabled or unset.",
+        evidence,
+    )
+
+
+def find_ml_workspace_public_network_enabled(workspaces):
+    evidence = []
+    for workspace in workspaces:
+        public_network = normalize_text(first_value(workspace, "publicNetworkAccess", ("properties", "publicNetworkAccess")))
+        if public_network in {"", "enabled"}:
+            evidence.append(compact_dict(workspace, publicNetworkAccess=first_value(workspace, "publicNetworkAccess", ("properties", "publicNetworkAccess"))))
+    return result(
+        "Machine Learning workspaces allow public network access",
+        "Low",
+        "Flags ML workspaces whose public network access setting is enabled or unset.",
+        evidence,
+    )
+
+
+def find_ml_workspace_without_vnet(workspaces):
+    evidence = []
+    for workspace in workspaces:
+        pe = first_value(workspace, "privateEndpointConnections", ("properties", "privateEndpointConnections")) or []
+        if len(pe) == 0:
+            evidence.append(resource_brief(workspace))
+    return result(
+        "Machine Learning workspaces do not use virtual network integration",
+        "Low",
+        "Uses ML workspace private endpoint connections as the current network isolation signal.",
+        evidence,
+    )
+
+
+def find_activity_log_alert_security_solution_gaps(activity_log_alerts):
+    patterns = [
+        "microsoft.security/securitysolutions/write",
+        "microsoft.security/securitysolutions/delete",
+    ]
+    text_hit = any(any(pattern in alert_text(alert) for pattern in patterns) for alert in activity_log_alerts)
+    evidence = [] if text_hit else [{"eventType": "security_solution_changes", "description": "security solution create/delete events"}]
+    return result(
+        "Azure Activity Log Alerts missing for security solution changes",
+        "Low",
+        "Checks collected activity log alert rules for security solution create/delete coverage.",
+        evidence,
+    )
+
+
+def find_monitor_storage_targets_not_cmk(subscriptions, subscription_diagnostic_settings, storage_accounts):
+    accounts = {normalize_text(account.get("id")): account for account in storage_accounts}
+    evidence = []
+    for setting in subscription_diagnostic_settings:
+        storage_id = normalize_text(first_value(setting, "storageAccountId", ("properties", "storageAccountId")))
+        if not storage_id:
+            continue
+        account = accounts.get(storage_id)
+        if not account:
+            continue
+        key_source = normalize_text(first_value(account, ("encryption", "keySource"), ("properties", "encryption", "keySource")))
+        if key_source == "microsoft.storage":
+            evidence.append({"subscriptionId": collection_parameters(setting).get("id"), "storageAccountId": account.get("id"), "keySource": key_source})
+    return result(
+        "Subscription activity logs are stored in accounts without customer-managed keys",
+        "Low",
+        "Cross-references subscription diagnostic settings with storage account encryption key source.",
+        evidence,
+    )
+
+
+def find_monitor_storage_targets_not_private(subscription_diagnostic_settings, storage_accounts):
+    accounts = {normalize_text(account.get("id")): account for account in storage_accounts}
+    evidence = []
+    for setting in subscription_diagnostic_settings:
+        storage_id = normalize_text(first_value(setting, "storageAccountId", ("properties", "storageAccountId")))
+        if not storage_id:
+            continue
+        account = accounts.get(storage_id)
+        if not account:
+            continue
+        connections = first_value(account, "privateEndpointConnections", ("properties", "privateEndpointConnections")) or []
+        if len(connections) == 0:
+            evidence.append({"subscriptionId": collection_parameters(setting).get("id"), "storageAccountId": account.get("id")})
+    return result(
+        "Subscription activity logs are stored in accounts without private endpoints",
+        "Low",
+        "Cross-references subscription diagnostic settings with storage account private endpoint usage.",
+        evidence,
+    )
+
+
+def find_search_public_network_enabled(search_services):
+    evidence = []
+    for service in search_services:
+        public_network = normalize_text(first_value(service, "publicNetworkAccess", ("properties", "publicNetworkAccess")))
+        if public_network in {"", "enabled"}:
+            evidence.append(compact_dict(service, publicNetworkAccess=first_value(service, "publicNetworkAccess", ("properties", "publicNetworkAccess"))))
+    return result(
+        "Azure AI Search services allow public network access",
+        "Low",
+        "Flags Search services whose public network access setting is enabled or unset.",
+        evidence,
+    )
+
+
+def find_search_without_shared_private_links(search_services, shared_private_links):
+    linked = parameterised_record_keys(shared_private_links)
+    evidence = []
+    for service in search_services:
+        if record_key(service) not in linked:
+            evidence.append(resource_brief(service))
+    return result(
+        "Azure AI Search services do not use shared private links",
+        "Low",
+        "Compares Search services with the shared private link resource dataset.",
+        evidence,
+    )
+
+
+def find_signalr_public_network_enabled(signalr_services):
+    evidence = []
+    for service in signalr_services:
+        public_network = normalize_text(first_value(service, "publicNetworkAccess", ("properties", "publicNetworkAccess")))
+        if public_network in {"", "enabled"}:
+            evidence.append(compact_dict(service, publicNetworkAccess=first_value(service, "publicNetworkAccess", ("properties", "publicNetworkAccess"))))
+    return result(
+        "SignalR services allow public network access",
+        "Low",
+        "Flags SignalR services whose public network access setting is enabled or unset.",
+        evidence,
+    )
+
+
+def find_sqlserver_atp_disabled(threat_policies):
+    evidence = []
+    for policy in threat_policies:
+        state = normalize_text(first_value(policy, "state", ("properties", "state")))
+        if state not in {"enabled", "on"}:
+            params = collection_parameters(policy)
+            evidence.append({"server": params.get("name"), "resourceGroup": params.get("resourceGroup"), "state": first_value(policy, "state", ("properties", "state"))})
+    return result(
+        "SQL servers do not have Advanced Threat Protection enabled",
+        "Low",
+        "Checks SQL server threat policy state.",
+        evidence,
+    )
+
+
+def find_sqlserver_auditing_disabled(audit_policies):
+    evidence = []
+    for policy in audit_policies:
+        state = normalize_text(first_value(policy, "state", ("properties", "state")))
+        if state not in {"enabled", "on"}:
+            params = collection_parameters(policy)
+            evidence.append({"server": params.get("name"), "resourceGroup": params.get("resourceGroup"), "state": first_value(policy, "state", ("properties", "state"))})
+    return result(
+        "SQL servers do not have auditing enabled",
+        "Low",
+        "Checks SQL server auditing policy state.",
+        evidence,
+    )
+
+
+def find_sqlserver_audit_retention_short(audit_policies):
+    evidence = []
+    for policy in audit_policies:
+        days = first_value(policy, "retentionDays", ("properties", "retentionDays"))
+        if not isinstance(days, int) or days < 90:
+            params = collection_parameters(policy)
+            evidence.append({"server": params.get("name"), "resourceGroup": params.get("resourceGroup"), "retentionDays": days})
+    return result(
+        "SQL servers do not retain audit logs for at least 90 days",
+        "Low",
+        "Checks SQL server auditing policy retention days.",
+        evidence,
+    )
+
+
+def find_sqlserver_no_aad_admin(ad_admins, sql_servers):
+    admin_keys = parameterised_record_keys(ad_admins)
+    evidence = []
+    for server in sql_servers:
+        if record_key(server) not in admin_keys:
+            evidence.append(resource_brief(server))
+    return result(
+        "SQL servers do not have an Azure AD administrator configured",
+        "Low",
+        "Compares SQL server inventory with collected Azure AD admin records.",
+        evidence,
+    )
+
+
+def find_sqlserver_tde_not_cmk(tde_keys):
+    evidence = []
+    for key in tde_keys:
+        server_key_type = normalize_text(first_value(key, "serverKeyType", ("properties", "serverKeyType")))
+        if server_key_type != "azurekeyvault":
+            params = collection_parameters(key)
+            evidence.append({"server": params.get("name"), "resourceGroup": params.get("resourceGroup"), "serverKeyType": first_value(key, "serverKeyType", ("properties", "serverKeyType"))})
+    return result(
+        "SQL servers do not encrypt TDE with customer-managed keys",
+        "Low",
+        "Checks SQL server TDE protector settings for Azure Key Vault usage.",
+        evidence,
+    )
+
+
+def find_sql_database_tde_disabled(database_tde):
+    evidence = []
+    for item in database_tde:
+        state = normalize_text(first_value(item, "state", ("properties", "state")))
+        if state not in {"enabled", "on"}:
+            params = collection_parameters(item)
+            evidence.append({"database": params.get("name"), "server": params.get("serverName"), "resourceGroup": params.get("resourceGroup"), "state": first_value(item, "state", ("properties", "state"))})
+    return result(
+        "SQL databases do not have Transparent Data Encryption enabled",
+        "Low",
+        "Checks SQL database TDE state.",
+        evidence,
+    )
+
+
+def find_sqlserver_unrestricted_inbound_access(sql_firewall_rules):
+    evidence = []
+    for rule in sql_firewall_rules:
+        start_ip = normalize_text(rule.get("startIpAddress"))
+        end_ip = normalize_text(rule.get("endIpAddress"))
+        if start_ip == "0.0.0.0" and end_ip == "0.0.0.0":
+            continue
+        if start_ip == "0.0.0.0" and end_ip == "255.255.255.255":
+            params = collection_parameters(rule)
+            evidence.append({"server": params.get("name"), "resourceGroup": params.get("resourceGroup"), "ruleName": rule.get("name"), "startIpAddress": rule.get("startIpAddress"), "endIpAddress": rule.get("endIpAddress")})
+    return result(
+        "SQL servers permit unrestricted inbound access",
+        "Low",
+        "Flags SQL server firewall rules that allow the full IPv4 address space.",
+        evidence,
+    )
+
+
+def find_sqlserver_va_disabled(vuln_assessments):
+    evidence = []
+    for item in vuln_assessments:
+        recurring = first_value(item, ("recurringScans", "isEnabled"), ("properties", "recurringScans", "isEnabled"))
+        storage = first_value(item, "storageContainerPath", ("properties", "storageContainerPath"))
+        params = collection_parameters(item)
+        if recurring is not True or not storage:
+            evidence.append({"server": params.get("name"), "resourceGroup": params.get("resourceGroup"), "recurringScansEnabled": recurring, "storageContainerPath": storage})
+    return result(
+        "SQL servers do not have vulnerability assessment configured",
+        "Low",
+        "Checks SQL server vulnerability assessment settings for recurring scans and report storage.",
+        evidence,
+    )
+
+
+def find_storage_file_soft_delete_disabled(file_service_properties):
+    evidence = []
+    for props in file_service_properties:
+        retention = first_value(props, ("shareDeleteRetentionPolicy", "enabled"), ("properties", "shareDeleteRetentionPolicy", "enabled"))
+        if retention is not True:
+            params = collection_parameters(props)
+            evidence.append({"storageAccount": params.get("name"), "resourceGroup": params.get("resourceGroup"), "shareDeleteRetentionPolicyEnabled": retention})
+    return result(
+        "Storage accounts do not enable file share soft delete",
+        "Low",
+        "Checks file service properties for share delete retention policy.",
+        evidence,
+    )
+
+
+def find_storage_keys_not_rotated(storage_accounts, storage_keys):
+    keys_by_account = {}
+    for item in storage_keys:
+        key = collection_key(item)
+        if key and key != "::":
+            keys_by_account.setdefault(key, []).append(item)
+    evidence = []
+    for account in storage_accounts:
+        stale = []
+        for key in keys_by_account.get(record_key(account), []):
+            creation_time = normalize_text(key.get("creationTime"))
+            stale.append({"keyName": key.get("keyName") or key.get("keyName"), "creationTime": creation_time})
+        if stale:
+            evidence.append(compact_dict(account, keys=stale))
+    return result(
+        "Storage account keys may not be rotated within 90 days",
+        "Low",
+        "Exposes collected storage key creation timestamps for review; no rotation-age calculation is currently available in the collector output.",
+        evidence,
+    )
+
+
+def find_vm_backup_disabled(vm_details, backup_items):
+    protected_ids = set()
+    for item in backup_items:
+        source_id = normalize_text(
+            first_value(item, ("properties", "sourceResourceId"), ("sourceResourceId",), ("properties", "virtualMachineId"))
+        )
+        if source_id:
+            protected_ids.add(source_id)
+    evidence = []
+    for vm in vm_details:
+        if normalize_text(vm.get("id")) not in protected_ids:
+            evidence.append(resource_brief(vm))
+    return result(
+        "Virtual machines are not protected by backup",
+        "Low",
+        "Compares VM inventory with backup item source resource IDs.",
+        evidence,
+    )
+
+
+def find_vm_jit_disabled(vm_details, jit_policies):
+    protected_ids = set()
+    for policy in jit_policies:
+        for vm in first_value(policy, "virtualMachines", ("properties", "virtualMachines")) or []:
+            resource_id = normalize_text(first_value(vm, "id", ("id",)))
+            if resource_id:
+                protected_ids.add(resource_id)
+    evidence = []
+    for vm in vm_details:
+        if normalize_text(vm.get("id")) not in protected_ids:
+            evidence.append(resource_brief(vm))
+    return result(
+        "Virtual machines do not have JIT access enabled",
+        "Low",
+        "Compares VM inventory with Defender JIT policy protected virtual machines.",
+        evidence,
+    )
+
+
+def find_vm_attached_disks_not_cmk(vm_details, managed_disks):
+    disks_by_id = {normalize_text(disk.get("id")): disk for disk in managed_disks}
+    evidence = []
+    for vm in vm_details:
+        for disk_ref in first_value(vm, ("storageProfile", "dataDisks"), ("properties", "storageProfile", "dataDisks")) or []:
+            disk = disks_by_id.get(normalize_text(disk_ref.get("managedDisk", {}).get("id")))
+            if not disk:
+                continue
+            key_source = normalize_text(first_value(disk, ("encryption", "type"), ("properties", "encryption", "type")))
+            if "customer" not in key_source:
+                evidence.append({"vmId": vm.get("id"), "vmName": vm.get("name"), "diskId": disk.get("id"), "diskName": disk.get("name"), "encryptionType": first_value(disk, ("encryption", "type"), ("properties", "encryption", "type"))})
+    return result(
+        "Virtual machine attached disks are not encrypted with customer-managed keys",
+        "Low",
+        "Checks attached managed disks for a customer-managed encryption type.",
+        evidence,
+    )
+
+
+def find_unattached_disks_not_cmk(managed_disks):
+    evidence = []
+    for disk in managed_disks:
+        managed_by = first_value(disk, "managedBy", ("properties", "managedBy"))
+        if managed_by:
+            continue
+        key_source = normalize_text(first_value(disk, ("encryption", "type"), ("properties", "encryption", "type")))
+        if "customer" not in key_source:
+            evidence.append(compact_dict(disk, managedBy=managed_by, encryptionType=first_value(disk, ("encryption", "type"), ("properties", "encryption", "type"))))
+    return result(
+        "Unattached managed disks are not encrypted with customer-managed keys",
+        "Low",
+        "Checks unattached managed disks for a customer-managed encryption type.",
+        evidence,
+    )
+
+
 def evaluate_findings(catalog):
     storage_accounts = dataset_records(catalog, "az_storage_account_list")
+    storage_keys = dataset_records(catalog, "az_storage_account_keys_list")
     storage_blob_service_properties = dataset_records(catalog, "az_storage_account_blob-service-properties_show")
+    storage_file_service_properties = dataset_records(catalog, "az_storage_account_file-service-properties_show")
     role_definitions = dataset_records(catalog, "az_role_definition_list")
     role_assignments = dataset_records(catalog, "role_enriched") or dataset_records(catalog, "az_role_assignment_list")
     postgres_servers = dataset_records(catalog, "az_postgres_flexible-server_list")
@@ -2452,6 +3107,8 @@ def evaluate_findings(catalog):
     key_vault_private_endpoint_connections = dataset_records(catalog, "az_keyvault_show", "privateendpointconnections")
     metric_alerts = dataset_records(catalog, "az_monitor_metrics_alert_list")
     defender_settings = dataset_records(catalog, "az_security_pricing_list")
+    defender_auto_provisioning_settings = dataset_records(catalog, "az_security_auto-provisioning-setting_list")
+    defender_jit_policies = dataset_records(catalog, "az_security_jit-policy_list")
     security_contacts = dataset_records(catalog, "az_security_contact_list")
     locations = dataset_records(catalog, "az_account_list-locations")
     resources = dataset_records(catalog, "az_resource_list")
@@ -2463,30 +3120,59 @@ def evaluate_findings(catalog):
     activity_log_alerts = dataset_records(catalog, "az_monitor_activity-log_alert_list")
     web_app_configs = dataset_records(catalog, "az_webapp_config_show")
     web_app_access_restrictions = dataset_records(catalog, "az_webapp_config_access-restriction_show")
+    web_app_auth_settings = dataset_records(catalog, "az_webapp_auth_show")
     web_app_logs = dataset_records(catalog, "az_webapp_log_show")
     web_apps = dataset_records(catalog, "az_webapp_list")
     web_app_appsettings = dataset_records(catalog, "az_webapp_config_appsettings_list")
     function_apps = dataset_records(catalog, "az_functionapp_list")
     function_app_configs = dataset_records(catalog, "az_functionapp_config_show")
+    function_app_auth_settings = dataset_records(catalog, "az_webapp_auth_show", "az_functionapp_list")
     function_app_appsettings = dataset_records(catalog, "az_functionapp_config_appsettings_list")
+    function_app_keys = dataset_records(catalog, "az_functionapp_keys_list")
     function_app_access_restrictions = dataset_records(catalog, "az_functionapp_config_access-restriction_show")
     function_app_identities = dataset_records(catalog, "az_functionapp_identity_show")
     function_app_vnet_integrations = dataset_records(catalog, "az_functionapp_vnet-integration_list")
     aks_clusters = dataset_records(catalog, "az_aks_list")
     container_registries = dataset_records(catalog, "az_acr_list")
+    acr_private_endpoint_connections = dataset_records(catalog, "microsoft.containerregistry", "private-endpoint-connection")
     cosmosdb_accounts = dataset_records(catalog, "az_cosmosdb_list")
+    cosmosdb_sql_role_assignments = dataset_records(catalog, "az_cosmosdb_sql_role_assignment_list")
     eventgrid_topics = dataset_records(catalog, "az_eventgrid_topic_list")
+    eventgrid_domains = dataset_records(catalog, "az_eventgrid_domain_list")
     iot_dps_instances = dataset_records(catalog, "az_iot_dps_list")
+    cognitive_services_accounts = dataset_records(catalog, "az_cognitiveservices_account_list")
+    databricks_workspaces = dataset_records(catalog, "az_databricks_workspace_show")
+    machine_learning_workspaces = dataset_records(catalog, "az_ml_workspace_show")
     redis_caches = dataset_records(catalog, "az_redis_list")
+    search_services = dataset_records(catalog, "az_search_service_show")
+    search_shared_private_links = dataset_records(catalog, "az_search_shared-private-link-resource_list")
+    signalr_services = dataset_records(catalog, "az_signalr_show")
+    sql_servers = dataset_records(catalog, "az_sql_server_list")
+    sql_server_aad_admins = dataset_records(catalog, "az_sql_server_ad-admin_list")
+    sql_server_audit_policies = dataset_records(catalog, "az_sql_server_audit-policy_show")
+    sql_server_firewall_rules = dataset_records(catalog, "az_sql_server_firewall-rule_list")
+    sql_server_threat_policies = dataset_records(catalog, "az_sql_server_threat-policy_show")
+    sql_server_tde_keys = dataset_records(catalog, "az_sql_server_tde-key_show")
+    sql_server_vuln_assessments = dataset_records(catalog, "az_sql_server_vuln-assessment_show")
+    sql_database_tde = dataset_records(catalog, "az_sql_db_tde_show")
+    backup_items = dataset_records(catalog, "az_backup_item_list")
+    managed_disks = dataset_records(catalog, "az_disk_list")
     synapse_workspaces = dataset_records(catalog, "az_synapse_workspace_list")
     bastion_hosts = dataset_records(catalog, "az_network_bastion_list")
     flow_logs = dataset_records(catalog, "az_network_watcher_flow-log_list")
+    public_ip_addresses = dataset_records(catalog, "az_network_public-ip_list")
     vm_details = dataset_records(catalog, "az_vm_show")
     vm_scale_sets = dataset_records(catalog, "az_vmss_list")
     nsgs = dataset_records(catalog, "az_network_nsg_list")
+    graph_conditional_access_policies = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "conditionalaccess", "policies"))
+    graph_named_locations = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "namedlocations"))
+    graph_authorization_policy = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "authorizationpolicy"))
+    graph_security_defaults_policy = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"))
     source_map = {
         "storage_accounts": dataset_paths(catalog, "az_storage_account_list"),
+        "storage_keys": dataset_paths(catalog, "az_storage_account_keys_list"),
         "storage_blob_service_properties": dataset_paths(catalog, "az_storage_account_blob-service-properties_show"),
+        "storage_file_service_properties": dataset_paths(catalog, "az_storage_account_file-service-properties_show"),
         "role_definitions": dataset_paths(catalog, "az_role_definition_list"),
         "role_assignments": dataset_paths(catalog, "role_enriched") or dataset_paths(catalog, "az_role_assignment_list"),
         "postgres_parameters": dataset_paths(catalog, "az_postgres_flexible-server_parameter_list"),
@@ -2498,6 +3184,8 @@ def evaluate_findings(catalog):
         "key_vault_private_endpoint_connections": dataset_paths(catalog, "az_keyvault_show", "privateendpointconnections"),
         "metric_alerts": dataset_paths(catalog, "az_monitor_metrics_alert_list"),
         "defender_settings": dataset_paths(catalog, "az_security_pricing_list"),
+        "defender_auto_provisioning_settings": dataset_paths(catalog, "az_security_auto-provisioning-setting_list"),
+        "defender_jit_policies": dataset_paths(catalog, "az_security_jit-policy_list"),
         "security_contacts": dataset_paths(catalog, "az_security_contact_list"),
         "locations": dataset_paths(catalog, "az_account_list-locations"),
         "resources": dataset_paths(catalog, "az_resource_list"),
@@ -2509,27 +3197,54 @@ def evaluate_findings(catalog):
         "activity_log_alerts": dataset_paths(catalog, "az_monitor_activity-log_alert_list"),
         "web_app_configs": dataset_paths(catalog, "az_webapp_config_show"),
         "web_app_access_restrictions": dataset_paths(catalog, "az_webapp_config_access-restriction_show"),
+        "web_app_auth_settings": dataset_paths(catalog, "az_webapp_auth_show"),
         "web_app_logs": dataset_paths(catalog, "az_webapp_log_show"),
         "web_apps": dataset_paths(catalog, "az_webapp_list"),
         "web_app_appsettings": dataset_paths(catalog, "az_webapp_config_appsettings_list"),
         "function_apps": dataset_paths(catalog, "az_functionapp_list"),
         "function_app_configs": dataset_paths(catalog, "az_functionapp_config_show"),
+        "function_app_auth_settings": dataset_paths(catalog, "az_webapp_auth_show"),
         "function_app_appsettings": dataset_paths(catalog, "az_functionapp_config_appsettings_list"),
+        "function_app_keys": dataset_paths(catalog, "az_functionapp_keys_list"),
         "function_app_access_restrictions": dataset_paths(catalog, "az_functionapp_config_access-restriction_show"),
         "function_app_identities": dataset_paths(catalog, "az_functionapp_identity_show"),
         "function_app_vnet_integrations": dataset_paths(catalog, "az_functionapp_vnet-integration_list"),
         "aks_clusters": dataset_paths(catalog, "az_aks_list"),
         "container_registries": dataset_paths(catalog, "az_acr_list"),
+        "acr_private_endpoint_connections": dataset_paths(catalog, "microsoft.containerregistry", "private-endpoint-connection"),
         "cosmosdb_accounts": dataset_paths(catalog, "az_cosmosdb_list"),
+        "cosmosdb_sql_role_assignments": dataset_paths(catalog, "az_cosmosdb_sql_role_assignment_list"),
         "eventgrid_topics": dataset_paths(catalog, "az_eventgrid_topic_list"),
+        "eventgrid_domains": dataset_paths(catalog, "az_eventgrid_domain_list"),
         "iot_dps_instances": dataset_paths(catalog, "az_iot_dps_list"),
+        "cognitive_services_accounts": dataset_paths(catalog, "az_cognitiveservices_account_list"),
+        "databricks_workspaces": dataset_paths(catalog, "az_databricks_workspace_show"),
+        "machine_learning_workspaces": dataset_paths(catalog, "az_ml_workspace_show"),
         "redis_caches": dataset_paths(catalog, "az_redis_list"),
+        "search_services": dataset_paths(catalog, "az_search_service_show"),
+        "search_shared_private_links": dataset_paths(catalog, "az_search_shared-private-link-resource_list"),
+        "signalr_services": dataset_paths(catalog, "az_signalr_show"),
+        "sql_servers": dataset_paths(catalog, "az_sql_server_list"),
+        "sql_server_aad_admins": dataset_paths(catalog, "az_sql_server_ad-admin_list"),
+        "sql_server_audit_policies": dataset_paths(catalog, "az_sql_server_audit-policy_show"),
+        "sql_server_firewall_rules": dataset_paths(catalog, "az_sql_server_firewall-rule_list"),
+        "sql_server_threat_policies": dataset_paths(catalog, "az_sql_server_threat-policy_show"),
+        "sql_server_tde_keys": dataset_paths(catalog, "az_sql_server_tde-key_show"),
+        "sql_server_vuln_assessments": dataset_paths(catalog, "az_sql_server_vuln-assessment_show"),
+        "sql_database_tde": dataset_paths(catalog, "az_sql_db_tde_show"),
+        "backup_items": dataset_paths(catalog, "az_backup_item_list"),
+        "managed_disks": dataset_paths(catalog, "az_disk_list"),
         "synapse_workspaces": dataset_paths(catalog, "az_synapse_workspace_list"),
         "bastion_hosts": dataset_paths(catalog, "az_network_bastion_list"),
         "flow_logs": dataset_paths(catalog, "az_network_watcher_flow-log_list"),
+        "public_ip_addresses": dataset_paths(catalog, "az_network_public-ip_list"),
         "vm_details": dataset_paths(catalog, "az_vm_show"),
         "vm_scale_sets": dataset_paths(catalog, "az_vmss_list"),
         "nsgs": dataset_paths(catalog, "az_network_nsg_list"),
+        "graph_conditional_access_policies": dataset_paths(catalog, "graph.microsoft.com", "conditionalaccess", "policies"),
+        "graph_named_locations": dataset_paths(catalog, "graph.microsoft.com", "namedlocations"),
+        "graph_authorization_policy": dataset_paths(catalog, "graph.microsoft.com", "authorizationpolicy"),
+        "graph_security_defaults_policy": dataset_paths(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"),
     }
 
     findings = []
@@ -2903,6 +3618,24 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_appservice_auth_not_configured(web_app_auth_settings)
+        if web_app_auth_settings
+        else unsupported(
+            "Azure App Services do not have authentication configured",
+            "Low",
+            "No Web App auth settings dataset was found.",
+        )
+    )
+    findings.append(
+        find_webapp_missing_app_insights(web_apps, web_app_appsettings)
+        if web_apps and web_app_appsettings
+        else unsupported(
+            "Azure App Services are missing Application Insights configuration",
+            "Low",
+            "Web App and app settings datasets are required.",
+        )
+    )
+    findings.append(
         find_appservice_tls_below_12(web_app_configs)
         if web_app_configs
         else unsupported(
@@ -2975,12 +3708,30 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_functionapp_missing_access_keys(function_apps, function_app_keys)
+        if function_apps and function_app_keys
+        else unsupported(
+            "Function Apps do not have access keys configured",
+            "Low",
+            "Function App and host keys datasets are required.",
+        )
+    )
+    findings.append(
         find_acr_public_network_enabled(container_registries)
         if container_registries
         else unsupported(
             "Azure Container Registries allow public network access",
             "Low",
             "No container registry dataset was found.",
+        )
+    )
+    findings.append(
+        find_acr_without_private_link(container_registries, acr_private_endpoint_connections)
+        if container_registries and dataset_present(catalog, "microsoft.containerregistry", "private-endpoint-connection")
+        else unsupported(
+            "Azure Container Registries do not use private link",
+            "Low",
+            "Container Registry and private endpoint connection datasets are required.",
         )
     )
     findings.append(
@@ -3002,6 +3753,42 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_cosmosdb_without_aad_rbac(cosmosdb_accounts, cosmosdb_sql_role_assignments)
+        if cosmosdb_accounts and cosmosdb_sql_role_assignments
+        else unsupported(
+            "Cosmos DB accounts do not use Microsoft Entra ID and RBAC",
+            "Low",
+            "Cosmos DB and SQL role assignment datasets are required.",
+        )
+    )
+    findings.append(
+        find_cognitive_services_local_auth_enabled(cognitive_services_accounts)
+        if cognitive_services_accounts
+        else unsupported(
+            "Cognitive Services accounts permit local authentication",
+            "Low",
+            "No Cognitive Services dataset was found.",
+        )
+    )
+    findings.append(
+        find_databricks_without_cmk(databricks_workspaces)
+        if databricks_workspaces
+        else unsupported(
+            "Databricks workspaces do not enable customer-managed key encryption",
+            "Low",
+            "No Databricks workspace details dataset was found.",
+        )
+    )
+    findings.append(
+        find_databricks_without_vnet_injection(databricks_workspaces)
+        if databricks_workspaces
+        else unsupported(
+            "Databricks workspaces do not use VNet injection",
+            "Low",
+            "No Databricks workspace details dataset was found.",
+        )
+    )
+    findings.append(
         find_eventgrid_topics_public_network_enabled(eventgrid_topics)
         if eventgrid_topics
         else unsupported(
@@ -3011,12 +3798,93 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_eventgrid_domains_public_network_enabled(eventgrid_domains)
+        if eventgrid_domains
+        else unsupported(
+            "Event Grid Domains allow public network access",
+            "Low",
+            "No Event Grid Domain dataset was found.",
+        )
+    )
+    findings.append(
         find_iot_dps_public_network_enabled(iot_dps_instances)
         if iot_dps_instances
         else unsupported(
             "IoT Device Provisioning Services allow public network access",
             "Low",
             "No IoT DPS dataset was found.",
+        )
+    )
+    findings.append(
+        find_defender_auto_provisioning_disabled(defender_auto_provisioning_settings)
+        if defender_auto_provisioning_settings
+        else unsupported(
+            "Defender auto provisioning for Log Analytics agents is not enabled",
+            "Low",
+            "No Defender auto-provisioning settings dataset was found.",
+        )
+    )
+    findings.append(
+        find_security_contacts_not_notifying_owners(security_contacts)
+        if security_contacts
+        else unsupported(
+            "Microsoft Defender security contacts do not notify subscription owners",
+            "Low",
+            "No security contact dataset was found.",
+        )
+    )
+    findings.append(
+        find_entra_security_defaults_disabled(graph_security_defaults_policy)
+        if dataset_present(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy")
+        else unsupported(
+            "Microsoft Entra security defaults are not enabled",
+            "Low",
+            "No Graph security defaults policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_entra_named_locations_missing(graph_named_locations)
+        if dataset_present(catalog, "graph.microsoft.com", "namedlocations")
+        else unsupported(
+            "Microsoft Entra trusted named locations are not configured",
+            "Low",
+            "No Graph named locations dataset was found.",
+        )
+    )
+    findings.append(
+        find_entra_users_can_create_apps(graph_authorization_policy)
+        if dataset_present(catalog, "graph.microsoft.com", "authorizationpolicy")
+        else unsupported(
+            "Microsoft Entra default users can create applications",
+            "Low",
+            "No Graph authorization policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_entra_users_can_create_tenants(graph_authorization_policy)
+        if dataset_present(catalog, "graph.microsoft.com", "authorizationpolicy")
+        else unsupported(
+            "Microsoft Entra default users can create tenants",
+            "Low",
+            "No Graph authorization policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_entra_guest_invites_not_admin_only(graph_authorization_policy)
+        if dataset_present(catalog, "graph.microsoft.com", "authorizationpolicy")
+        else unsupported(
+            "Microsoft Entra guest invites are not restricted to admins",
+            "Low",
+            "No Graph authorization policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_entra_guest_access_not_restricted(graph_authorization_policy)
+        if dataset_present(catalog, "graph.microsoft.com", "authorizationpolicy")
+        else unsupported(
+            "Microsoft Entra guest user access restrictions are not configured",
+            "Low",
+            "No Graph authorization policy dataset was found.",
         )
     )
     findings.append(
@@ -3065,12 +3933,57 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_ml_workspace_public_network_enabled(machine_learning_workspaces)
+        if machine_learning_workspaces
+        else unsupported(
+            "Machine Learning workspaces allow public network access",
+            "Low",
+            "No Machine Learning workspace dataset was found.",
+        )
+    )
+    findings.append(
+        find_ml_workspace_without_vnet(machine_learning_workspaces)
+        if machine_learning_workspaces
+        else unsupported(
+            "Machine Learning workspaces do not use virtual network integration",
+            "Low",
+            "No Machine Learning workspace dataset was found.",
+        )
+    )
+    findings.append(
         find_monitor_service_health_alert_missing(activity_log_alerts)
         if activity_log_alerts
         else unsupported(
             "Azure Activity Log Alerts missing for service health events",
             "Low",
             "No activity log alert dataset was found.",
+        )
+    )
+    findings.append(
+        find_activity_log_alert_security_solution_gaps(activity_log_alerts)
+        if activity_log_alerts
+        else unsupported(
+            "Azure Activity Log Alerts missing for security solution changes",
+            "Low",
+            "No activity log alert dataset was found.",
+        )
+    )
+    findings.append(
+        find_monitor_storage_targets_not_cmk(subscriptions, subscription_diagnostic_settings, storage_accounts)
+        if subscription_diagnostic_settings and storage_accounts
+        else unsupported(
+            "Subscription activity logs are stored in accounts without customer-managed keys",
+            "Low",
+            "Subscription diagnostic settings and storage account datasets are required.",
+        )
+    )
+    findings.append(
+        find_monitor_storage_targets_not_private(subscription_diagnostic_settings, storage_accounts)
+        if subscription_diagnostic_settings and storage_accounts
+        else unsupported(
+            "Subscription activity logs are stored in accounts without private endpoints",
+            "Low",
+            "Subscription diagnostic settings and storage account datasets are required.",
         )
     )
     findings.append(
@@ -3203,12 +4116,120 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_search_public_network_enabled(search_services)
+        if search_services
+        else unsupported(
+            "Azure AI Search services allow public network access",
+            "Low",
+            "No Search service details dataset was found.",
+        )
+    )
+    findings.append(
+        find_search_without_shared_private_links(search_services, search_shared_private_links)
+        if search_services and dataset_present(catalog, "az_search_shared-private-link-resource_list")
+        else unsupported(
+            "Azure AI Search services do not use shared private links",
+            "Low",
+            "Search service and shared private link datasets are required.",
+        )
+    )
+    findings.append(
+        find_signalr_public_network_enabled(signalr_services)
+        if signalr_services
+        else unsupported(
+            "SignalR services allow public network access",
+            "Low",
+            "No SignalR service details dataset was found.",
+        )
+    )
+    findings.append(
+        find_sqlserver_atp_disabled(sql_server_threat_policies)
+        if sql_server_threat_policies
+        else unsupported(
+            "SQL servers do not have Advanced Threat Protection enabled",
+            "Low",
+            "No SQL server threat policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_sqlserver_auditing_disabled(sql_server_audit_policies)
+        if sql_server_audit_policies
+        else unsupported(
+            "SQL servers do not have auditing enabled",
+            "Low",
+            "No SQL server auditing dataset was found.",
+        )
+    )
+    findings.append(
+        find_sqlserver_audit_retention_short(sql_server_audit_policies)
+        if sql_server_audit_policies
+        else unsupported(
+            "SQL servers do not retain audit logs for at least 90 days",
+            "Low",
+            "No SQL server auditing dataset was found.",
+        )
+    )
+    findings.append(
+        find_sqlserver_no_aad_admin(sql_server_aad_admins, sql_servers)
+        if sql_servers and dataset_present(catalog, "az_sql_server_ad-admin_list")
+        else unsupported(
+            "SQL servers do not have an Azure AD administrator configured",
+            "Low",
+            "SQL server and Azure AD admin datasets are required.",
+        )
+    )
+    findings.append(
+        find_sqlserver_tde_not_cmk(sql_server_tde_keys)
+        if sql_server_tde_keys
+        else unsupported(
+            "SQL servers do not encrypt TDE with customer-managed keys",
+            "Low",
+            "No SQL server TDE protector dataset was found.",
+        )
+    )
+    findings.append(
+        find_sql_database_tde_disabled(sql_database_tde)
+        if sql_database_tde
+        else unsupported(
+            "SQL databases do not have Transparent Data Encryption enabled",
+            "Low",
+            "No SQL database TDE dataset was found.",
+        )
+    )
+    findings.append(
+        find_sqlserver_unrestricted_inbound_access(sql_server_firewall_rules)
+        if sql_server_firewall_rules
+        else unsupported(
+            "SQL servers permit unrestricted inbound access",
+            "Low",
+            "No SQL server firewall rule dataset was found.",
+        )
+    )
+    findings.append(
+        find_sqlserver_va_disabled(sql_server_vuln_assessments)
+        if sql_server_vuln_assessments
+        else unsupported(
+            "SQL servers do not have vulnerability assessment configured",
+            "Low",
+            "No SQL server vulnerability assessment dataset was found.",
+        )
+    )
+    findings.append(
         find_storage_shared_key_access_enabled(storage_accounts)
         if storage_accounts
         else unsupported(
             "Storage accounts permit shared key access",
             "Low",
             "No storage account dataset was found.",
+        )
+    )
+    findings.append(
+        find_storage_file_soft_delete_disabled(storage_file_service_properties)
+        if storage_file_service_properties
+        else unsupported(
+            "Storage accounts do not enable file share soft delete",
+            "Low",
+            "No storage file service properties dataset was found.",
         )
     )
     findings.append(
@@ -3263,6 +4284,42 @@ def evaluate_findings(catalog):
             "Synapse workspaces do not enable data exfiltration protection",
             "Low",
             "No Synapse workspace dataset was found.",
+        )
+    )
+    findings.append(
+        find_vm_backup_disabled(vm_details, backup_items)
+        if vm_details and backup_items
+        else unsupported(
+            "Virtual machines are not protected by backup",
+            "Low",
+            "VM detail and backup item datasets are required.",
+        )
+    )
+    findings.append(
+        find_vm_jit_disabled(vm_details, defender_jit_policies)
+        if vm_details and defender_jit_policies
+        else unsupported(
+            "Virtual machines do not have JIT access enabled",
+            "Low",
+            "VM detail and Defender JIT policy datasets are required.",
+        )
+    )
+    findings.append(
+        find_vm_attached_disks_not_cmk(vm_details, managed_disks)
+        if vm_details and managed_disks
+        else unsupported(
+            "Virtual machine attached disks are not encrypted with customer-managed keys",
+            "Low",
+            "VM detail and managed disk datasets are required.",
+        )
+    )
+    findings.append(
+        find_unattached_disks_not_cmk(managed_disks)
+        if managed_disks
+        else unsupported(
+            "Unattached managed disks are not encrypted with customer-managed keys",
+            "Low",
+            "No managed disk dataset was found.",
         )
     )
     findings.append(

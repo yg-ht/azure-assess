@@ -76,15 +76,22 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Consumption Usage", "cli_command": "az consumption usage list", "needs_pagination": True},
     {"name": "Container Instances", "cli_command": "az container list", "needs_pagination": False},
     {"name": "Container Registries", "cli_command": "az acr list", "needs_pagination": False},
+    {"name": "Cognitive Services Accounts", "cli_command": "az cognitiveservices account list", "needs_pagination": False},
     {"name": "Cosmos DB Accounts", "cli_command": "az cosmosdb list", "needs_pagination": False},
+    {"name": "Databricks Workspaces", "cli_command": "az databricks workspace list", "needs_pagination": False},
     {"name": "Data Factory Instances", "cli_command": "az datafactory list", "needs_pagination": False},
     {"name": "Defender Settings", "cli_command": "az security pricing list", "needs_pagination": False},
+    {"name": "Defender Auto Provisioning Settings", "cli_command": "az security auto-provisioning-setting list", "needs_pagination": False},
+    {"name": "Defender JIT Policies", "cli_command": "az security jit-policy list", "needs_pagination": False},
+    {"name": "Defender Workspace Settings", "cli_command": "az security workspace-setting list", "needs_pagination": False},
     {"name": "DNS Zones", "cli_command": "az network dns zone list", "needs_pagination": False},
+    {"name": "Event Grid Domains", "cli_command": "az eventgrid domain list", "needs_pagination": False},
     {"name": "Event Grid Topics", "cli_command": "az eventgrid topic list", "needs_pagination": False},
     {"name": "Event Hubs Namespaces", "cli_command": "az eventhubs namespace list", "needs_pagination": False},
     {"name": "ExpressRoute Circuits", "cli_command": "az network express-route list", "needs_pagination": False},
     {"name": "Front Door", "cli_command": "az afd profile list", "needs_pagination": False},
     {"name": "Function Apps", "cli_command": "az functionapp list", "needs_pagination": False},
+    {"name": "HDInsight Clusters", "cli_command": "az hdinsight list", "needs_pagination": False},
     {"name": "IoT Hubs", "cli_command": "az iot hub list", "needs_pagination": False},
     {"name": "IoT DPS Instances", "cli_command": "az iot dps list", "needs_pagination": False},
     {"name": "Key Vaults", "cli_command": "az keyvault list", "needs_pagination": False},
@@ -96,6 +103,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Log Analytics Workspaces", "cli_command": "az monitor log-analytics workspace list", "needs_pagination": False},
     {"name": "Managed Apps", "cli_command": "az managedapp list", "needs_pagination": False},
     {"name": "Managed Identities", "cli_command": "az identity list", "needs_pagination": False},
+    {"name": "Machine Learning Workspaces", "cli_command": "az ml workspace list", "needs_pagination": False},
     {"name": "Maps Accounts", "cli_command": "az maps account list", "needs_pagination": False},
     {"name": "Media Services", "cli_command": "az ams account list", "needs_pagination": False},
     {"name": "Monitor Activity Logs", "cli_command": "az monitor activity-log list", "needs_pagination": True},
@@ -113,6 +121,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "PostgreSQL Servers", "cli_command": "az postgres flexible-server list", "needs_pagination": False},
     {"name": "Private DNS Zones", "cli_command": "az network private-dns zone list", "needs_pagination": False},
     {"name": "Private Endpoints", "cli_command": "az network private-endpoint list", "needs_pagination": False},
+    {"name": "Public IP Addresses", "cli_command": "az network public-ip list", "needs_pagination": False},
     {"name": "Purview Accounts", "cli_command": "az purview account list", "needs_pagination": False},
     {"name": "Red Hat OpenShift", "cli_command": "az aro list", "needs_pagination": False},
     {"name": "Redis Caches", "cli_command": "az redis list", "needs_pagination": False},
@@ -147,10 +156,22 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Metric-based alert rules", "cli_command": "az monitor metrics alert list", "needs_pagination": False},
     {"name": "Activity Log Alert rules", "cli_command": "az monitor activity-log alert list", "needs_pagination": False},
     {"name": "Scheduled Queries", "cli_command": "az monitor scheduled-query list", "needs_pagination": False},
+    {"name": "Search Services", "cli_command": "az search service list", "needs_pagination": False},
     {"name": "Application Gateway WAF Policies", "cli_command": "az network application-gateway waf-policy list", "needs_pagination": False},
     {"name": "Network Watchers", "cli_command": "az network watcher list", "needs_pagination": False},
     {"name": "MySQL Servers", "cli_command": "az mysql flexible-server list", "needs_pagination": False},
     {"name": "Security Contacts", "cli_command": "az security contact list", "needs_pagination": False},
+    {"name": "SignalR Services", "cli_command": "az signalr list", "needs_pagination": False},
+    {"name": "Managed Disks", "cli_command": "az disk list", "needs_pagination": False},
+    {"name": "Snapshots", "cli_command": "az snapshot list", "needs_pagination": False},
+    {"name": "Graph Conditional Access Policies", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies", "needs_pagination": False},
+    {"name": "Graph Named Locations", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations", "needs_pagination": False},
+    {"name": "Graph Authorization Policy", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/policies/authorizationPolicy", "needs_pagination": False},
+    {"name": "Graph Security Defaults Policy", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy", "needs_pagination": False},
+    {"name": "Graph Directory Roles", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/directoryRoles", "needs_pagination": False},
+    {"name": "Graph Directory Role Assignments", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments", "needs_pagination": False},
+    {"name": "Graph User Registration Details", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails", "needs_pagination": False},
+    {"name": "Graph Group Settings", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/groupSettings", "needs_pagination": False},
 ]
 
 AZURE_CLI_ENDPOINTS_PARAMS = [
@@ -168,6 +189,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "App Service Plan Details",
         "cli_command": "az appservice plan show --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_appservice_plan_list", "resourceGroup": "az_appservice_plan_list"}
+    },
+    {
+        "name": "API Management Service Details",
+        "cli_command": "az apim show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_apim_list", "resourceGroup": "az_apim_list"}
     },
     {
         "name": "App Service Plans in ASE",
@@ -240,8 +266,18 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
     },
     {
+        "name": "Function App Auth Settings",
+        "cli_command": "az webapp auth show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
         "name": "Function App AppSettings",
         "cli_command": "az functionapp config appsettings list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Function App Host Keys",
+        "cli_command": "az functionapp keys list --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
     },
     {
@@ -270,8 +306,33 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
     },
     {
+        "name": "Storage Queue Service Properties",
+        "cli_command": "az storage account queue-service-properties show --account-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
+    },
+    {
+        "name": "Storage File Service Properties",
+        "cli_command": "az storage account file-service-properties show --account-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
+    },
+    {
+        "name": "Storage Shares",
+        "cli_command": "az storage share-rm list --storage-account {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
+    },
+    {
         "name": "Storage Containers",
         "cli_command": "az storage container list --account-name {name} --auth-mode login",
+        "required_params": {"name": "az_storage_account_list"},
+    },
+    {
+        "name": "Storage Queues",
+        "cli_command": "az storage queue list --account-name {name} --auth-mode login",
+        "required_params": {"name": "az_storage_account_list"},
+    },
+    {
+        "name": "Storage Tables",
+        "cli_command": "az storage table list --account-name {name} --auth-mode login",
         "required_params": {"name": "az_storage_account_list"},
     },
     {
@@ -345,6 +406,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
                             "resourceGroup": "az_monitor_app-insights_component_list"},
     },
     {
+        "name": "Cognitive Services Account Details",
+        "cli_command": "az cognitiveservices account show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_cognitiveservices_account_list", "resourceGroup": "az_cognitiveservices_account_list"},
+    },
+    {
         "name": "App Configuration KeyValues",
         "cli_command": "az appconfig kv list --name {name} --all",
         "required_params": {"name": "az_appconfig_list"},
@@ -392,6 +458,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     {
         "name": "Web App VNet Integration",
         "cli_command": "az webapp vnet-integration list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
+    },
+    {
+        "name": "Web App Auth Settings",
+        "cli_command": "az webapp auth show --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
     },
     {
@@ -496,6 +567,131 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Flow Logs (by location)",
         "cli_command": "az network watcher flow-log list --location {name}",
         "required_params": {"name": "az_account_list-locations"},
+    },
+    {
+        "name": "Container Registry Private Endpoint Connections",
+        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.ContainerRegistry/registries",
+        "required_params": {"name": "az_acr_list", "resourceGroup": "az_acr_list"},
+    },
+    {
+        "name": "Cosmos DB SQL Role Assignments",
+        "cli_command": "az cosmosdb sql role assignment list --account-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_cosmosdb_list", "resourceGroup": "az_cosmosdb_list"},
+    },
+    {
+        "name": "Cosmos DB SQL Role Definitions",
+        "cli_command": "az cosmosdb sql role definition list --account-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_cosmosdb_list", "resourceGroup": "az_cosmosdb_list"},
+    },
+    {
+        "name": "Databricks Workspace Details",
+        "cli_command": "az databricks workspace show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_databricks_workspace_list", "resourceGroup": "az_databricks_workspace_list"},
+    },
+    {
+        "name": "Event Grid Domain Details",
+        "cli_command": "az eventgrid domain show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_eventgrid_domain_list", "resourceGroup": "az_eventgrid_domain_list"},
+    },
+    {
+        "name": "HDInsight Details",
+        "cli_command": "az hdinsight show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_hdinsight_list", "resourceGroup": "az_hdinsight_list"},
+    },
+    {
+        "name": "Machine Learning Workspace Details",
+        "cli_command": "az ml workspace show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_ml_workspace_list", "resourceGroup": "az_ml_workspace_list"},
+    },
+    {
+        "name": "Search Service Details",
+        "cli_command": "az search service show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_search_service_list", "resourceGroup": "az_search_service_list"},
+    },
+    {
+        "name": "Search Service Shared Private Links",
+        "cli_command": "az search shared-private-link-resource list --service-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_search_service_list", "resourceGroup": "az_search_service_list"},
+    },
+    {
+        "name": "Service Bus Namespace Details",
+        "cli_command": "az servicebus namespace show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_servicebus_namespace_list", "resourceGroup": "az_servicebus_namespace_list"},
+    },
+    {
+        "name": "Service Bus Queues",
+        "cli_command": "az servicebus queue list --namespace-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_servicebus_namespace_list", "resourceGroup": "az_servicebus_namespace_list"},
+    },
+    {
+        "name": "Service Bus Topics",
+        "cli_command": "az servicebus topic list --namespace-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_servicebus_namespace_list", "resourceGroup": "az_servicebus_namespace_list"},
+    },
+    {
+        "name": "SignalR Details",
+        "cli_command": "az signalr show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_signalr_list", "resourceGroup": "az_signalr_list"},
+    },
+    {
+        "name": "SQL Server Details",
+        "cli_command": "az sql server show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+    },
+    {
+        "name": "SQL Databases",
+        "cli_command": "az sql db list --server {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+    },
+    {
+        "name": "SQL Server Firewall Rules",
+        "cli_command": "az sql server firewall-rule list --server {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+    },
+    {
+        "name": "SQL Server AAD Admins",
+        "cli_command": "az sql server ad-admin list --server {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+    },
+    {
+        "name": "SQL Server Auditing Policy",
+        "cli_command": "az sql server audit-policy show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+    },
+    {
+        "name": "SQL Server Threat Policy",
+        "cli_command": "az sql server threat-policy show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+    },
+    {
+        "name": "SQL Server TDE Protector",
+        "cli_command": "az sql server tde-key show --server {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+    },
+    {
+        "name": "SQL Database TDE",
+        "cli_command": "az sql db tde show --server {serverName} --name {name} --resource-group {resourceGroup}",
+        "required_params": {"serverName": "az_sql_db_list", "name": "az_sql_db_list", "resourceGroup": "az_sql_db_list"},
+    },
+    {
+        "name": "SQL Server Vulnerability Assessment",
+        "cli_command": "az sql server vuln-assessment show --server {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+    },
+    {
+        "name": "Backup Items",
+        "cli_command": "az backup item list --vault-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_backup_vault_list", "resourceGroup": "az_backup_vault_list"},
+    },
+    {
+        "name": "Backup Policies",
+        "cli_command": "az backup policy list --vault-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_backup_vault_list", "resourceGroup": "az_backup_vault_list"},
+    },
+    {
+        "name": "Managed Disk Details",
+        "cli_command": "az disk show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_disk_list", "resourceGroup": "az_disk_list"},
     },
     {
         "name": "PostgreSQL Firewall Rules",
