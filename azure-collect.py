@@ -145,9 +145,12 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Log Analytics Solutions", "cli_command": "az monitor log-analytics solution list", "needs_pagination": False},
     {"name": "Log Profiles", "cli_command": "az monitor log-profiles list", "needs_pagination": False},
     {"name": "Metric-based alert rules", "cli_command": "az monitor metrics alert list", "needs_pagination": False},
+    {"name": "Activity Log Alert rules", "cli_command": "az monitor activity-log alert list", "needs_pagination": False},
     {"name": "Scheduled Queries", "cli_command": "az monitor scheduled-query list", "needs_pagination": False},
     {"name": "Application Gateway WAF Policies", "cli_command": "az network application-gateway waf-policy list", "needs_pagination": False},
     {"name": "Network Watchers", "cli_command": "az network watcher list", "needs_pagination": False},
+    {"name": "MySQL Servers", "cli_command": "az mysql flexible-server list", "needs_pagination": False},
+    {"name": "Security Contacts", "cli_command": "az security contact list", "needs_pagination": False},
 ]
 
 AZURE_CLI_ENDPOINTS_PARAMS = [
@@ -190,6 +193,21 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Deployment (Resource Group Scope)",
         "cli_command": "az deployment group list --resource-group {name}",
         "required_params": {"name": "az_group_list"}
+    },
+    {
+        "name": "Policy Assignment Details",
+        "cli_command": "az policy assignment show --id {id}",
+        "required_params": {"id": "az_policy_assignment_list"}
+    },
+    {
+        "name": "Policy Definition Details",
+        "cli_command": "az policy definition show --name {name}",
+        "required_params": {"name": "az_policy_definition_list"}
+    },
+    {
+        "name": "Policy Set Definition Details",
+        "cli_command": "az policy set-definition show --name {name}",
+        "required_params": {"name": "az_policy_set-definition_list"}
     },
     {
         "name": "Kubernetes Environment Details",
@@ -245,6 +263,26 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Key Vault Private Endpoint Connections",
         "cli_command": "az keyvault show --name {name} --resource-group {resourceGroup} --query privateEndpointConnections",
         "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
+    },
+    {
+        "name": "Storage Account Keys",
+        "cli_command": "az storage account keys list --account-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
+    },
+    {
+        "name": "Storage Containers",
+        "cli_command": "az storage container list --account-name {name} --auth-mode login",
+        "required_params": {"name": "az_storage_account_list"},
+    },
+    {
+        "name": "Storage Blob Service Properties",
+        "cli_command": "az storage account blob-service-properties show --account-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
+    },
+    {
+        "name": "Storage Private Endpoint Connections",
+        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.Storage/storageAccounts",
+        "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
     },
     {
         "name": "Application Gateway Details",
@@ -372,6 +410,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
     },
     {
+        "name": "Web App Log Config",
+        "cli_command": "az webapp log show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
+    },
+    {
         "name": "App Service Plan VNet Integrations",
         "cli_command": "az appservice vnet-integration list --resource-group {resourceGroup} --plan {name}",
         "required_params": {"name": "az_appservice_plan_list", "resourceGroup": "az_appservice_plan_list"},
@@ -453,6 +496,26 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Flow Logs (by location)",
         "cli_command": "az network watcher flow-log list --location {name}",
         "required_params": {"name": "az_account_list-locations"},
+    },
+    {
+        "name": "PostgreSQL Firewall Rules",
+        "cli_command": "az postgres flexible-server firewall-rule list --resource-group {resourceGroup} --name {name}",
+        "required_params": {"name": "az_postgres_flexible-server_list", "resourceGroup": "az_postgres_flexible-server_list"},
+    },
+    {
+        "name": "PostgreSQL Configuration Parameters",
+        "cli_command": "az postgres flexible-server parameter list --resource-group {resourceGroup} --server-name {name}",
+        "required_params": {"name": "az_postgres_flexible-server_list", "resourceGroup": "az_postgres_flexible-server_list"},
+    },
+    {
+        "name": "MySQL Configuration Parameters",
+        "cli_command": "az mysql flexible-server parameter list --resource-group {resourceGroup} --server-name {name}",
+        "required_params": {"name": "az_mysql_flexible-server_list", "resourceGroup": "az_mysql_flexible-server_list"},
+    },
+    {
+        "name": "Subscription Diagnostic Settings",
+        "cli_command": "az monitor diagnostic-settings subscription list --subscription {id}",
+        "required_params": {"id": "az_account_list"},
     },
 ]
 
@@ -707,6 +770,27 @@ def save_json(data, filename, append=False):
     print(f"[+] Saved: {path}")
 
 
+def attach_collection_context(data, endpoint_name, param_set):
+    """Preserve the source parameters that produced a parameterised record."""
+    context = {
+        "endpoint": endpoint_name,
+        "parameters": dict(param_set),
+    }
+
+    def enrich(item):
+        if not isinstance(item, dict):
+            return item
+        enriched = dict(item)
+        enriched.setdefault("_collectionContext", context)
+        return enriched
+
+    if isinstance(data, list):
+        return [enrich(item) for item in data]
+    if isinstance(data, dict):
+        return enrich(data)
+    return data
+
+
 def resolve_principal(object_id):
     """Resolve an Azure AD object ID to a readable name/type with status classification."""
     for entity_type, cmd in {
@@ -918,6 +1002,8 @@ def collect_data_with_params(param_endpoints):
                 if not data:
                     print(f"[!] No data returned for: {name} with {param_set}")
                     continue
+
+                data = attach_collection_context(data, name, param_set)
 
                 if name == "VM NIC IDs" and isinstance(data, list):
                     for item in data:

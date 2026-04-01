@@ -34,12 +34,16 @@
 
 import argparse
 import json
+import re
 from collections import OrderedDict
 from flask import Flask, render_template_string, request
 from json2html import json2html
 from pathlib import Path
 
 app = Flask(__name__)
+FINDINGS_FLAT_FILENAME = "azure-findings-flat.json"
+FINDINGS_STRUCTURED_FILENAME = "azure-findings.json"
+FINDINGS_FILENAMES = {FINDINGS_FLAT_FILENAME, FINDINGS_STRUCTURED_FILENAME}
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Azure Audit Data Presentation Tool")
@@ -170,7 +174,10 @@ HTML_TEMPLATE = """
       <!-- Header with Dark Mode Toggle -->
       <div class="header d-flex justify-content-between align-items-center mt-4">
         <h1>Azure Audit Data Viewer</h1>
-        <button id="returnToDashboard" class="btn btn-secondary">Dashboard</button>
+        <div>
+          <button id="findingsView" class="btn btn-secondary">Findings</button>
+          <button id="returnToDashboard" class="btn btn-secondary">Dashboard</button>
+        </div>
         <button id="darkModeToggle" class="btn btn-secondary">Toggle Dark Mode</button>
       </div>
       
@@ -247,6 +254,12 @@ HTML_TEMPLATE = """
     <script>
       document.getElementById('returnToDashboard').addEventListener('click', function() {
           window.location.href = "/";
+      });
+    </script>
+
+    <script>
+      document.getElementById('findingsView').addEventListener('click', function() {
+          window.location.href = "/findings";
       });
     </script>
 
@@ -404,6 +417,14 @@ def load_json_file(filepath):
         return None
 
 
+def standard_data_files():
+    return [path for path in sorted(DATA_DIR.glob("*.json")) if path.name not in FINDINGS_FILENAMES]
+
+
+def findings_flat_path():
+    return DATA_DIR / FINDINGS_FLAT_FILENAME
+
+
 def contains_nested_list_of_dicts(obj):
     if isinstance(obj, list):
         return any(
@@ -535,17 +556,34 @@ def generate_html_table(original_data):
             print(f"This is the JSON object being sent to json2html:\n {data}")
 
         html_table = json2html.convert(json=data)
+        html_table = linkify_rendered_urls(html_table)
         return html_table
     except Exception as e:
         print(f"Error converting JSON to HTML: {e}")
         return "<p>Error displaying data.</p>"
+
+
+def linkify_rendered_urls(html):
+    patterns = [
+        re.compile(r'(?P<url>https?://[^\s<]+)'),
+        re.compile(r'(?P<url>/query/[^\s<]+)'),
+    ]
+
+    def replace_anchor(match):
+        url = match.group("url")
+        return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>'
+
+    updated = html
+    for pattern in patterns:
+        updated = pattern.sub(replace_anchor, updated)
+    return updated
 
 @app.route('/')
 def dashboard():
     tabs = []
     if not DATA_DIR.exists():
         return "<p>Data directory not found. Please create a 'data' folder with JSON files.</p>"
-    for filepath in sorted(DATA_DIR.glob("*.json")):
+    for filepath in standard_data_files():
         data = load_json_file(filepath)
         if data is None:
             continue
@@ -560,6 +598,42 @@ def dashboard():
             "record_count": record_count
         })
     return render_template_string(HTML_TEMPLATE, tabs=tabs, dashboard=True)
+
+
+@app.route('/findings', methods=['GET', 'POST'])
+def findings():
+    query_param = (request.form.get('query') or request.args.get('query') or "").lower()
+    filepath = findings_flat_path()
+    data = load_json_file(filepath)
+    if data is None:
+        return f"<p>Error loading data from {FINDINGS_FLAT_FILENAME}.</p>"
+
+    if isinstance(data, dict) and "rows" in data:
+        data = data["rows"]
+
+    if query_param:
+        if isinstance(data, list):
+            filtered_data = [item for item in data if query_param in json.dumps(item).lower()]
+        elif isinstance(data, dict):
+            filtered_data = {k: v for k, v in data.items() if query_param in str(v).lower()}
+        else:
+            filtered_data = data
+    else:
+        filtered_data = data
+
+    table = generate_html_table(filtered_data)
+    tabs = [{
+        "name": Path(FINDINGS_FLAT_FILENAME).stem,
+        "filename": FINDINGS_FLAT_FILENAME,
+        "record_count": len(data) if isinstance(data, list) else len(data.keys()) if isinstance(data, dict) else 1,
+    }]
+    return render_template_string(
+        HTML_TEMPLATE,
+        tabs=tabs,
+        table=table,
+        current_tab=FINDINGS_FLAT_FILENAME,
+        dashboard=False,
+    )
 
 @app.route('/query/<filename>', methods=['GET', 'POST'])
 def query(filename):
@@ -581,7 +655,7 @@ def query(filename):
     table = generate_html_table(filtered_data)
     tabs = []
     # Build tabs info for drop-down
-    for path in sorted(DATA_DIR.glob("*.json")):
+    for path in standard_data_files():
         file_data = load_json_file(path)
         if file_data is None:
             continue
