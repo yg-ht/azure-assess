@@ -162,6 +162,20 @@ HTML_TEMPLATE = """
         vertical-align: middle;
         margin-right: 8px;
       }
+      .global-collapse-icon,
+      .local-collapse-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 1.5rem;
+        font-weight: 700;
+      }
+      .global-collapse-icon {
+        color: #ffc107;
+      }
+      .local-collapse-icon {
+        color: #0dcaf0;
+      }
       /* Scrollable container for the table with fixed height */
       .table-container {
         position: relative;
@@ -456,7 +470,8 @@ document.addEventListener('DOMContentLoaded', function () {
               globalIcon.className = 'global-collapse-icon collapse-icon';
               globalIcon.style.cursor = 'pointer';
               globalIcon.style.marginRight = '8px';
-              globalIcon.innerHTML = '&#x25BA;'; // Right arrow (collapsed)
+              globalIcon.innerHTML = '&#x229E;'; // Squared plus for expand all
+              globalIcon.title = 'Expand all nested data in this cell';
               cell.insertBefore(globalIcon, cell.firstChild);
               
               // Global icon toggles all nested tables in this cell
@@ -466,10 +481,16 @@ document.addEventListener('DOMContentLoaded', function () {
                   table.style.display = newState;
                   var localIcon = table.previousElementSibling;
                   if (localIcon && localIcon.classList.contains('local-collapse-icon')) {
-                    localIcon.innerHTML = (newState === 'table') ? '&#x25BC;' : '&#x25BA;';
+                    localIcon.innerHTML = (newState === 'table') ? '&#x2212;' : '&#x002B;';
+                    localIcon.title = (newState === 'table')
+                      ? 'Collapse this nested table'
+                      : 'Expand this nested table only';
                   }
                 });
-                globalIcon.innerHTML = (newState === 'table') ? '&#x25BC;' : '&#x25BA;';
+                globalIcon.innerHTML = (newState === 'table') ? '&#x229F;' : '&#x229E;';
+                globalIcon.title = (newState === 'table')
+                  ? 'Collapse all nested data in this cell'
+                  : 'Expand all nested data in this cell';
                 e.stopPropagation();
               });
             }
@@ -481,13 +502,17 @@ document.addEventListener('DOMContentLoaded', function () {
                 localIcon.className = 'local-collapse-icon collapse-icon';
                 localIcon.style.cursor = 'pointer';
                 localIcon.style.marginRight = '8px';
-                localIcon.innerHTML = '&#x25BA;'; // Start collapsed
+                localIcon.innerHTML = '&#x002B;'; // Plus for expand one
+                localIcon.title = 'Expand this nested table only';
                 table.parentNode.insertBefore(localIcon, table);
                 
                 // Local icon toggles its specific nested table
                 localIcon.addEventListener('click', function(e) {
                   table.style.display = (table.style.display === 'none') ? 'table' : 'none';
-                  localIcon.innerHTML = (table.style.display === 'table') ? '&#x25BC;' : '&#x25BA;';
+                  localIcon.innerHTML = (table.style.display === 'table') ? '&#x2212;' : '&#x002B;';
+                  localIcon.title = (table.style.display === 'table')
+                    ? 'Collapse this nested table'
+                    : 'Expand this nested table only';
                   e.stopPropagation();
                 });
               }
