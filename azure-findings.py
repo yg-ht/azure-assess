@@ -338,8 +338,17 @@ EXISTING_FINDING_HEADLINES = {
     "Azure App Services are not registered with a managed identity": [
         "app_register_with_identity",
     ],
+    "Azure App Services do not have authentication configured": [
+        "app_ensure_auth_is_set_up",
+    ],
+    "Azure App Services are missing Application Insights configuration": [
+        "appinsights_ensure_is_configured",
+    ],
     "Function Apps are missing Application Insights configuration": [
         "app_function_application_insights_enabled",
+    ],
+    "Function Apps do not have access keys configured": [
+        "app_function_access_keys_configured",
     ],
     "Function Apps do not disable FTP deployment": [
         "app_function_ftps_deployment_disabled",
@@ -356,17 +365,59 @@ EXISTING_FINDING_HEADLINES = {
     "Azure Container Registries allow public network access": [
         "containerregistry_not_publicly_accessible",
     ],
+    "Azure Container Registries do not use private link": [
+        "containerregistry_uses_private_link",
+    ],
     "Cosmos DB accounts do not restrict network access": [
         "cosmosdb_account_firewall_use_selected_networks",
     ],
     "Cosmos DB accounts do not use private endpoints": [
         "cosmosdb_account_use_private_endpoints",
     ],
+    "Cosmos DB accounts do not use Microsoft Entra ID and RBAC": [
+        "cosmosdb_account_use_aad_and_rbac",
+    ],
+    "Cognitive Services accounts permit local authentication": [
+        "cognitive_services_local_auth_disabled",
+    ],
+    "Databricks workspaces do not enable customer-managed key encryption": [
+        "databricks_workspace_cmk_encryption_enabled",
+    ],
+    "Databricks workspaces do not use VNet injection": [
+        "databricks_workspace_vnet_injection_enabled",
+    ],
     "Event Grid Topics allow public network access": [
         "eventgrid_topic_public_network_access_disabled",
     ],
+    "Event Grid Domains allow public network access": [
+        "eventgrid_domain_public_network_access_disabled",
+    ],
     "IoT Device Provisioning Services allow public network access": [
         "iot_dps_public_network_access_disabled",
+    ],
+    "Defender auto provisioning for Log Analytics agents is not enabled": [
+        "defender_auto_provisioning_log_analytics_agent_vms_on",
+    ],
+    "Microsoft Defender security contacts do not notify subscription owners": [
+        "defender_ensure_notify_emails_to_owners",
+    ],
+    "Microsoft Entra security defaults are not enabled": [
+        "entra_security_defaults_enabled",
+    ],
+    "Microsoft Entra trusted named locations are not configured": [
+        "entra_trusted_named_locations_exists",
+    ],
+    "Microsoft Entra default users can create applications": [
+        "entra_policy_ensure_default_user_cannot_create_apps",
+    ],
+    "Microsoft Entra default users can create tenants": [
+        "entra_policy_ensure_default_user_cannot_create_tenants",
+    ],
+    "Microsoft Entra guest invites are not restricted to admins": [
+        "entra_policy_guest_invite_only_for_admin_roles",
+    ],
+    "Microsoft Entra guest user access restrictions are not configured": [
+        "entra_policy_guest_users_access_restrictions",
     ],
     "Azure Key Vaults do not use private endpoints": [
         "keyvault_access_only_through_private_endpoints",
@@ -384,8 +435,24 @@ EXISTING_FINDING_HEADLINES = {
     "AKS clusters use public node IPs": [
         "aks_clusters_created_with_private_nodes",
     ],
+    "Machine Learning workspaces allow public network access": [
+        "machine_learning_workspace_public_access_disabled",
+    ],
+    "Machine Learning workspaces do not use virtual network integration": [
+        "machine_learning_workspace_vnet_configured",
+    ],
     "Azure Activity Log Alerts missing for service health events": [
         "monitor_alert_service_health_exists",
+    ],
+    "Azure Activity Log Alerts missing for security solution changes": [
+        "monitor_alert_create_update_security_solution",
+        "monitor_alert_delete_security_solution",
+    ],
+    "Subscription activity logs are stored in accounts without customer-managed keys": [
+        "monitor_storage_account_with_activity_logs_cmk_encrypted",
+    ],
+    "Subscription activity logs are stored in accounts without private endpoints": [
+        "monitor_storage_account_with_activity_logs_is_private",
     ],
     "MySQL flexible servers do not have audit logging enabled": [
         "mysql_flexible_server_audit_log_enabled",
@@ -423,8 +490,48 @@ EXISTING_FINDING_HEADLINES = {
     "Redis caches do not have RDB backup enabled": [
         "redis_cache_rdb_backup_enabled",
     ],
+    "Azure AI Search services allow public network access": [
+        "aisearch_service_not_publicly_accessible",
+        "search_service_public_network_access_disabled",
+    ],
+    "Azure AI Search services do not use shared private links": [
+        "search_service_shared_private_links_enabled",
+    ],
+    "SignalR services allow public network access": [
+        "signalr_public_network_access_disabled",
+    ],
+    "SQL servers do not have Advanced Threat Protection enabled": [
+        "sqlserver_atp_enabled",
+        "sqlserver_microsoft_defender_enabled",
+    ],
+    "SQL servers do not have auditing enabled": [
+        "sqlserver_auditing_enabled",
+    ],
+    "SQL servers do not retain audit logs for at least 90 days": [
+        "sqlserver_auditing_retention_90_days",
+    ],
+    "SQL servers do not have an Azure AD administrator configured": [
+        "sqlserver_azuread_administrator_enabled",
+    ],
+    "SQL servers do not encrypt TDE with customer-managed keys": [
+        "sqlserver_tde_encrypted_with_cmk",
+    ],
+    "SQL databases do not have Transparent Data Encryption enabled": [
+        "sqlserver_tde_encryption_enabled",
+    ],
+    "SQL servers permit unrestricted inbound access": [
+        "sqlserver_unrestricted_inbound_access",
+    ],
+    "SQL servers do not have vulnerability assessment configured": [
+        "sqlserver_va_periodic_recurring_scans_enabled",
+        "sqlserver_va_scan_reports_configured",
+        "sqlserver_vulnerability_assessment_enabled",
+    ],
     "Storage accounts permit shared key access": [
         "storage_account_key_access_disabled",
+    ],
+    "Storage accounts do not enable file share soft delete": [
+        "storage_ensure_file_shares_soft_delete_is_enabled",
     ],
     "Storage accounts do not have blob versioning enabled": [
         "storage_blob_versioning_is_enabled",
@@ -455,6 +562,18 @@ EXISTING_FINDING_HEADLINES = {
     ],
     "Network Watcher flow logs do not retain data for more than 90 days": [
         "network_flow_log_more_than_90_days",
+    ],
+    "Virtual machines are not protected by backup": [
+        "vm_backup_enabled",
+    ],
+    "Virtual machines do not have JIT access enabled": [
+        "vm_jit_access_enabled",
+    ],
+    "Virtual machine attached disks are not encrypted with customer-managed keys": [
+        "vm_ensure_attached_disks_encrypted_with_cmk",
+    ],
+    "Unattached managed disks are not encrypted with customer-managed keys": [
+        "vm_ensure_unattached_disks_encrypted_with_cmk",
     ],
     "Linux virtual machines allow password-based SSH authentication": [
         "vm_linux_enforce_ssh_authentication",
@@ -2661,7 +2780,7 @@ def find_entra_named_locations_missing(named_locations):
 def find_entra_users_can_create_apps(auth_policy_records):
     evidence = []
     for policy in auth_policy_records:
-        allowed = first_value(policy, "defaultUserRolePermissions", "defaultUserRolePermissions.allowedToCreateApps")
+        allowed = first_value(policy, ("defaultUserRolePermissions", "allowedToCreateApps"))
         if allowed is not False:
             evidence.append({"id": policy.get("id"), "allowedToCreateApps": allowed})
     return result(
@@ -2675,7 +2794,7 @@ def find_entra_users_can_create_apps(auth_policy_records):
 def find_entra_users_can_create_tenants(auth_policy_records):
     evidence = []
     for policy in auth_policy_records:
-        allowed = first_value(policy, "defaultUserRolePermissions", "defaultUserRolePermissions.allowedToCreateTenants")
+        allowed = first_value(policy, ("defaultUserRolePermissions", "allowedToCreateTenants"))
         if allowed is not False:
             evidence.append({"id": policy.get("id"), "allowedToCreateTenants": allowed})
     return result(
@@ -4432,22 +4551,44 @@ def evaluate_findings(catalog):
         "Azure App Services permit TLS versions below 1.2": source_map["web_app_configs"],
         "Azure App Services do not disable FTP deployment": source_map["web_apps"],
         "Azure App Services are not registered with a managed identity": source_map["web_apps"],
+        "Azure App Services do not have authentication configured": source_map["web_app_auth_settings"],
+        "Azure App Services are missing Application Insights configuration": source_map["web_apps"] + source_map["web_app_appsettings"],
         "Function Apps are missing Application Insights configuration": source_map["function_apps"] + source_map["function_app_appsettings"],
+        "Function Apps do not have access keys configured": source_map["function_apps"] + source_map["function_app_keys"],
         "Function Apps do not disable FTP deployment": source_map["function_apps"],
         "Function Apps do not have a managed identity configured": source_map["function_apps"] + source_map["function_app_identities"],
         "Function Apps are publicly reachable": source_map["function_apps"] + source_map["function_app_access_restrictions"],
         "Function Apps are not integrated with a virtual network": source_map["function_apps"] + source_map["function_app_vnet_integrations"],
         "Azure Container Registries allow public network access": source_map["container_registries"],
+        "Azure Container Registries do not use private link": source_map["container_registries"] + source_map["acr_private_endpoint_connections"],
         "Cosmos DB accounts do not restrict network access": source_map["cosmosdb_accounts"],
         "Cosmos DB accounts do not use private endpoints": source_map["cosmosdb_accounts"],
+        "Cosmos DB accounts do not use Microsoft Entra ID and RBAC": source_map["cosmosdb_accounts"] + source_map["cosmosdb_sql_role_assignments"],
+        "Cognitive Services accounts permit local authentication": source_map["cognitive_services_accounts"],
+        "Databricks workspaces do not enable customer-managed key encryption": source_map["databricks_workspaces"],
+        "Databricks workspaces do not use VNet injection": source_map["databricks_workspaces"],
         "Event Grid Topics allow public network access": source_map["eventgrid_topics"],
+        "Event Grid Domains allow public network access": source_map["eventgrid_domains"],
         "IoT Device Provisioning Services allow public network access": source_map["iot_dps_instances"],
+        "Defender auto provisioning for Log Analytics agents is not enabled": source_map["defender_auto_provisioning_settings"],
+        "Microsoft Defender security contacts do not notify subscription owners": source_map["security_contacts"],
+        "Microsoft Entra security defaults are not enabled": source_map["graph_security_defaults_policy"],
+        "Microsoft Entra trusted named locations are not configured": source_map["graph_named_locations"],
+        "Microsoft Entra default users can create applications": source_map["graph_authorization_policy"],
+        "Microsoft Entra default users can create tenants": source_map["graph_authorization_policy"],
+        "Microsoft Entra guest invites are not restricted to admins": source_map["graph_authorization_policy"],
+        "Microsoft Entra guest user access restrictions are not configured": source_map["graph_authorization_policy"],
         "Azure Key Vaults do not use private endpoints": source_map["key_vaults"] + source_map["key_vault_private_endpoint_connections"],
         "Azure Key Vaults do not have diagnostic logging enabled": source_map["key_vaults"] + source_map["diagnostic_settings"],
         "AKS clusters do not have Azure Policy enabled": source_map["aks_clusters"],
         "AKS clusters do not have a network policy configured": source_map["aks_clusters"],
         "AKS clusters use public node IPs": source_map["aks_clusters"],
+        "Machine Learning workspaces allow public network access": source_map["machine_learning_workspaces"],
+        "Machine Learning workspaces do not use virtual network integration": source_map["machine_learning_workspaces"],
         "Azure Activity Log Alerts missing for service health events": source_map["activity_log_alerts"],
+        "Azure Activity Log Alerts missing for security solution changes": source_map["activity_log_alerts"],
+        "Subscription activity logs are stored in accounts without customer-managed keys": source_map["subscription_diagnostic_settings"] + source_map["storage_accounts"],
+        "Subscription activity logs are stored in accounts without private endpoints": source_map["subscription_diagnostic_settings"] + source_map["storage_accounts"],
         "MySQL flexible servers do not have audit logging enabled": source_map["mysql_servers"] + source_map["mysql_parameters"],
         "MySQL flexible servers do not enable geo-redundant backup": source_map["mysql_servers"],
         "MySQL flexible servers permit TLS versions below 1.2": source_map["mysql_servers"] + source_map["mysql_parameters"],
@@ -4460,7 +4601,19 @@ def evaluate_findings(catalog):
         "PostgreSQL flexible servers do not have a private DNS zone configured": dataset_paths(catalog, "az_postgres_flexible-server_list"),
         "PostgreSQL flexible servers do not use private network access": dataset_paths(catalog, "az_postgres_flexible-server_list"),
         "Redis caches do not have RDB backup enabled": source_map["redis_caches"],
+        "Azure AI Search services allow public network access": source_map["search_services"],
+        "Azure AI Search services do not use shared private links": source_map["search_services"] + source_map["search_shared_private_links"],
+        "SignalR services allow public network access": source_map["signalr_services"],
+        "SQL servers do not have Advanced Threat Protection enabled": source_map["sql_server_threat_policies"],
+        "SQL servers do not have auditing enabled": source_map["sql_server_audit_policies"],
+        "SQL servers do not retain audit logs for at least 90 days": source_map["sql_server_audit_policies"],
+        "SQL servers do not have an Azure AD administrator configured": source_map["sql_servers"] + source_map["sql_server_aad_admins"],
+        "SQL servers do not encrypt TDE with customer-managed keys": source_map["sql_server_tde_keys"],
+        "SQL databases do not have Transparent Data Encryption enabled": source_map["sql_database_tde"],
+        "SQL servers permit unrestricted inbound access": source_map["sql_server_firewall_rules"],
+        "SQL servers do not have vulnerability assessment configured": source_map["sql_server_vuln_assessments"],
         "Storage accounts permit shared key access": source_map["storage_accounts"],
+        "Storage accounts do not enable file share soft delete": source_map["storage_file_service_properties"],
         "Storage accounts do not have blob versioning enabled": source_map["storage_blob_service_properties"],
         "Storage accounts allow cross-tenant replication": source_map["storage_accounts"],
         "Storage accounts do not default to Microsoft Entra authorization": source_map["storage_accounts"],
@@ -4471,6 +4624,10 @@ def evaluate_findings(catalog):
         "Azure Bastion hosts are not deployed": source_map["bastion_hosts"] + source_map["subscriptions"],
         "Network Watcher flow logs are not captured to storage": source_map["flow_logs"],
         "Network Watcher flow logs do not retain data for more than 90 days": source_map["flow_logs"],
+        "Virtual machines are not protected by backup": source_map["vm_details"] + source_map["backup_items"],
+        "Virtual machines do not have JIT access enabled": source_map["vm_details"] + source_map["defender_jit_policies"],
+        "Virtual machine attached disks are not encrypted with customer-managed keys": source_map["vm_details"] + source_map["managed_disks"],
+        "Unattached managed disks are not encrypted with customer-managed keys": source_map["managed_disks"],
         "Linux virtual machines allow password-based SSH authentication": source_map["vm_details"],
         "Virtual machine scale sets are not associated with a load balancer": source_map["vm_scale_sets"],
     }
