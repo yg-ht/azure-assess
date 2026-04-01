@@ -293,22 +293,17 @@ def flat_rows(findings):
             "evidence_count": finding["evidence_count"],
             "source_files": finding.get("references", {}).get("source_files", []),
             "reference_links": [item.get("portal") for item in finding.get("references", {}).get("evidence_links", []) if item.get("portal")],
-            "viewer_links": [item.get("href") for item in finding.get("references", {}).get("evidence_links", []) if item.get("href")],
         }
         if finding["evidence"]:
             for index, evidence in enumerate(finding["evidence"], start=1):
                 row = dict(base)
                 row["evidence_index"] = index
                 row["evidence"] = evidence
-                row["evidence_links"] = [item.get("portal") for item in evidence.get("_references", []) if item.get("portal")]
-                row["evidence_viewer_links"] = [item.get("href") for item in evidence.get("_references", []) if item.get("href")]
                 rows.append(row)
         else:
             row = dict(base)
             row["evidence_index"] = None
             row["evidence"] = None
-            row["evidence_links"] = []
-            row["evidence_viewer_links"] = []
             rows.append(row)
     return rows
 
@@ -328,7 +323,7 @@ def result(title, severity, reason, evidence):
     return {
         "title": title,
         "severity": severity,
-        "status": "supported" if evidence else "not_found",
+        "status": "found" if evidence else "not_found",
         "reason": reason,
         "evidence_count": len(evidence),
         "evidence": evidence,
