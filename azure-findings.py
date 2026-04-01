@@ -338,7 +338,7 @@ def find_public_blob_access(storage_accounts):
             evidence.append(item)
     return result(
         "Azure blob container permits public access",
-        "High > partially resolved > medium",
+        "High",
         "Uses the storage account-level blob public access control collected by azure-collect.",
         evidence,
     )
@@ -1249,7 +1249,7 @@ def evaluate_findings(catalog):
         if storage_accounts
         else unsupported(
             "Azure blob container permits public access",
-            "High > partially resolved > medium",
+            "High",
             "No storage account dataset was found.",
         )
     )
