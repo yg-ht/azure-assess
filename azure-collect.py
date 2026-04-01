@@ -61,7 +61,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "App Service Environments", "cli_command": "az appservice ase list", "needs_pagination": False},
     {"name": "App Service Plans", "cli_command": "az appservice plan list", "needs_pagination": False},
     {"name": "Application Gateways", "cli_command": "az network application-gateway list", "needs_pagination": False},
-    {"name": "Application Insights", "cli_command": "az monitor app-insights component show", "needs_pagination": False},
+    {"name": "Application Insights", "cli_command": "az monitor app-insights component list", "needs_pagination": False},
     {"name": "Application Insights web tests", "cli_command": "az monitor app-insights web-test list", "needs_pagination": False},
     {"name": "Active Directory Applications", "cli_command": "az ad app list", "needs_pagination": True},
     {"name": "Active Directory Groups", "cli_command": "az ad group list", "needs_pagination": True},
@@ -163,8 +163,8 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "App Service Plan Details",
-        "cli_command": "az appservice plan show --name {name} --resource-group {resource_group}",
-        "required_params": {"name": "az_appservice_plan_list", "resource_group": "az_appservice_plan_list"}
+        "cli_command": "az appservice plan show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_appservice_plan_list", "resourceGroup": "az_appservice_plan_list"}
     },
     {
         "name": "App Service Plans in ASE",
@@ -173,8 +173,8 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Azure Metrics Namespaces",
-        "cli_command": "az monitor metrics list-namespaces --resource {resource_uri}",
-        "required_params": {"resource_uri": "az_resource_list"}
+        "cli_command": "az monitor metrics list-namespaces --resource {id}",
+        "required_params": {"id": "az_resource_list"}
     },
     {
         "name": "Azure Network Resources",
@@ -183,18 +183,18 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Azure Subnet Resources",
-        "cli_command": "az network vnet subnet list --resource-group {resource_group} --vnet-name {vnet_name}",
+        "cli_command": "az network vnet subnet list --resource-group {resourceGroup} --vnet-name {name}",
         "required_params": {"resourceGroup": "az_network_vnet_list", "name": "az_network_vnet_list"}
     },
     {
         "name": "Deployment (Resource Group Scope)",
-        "cli_command": "az deployment group list --resource-group {resource_group}",
-        "required_params": {"resource_group": "az_group_list"}
+        "cli_command": "az deployment group list --resource-group {name}",
+        "required_params": {"name": "az_group_list"}
     },
     {
         "name": "Kubernetes Environment Details",
-        "cli_command": "az appservice kube show --name {name} --resource-group {resource_group}",
-        "required_params": {"name": "az_appservice_kube_list", "resource_group": "az_appservice_kube_list"}
+        "cli_command": "az appservice kube show --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_appservice_kube_list", "resourceGroup": "az_appservice_kube_list"}
     },
     {
         "name": "VM Details",
@@ -213,13 +213,8 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "VM NIC details",
-        "cli_command": "az vm nic show --resource-group {resourceGroup} --vm-name {name} --nic {id}",
-        "required_params": {"resourceGroup": "az_vm_nic_list", "name": "az_vm_list", "id": "az_vm_nic_list"}
-    },
-    {
-        "name": "VNet Integrations",
-        "cli_command": "az appservice vnet-integration list --resource-group {resource_group} --plan {plan}",
-        "required_params": {"resource_group": "NOTIDENTIFIED", "plan": "NOTIDENTIFIED"}
+        "cli_command": "az vm nic show --resource-group {resourceGroup} --vm-name {vm_name} --nic {id}",
+        "required_params": {"resourceGroup": "az_vm_nic_list", "vm_name": "az_vm_nic_list", "id": "az_vm_nic_list"}
     },
     {
         "name": "Function App Config",
@@ -383,7 +378,7 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Key Vault Private Link Resources",
-        "cli_command": "az keyvault private-link-resource list --name {name} --resource-group {resourceGroup}",
+        "cli_command": "az keyvault private-link-resource list --vault-name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
     },
     {
@@ -441,8 +436,8 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Private Endpoint IP Configs",
-        "cli_command": "az network private-endpoint ip-config list --ids {id}",
-        "required_params": {"id": "az_network_private-endpoint_list"},
+        "cli_command": "az network private-endpoint ip-config list --endpoint-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_network_private-endpoint_list", "resourceGroup": "az_network_private-endpoint_list"},
     },
     {
         "name": "NIC Effective NSG",
@@ -782,6 +777,8 @@ def collect_data_with_params(param_endpoints):
     """
     global OUTPUT_DIR
 
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
     print("\n[*] Starting parameterized CLI commands...\n")
 
     for endpoint in tqdm(param_endpoints, desc="parameter collection tasks", unit="endpoint"):
@@ -794,13 +791,15 @@ def collect_data_with_params(param_endpoints):
             print(f"[DEBUG] Processing endpoint: {name}")
             print(f"[DEBUG] Required parameters and sources: {required_param_sources}")
 
-        param_values = {param: set() for param in required_param_sources}
+        source_records = {}
 
         for param, source in required_param_sources.items():
             filename_prefix = source.lower().replace(" ", "_").replace("(", "").replace(")", "")
 
             if DEBUG:
                 print(f"[DEBUG] Looking for param '{param}' in files prefixed with: {filename_prefix}")
+
+            source_records.setdefault(source, [])
 
             for file in os.listdir(OUTPUT_DIR):
                 if not file.startswith(filename_prefix) or not file.endswith(".json"):
@@ -817,17 +816,28 @@ def collect_data_with_params(param_endpoints):
                         continue
 
                     for item in data:
-                        value = item.get(param)
-                        if value and isinstance(value, str):
-                            param_values[param].add(value)
+                        if not isinstance(item, dict):
+                            continue
+                        source_records[source].append(item)
                 except Exception as e:
                     print(f"[!] Failed to parse {file}: {e}")
 
         if DEBUG:
-            print(f"[DEBUG] Collected parameter values: {param_values}")
+            print(f"[DEBUG] Collected source records: "
+                  f"{ {source: len(records) for source, records in source_records.items()} }")
 
         # Ensure all required parameters have values
-        if not all(param_values[k] for k in required_params):
+        missing_params = []
+        for param, source in required_param_sources.items():
+            values = []
+            for item in source_records.get(source, []):
+                value = item.get(param)
+                if value and isinstance(value, str):
+                    values.append(value)
+            if not values:
+                missing_params.append(param)
+
+        if missing_params:
             print(f"[~] Skipping {name}: Missing required parameters: {required_params}")
             continue
 
@@ -841,22 +851,40 @@ def collect_data_with_params(param_endpoints):
         zipped_groups = []
 
         for source, params_in_group in grouped_params.items():
-            lists = [list(param_values[p]) for p in params_in_group]
+            grouped_records = []
+            seen_group_records = set()
 
-            if all(len(l) == len(lists[0]) for l in lists):
-                # Zip aligned values from the same file
-                zipped = [dict(zip(params_in_group, values)) for values in zip(*lists)]
-                if DEBUG:
-                    print(f"[DEBUG] Zipped aligned group from {source}: {zipped}")
-                zipped_groups.append(zipped)
-            else:
-                # Fall back to Cartesian product for this group
-                product_group = []
-                for combo in product(*lists):
-                    product_group.append(dict(zip(params_in_group, combo)))
-                if DEBUG:
-                    print(f"[DEBUG] Product group from {source}: {product_group}")
-                zipped_groups.append(product_group)
+            for item in source_records.get(source, []):
+                grouped_record = {}
+                missing_value = False
+
+                for param in params_in_group:
+                    value = item.get(param)
+                    if not value or not isinstance(value, str):
+                        missing_value = True
+                        break
+                    grouped_record[param] = value
+
+                if missing_value:
+                    continue
+
+                dedupe_key = tuple((param, grouped_record[param]) for param in params_in_group)
+                if dedupe_key in seen_group_records:
+                    continue
+                seen_group_records.add(dedupe_key)
+                grouped_records.append(grouped_record)
+
+            if not grouped_records:
+                print(f"[~] Skipping {name}: Missing usable parameter records from source: {source}")
+                zipped_groups = []
+                break
+
+            if DEBUG:
+                print(f"[DEBUG] Aligned group from {source}: {grouped_records}")
+            zipped_groups.append(grouped_records)
+
+        if not zipped_groups:
+            continue
 
         # Cartesian product across the zipped groups
         param_combinations = []
@@ -891,9 +919,21 @@ def collect_data_with_params(param_endpoints):
                     print(f"[!] No data returned for: {name} with {param_set}")
                     continue
 
+                if name == "VM NIC IDs" and isinstance(data, list):
+                    for item in data:
+                        if not isinstance(item, dict):
+                            continue
+                        # Preserve the originating VM context so follow-up NIC detail
+                        # queries can be driven from a single source dataset.
+                        item.setdefault("vm_name", param_set.get("name"))
+                        item.setdefault("resourceGroup", param_set.get("resourceGroup"))
+
                 if isinstance(data, list):
                     all_results.extend(data)
                 else:
+                    if name == "VM NIC IDs" and isinstance(data, dict):
+                        data.setdefault("vm_name", param_set.get("name"))
+                        data.setdefault("resourceGroup", param_set.get("resourceGroup"))
                     all_results.append(data)
 
             except Exception as e:
