@@ -905,7 +905,6 @@ def flat_rows(findings):
     for finding in findings:
         row = {
             "title": finding["title"],
-            "headline_ids": finding.get("headline_ids", []),
             "severity": finding["severity"],
             "status": finding["status"],
             "reason": finding["reason"],
@@ -945,21 +944,17 @@ def annotate_requested_headlines(findings):
     covered = set()
     for finding in findings:
         headline_ids = EXISTING_FINDING_HEADLINES.get(finding["title"], [])
-        finding["headline_ids"] = headline_ids
         covered.update(headline_ids)
 
     for headline in REQUESTED_HEADLINES:
         if headline in covered:
             continue
         findings.append(
-            {
-                **unsupported(
-                    headline,
-                    "Unknown",
-                    "azure-findings does not currently implement this requested headline with the datasets collected today.",
-                ),
-                "headline_ids": [headline],
-            }
+            unsupported(
+                headline,
+                "Unknown",
+                "azure-findings does not currently implement this requested headline with the datasets collected today.",
+            )
         )
 
     return findings
