@@ -33,6 +33,7 @@
 # ---------------------------------------------------------------------------
 
 import argparse
+import importlib.util
 import json
 import re
 from collections import OrderedDict
@@ -52,6 +53,9 @@ FINDING_STATUS_OPTIONS = OrderedDict(
         ("all", {"label": "All Findings", "statuses": None}),
     ]
 )
+
+TIMESTAMP_SUFFIX_PATTERN = re.compile(r"_\d{8}-\d{6}$")
+
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Azure Audit Data Presentation Tool")
@@ -460,6 +464,62 @@ def load_json_file(filepath):
         return None
 
 
+def collect_filename_prefix(command, parameterized=False):
+    prefix = command.lower().replace("(", "").replace(")", "").replace(" ", "_")
+    if parameterized:
+        prefix = prefix.replace("{", "").replace("}", "")
+    return prefix
+
+
+def load_collect_endpoint_name_map():
+    endpoint_map = {}
+    collect_script = Path(__file__).with_name("azure-collect.py")
+    try:
+        spec = importlib.util.spec_from_file_location("azure_collect_module", collect_script)
+        if spec is None or spec.loader is None:
+            return endpoint_map
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        print(f"Warning: could not load dataset mappings from {collect_script}: {exc}")
+        return endpoint_map
+
+    for endpoint in getattr(module, "AZURE_CLI_ENDPOINTS", []):
+        endpoint_map[collect_filename_prefix(endpoint["cli_command"])] = endpoint["name"]
+
+    for endpoint in getattr(module, "AZURE_CLI_ENDPOINTS_PARAMS", []):
+        endpoint_map[collect_filename_prefix(endpoint["cli_command"], parameterized=True)] = endpoint["name"]
+
+    endpoint_map["role_enriched"] = "Role Assignments Enriched"
+    return endpoint_map
+
+
+DATASET_NAME_MAP = load_collect_endpoint_name_map()
+
+
+def display_name_for_dataset(filename):
+    stem = Path(filename).stem
+    normalized_stem = TIMESTAMP_SUFFIX_PATTERN.sub("", stem)
+    mapped_name = DATASET_NAME_MAP.get(normalized_stem)
+    if mapped_name:
+        return mapped_name
+    return normalized_stem.replace("_", " ").strip().title()
+
+
+def build_tab(path, data):
+    if isinstance(data, list):
+        record_count = len(data)
+    elif isinstance(data, dict):
+        record_count = len(data.keys())
+    else:
+        record_count = 0
+    return {
+        "name": display_name_for_dataset(path.name),
+        "filename": path.name,
+        "record_count": record_count,
+    }
+
+
 def standard_data_files():
     return [path for path in sorted(DATA_DIR.glob("*.json")) if path.name not in FINDINGS_FILENAMES]
 
@@ -650,16 +710,7 @@ def dashboard():
         data = load_json_file(filepath)
         if data is None:
             continue
-        record_count = 0
-        if isinstance(data, list):
-            record_count = len(data)
-        elif isinstance(data, dict):
-            record_count = len(data.keys())
-        tabs.append({
-            "name": filepath.stem,
-            "filename": filepath.name,
-            "record_count": record_count
-        })
+        tabs.append(build_tab(filepath, data))
     return render_template_string(HTML_TEMPLATE, tabs=tabs, dashboard=True)
 
 
@@ -689,7 +740,7 @@ def findings():
 
     table = generate_html_table(filtered_data)
     tabs = [{
-        "name": Path(FINDINGS_FLAT_FILENAME).stem,
+        "name": "Findings",
         "filename": FINDINGS_FLAT_FILENAME,
         "record_count": len(data) if isinstance(data, list) else len(data.keys()) if isinstance(data, dict) else 1,
     }]
@@ -733,16 +784,7 @@ def query(filename):
         file_data = load_json_file(path)
         if file_data is None:
             continue
-        record_count = 0
-        if isinstance(file_data, list):
-            record_count = len(file_data)
-        elif isinstance(file_data, dict):
-            record_count = len(file_data.keys())
-        tabs.append({
-            "name": path.stem,
-            "filename": path.name,
-            "record_count": record_count
-        })
+        tabs.append(build_tab(path, file_data))
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
