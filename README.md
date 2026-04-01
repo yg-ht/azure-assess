@@ -95,7 +95,7 @@ pipenv run python azure-collect.py --auth-method managed-identity --subscription
 ### `azure-findings.py`
 
 Purpose:
-Analyse the JSON produced by `azure-collect.py` and generate structured findings describing confirmed issues, checks that did not find evidence, and checks that are not yet implemented or evaluated.
+Analyse the JSON produced by `azure-collect.py`, print a status summary for all implemented checks, and generate SARIF output for the confirmed findings.
 
 Typical usage:
 
@@ -106,13 +106,13 @@ pipenv run python azure-findings.py -i ~/azure-collect-data
 Parameters:
 
 - `-i`, `--input-dir`: directory containing JSON produced by `azure-collect.py`. Default: `azure-collect`
-- `-o`, `--output-file`: path for the structured findings JSON output. Default: `<input-dir>/azure-findings.json`
+- `-o`, `--output-file`: path for the SARIF 2.1.0 findings output. Default: `<input-dir>/azure-findings.json`
 - `--no-save`: do not write findings JSON files; print summary output only
 - `--flat-output-file`: path for the flattened findings output used by `azure-present.py`. Default: `<input-dir>/azure-findings-flat.json`
 
 Outputs:
 
-- `azure-findings.json`: structured findings output
+- `azure-findings.json`: SARIF 2.1.0 output containing the full set of confirmed findings
 - `azure-findings-flat.json`: flattened findings rows for easier dashboard display
 
 ### `azure-present.py`

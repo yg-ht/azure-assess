@@ -11,6 +11,8 @@ from urllib.parse import quote
 
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
+NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
 
 REQUESTED_HEADLINES = [
     "aisearch_service_not_publicly_accessible",
@@ -598,7 +600,7 @@ def parse_arguments():
         "--output-file",
         type=str,
         default=None,
-        help="Path to save the findings as JSON (defaults to <input-dir>/azure-findings.json)",
+        help="Path to save confirmed findings as SARIF 2.1.0 JSON (defaults to <input-dir>/azure-findings.json)",
     )
     parser.add_argument(
         "--no-save",
@@ -916,6 +918,149 @@ def flat_rows(findings):
         }
         rows.append(row)
     return rows
+
+
+def finding_headline_ids(finding):
+    return EXISTING_FINDING_HEADLINES.get(finding["title"], [])
+
+
+def sarif_rule_id(finding):
+    headline_ids = finding_headline_ids(finding)
+    if headline_ids:
+        return headline_ids[0]
+    normalized = NON_ALNUM_RE.sub("_", finding["title"].strip().lower()).strip("_")
+    return normalized or "azure_finding"
+
+
+def sarif_level(severity):
+    return {
+        "critical": "error",
+        "high": "error",
+        "medium": "warning",
+        "low": "note",
+        "unknown": "warning",
+    }.get(normalize_text(severity), "warning")
+
+
+def sarif_rule_descriptor(finding):
+    descriptor = {
+        "id": sarif_rule_id(finding),
+        "name": finding["title"],
+        "shortDescription": {"text": finding["title"]},
+        "fullDescription": {"text": finding["reason"]},
+        "defaultConfiguration": {"level": sarif_level(finding["severity"])},
+        "properties": {
+            "severity": finding["severity"],
+            "headline_ids": finding_headline_ids(finding),
+        },
+    }
+    references = finding.get("references", {}).get("source_files", [])
+    if references:
+        descriptor["help"] = {
+            "text": f"Derived from {len(references)} Azure dataset file(s) collected by azure-collect."
+        }
+    return descriptor
+
+
+def sarif_result_message(finding):
+    return (
+        f"{finding['title']} confirmed with {finding['evidence_count']} evidence item(s). "
+        f"{finding['reason']}"
+    )
+
+
+def sarif_locations(finding):
+    locations = []
+    seen = set()
+    for evidence in finding.get("evidence", []):
+        for reference in evidence.get("_references", []):
+            if reference.get("type") not in {"azure_resource", "azure_subscription"}:
+                continue
+            ref_id = reference.get("id")
+            if not ref_id or ref_id in seen:
+                continue
+            seen.add(ref_id)
+            name = evidence.get("name") or evidence.get("resourceGroup") or ref_id
+            locations.append(
+                {
+                    "logicalLocations": [
+                        {
+                            "fullyQualifiedName": ref_id,
+                            "name": name,
+                            "kind": reference["type"],
+                        }
+                    ],
+                    "message": {"text": f"Azure scope: {ref_id}"},
+                }
+            )
+    return locations
+
+
+def sarif_result(finding):
+    result = {
+        "ruleId": sarif_rule_id(finding),
+        "level": sarif_level(finding["severity"]),
+        "kind": "fail",
+        "message": {"text": sarif_result_message(finding)},
+        "properties": {
+            "title": finding["title"],
+            "severity": finding["severity"],
+            "status": finding["status"],
+            "reason": finding["reason"],
+            "evidence_count": finding["evidence_count"],
+            "headline_ids": finding_headline_ids(finding),
+            "references": finding.get("references", {}),
+            "evidence": finding.get("evidence", []),
+        },
+    }
+    locations = sarif_locations(finding)
+    if locations:
+        result["locations"] = locations
+    return result
+
+
+def sarif_output(input_dir, catalog, findings):
+    confirmed = [finding for finding in findings if finding["status"] == "confirmed"]
+    unique_rules = {}
+    for finding in confirmed:
+        unique_rules.setdefault(sarif_rule_id(finding), sarif_rule_descriptor(finding))
+    return {
+        "$schema": SARIF_SCHEMA_URI,
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "azure-findings",
+                        "informationUri": "https://github.com/yg-ht/azure-assess",
+                        "rules": list(unique_rules.values()),
+                    }
+                },
+                "automationDetails": {
+                    "id": str(Path(input_dir)),
+                    "description": {
+                        "text": "Confirmed Azure findings generated from azure-collect datasets."
+                    },
+                },
+                "invocations": [
+                    {
+                        "executionSuccessful": True,
+                        "properties": {
+                            "input_dir": str(Path(input_dir)),
+                            "files_loaded": sorted(catalog.keys()),
+                            "confirmed_findings": len(confirmed),
+                        },
+                    }
+                ],
+                "results": [sarif_result(finding) for finding in confirmed],
+                "properties": {
+                    "input_dir": str(Path(input_dir)),
+                    "files_loaded": sorted(catalog.keys()),
+                    "result_origin": "azure-findings confirmed results only",
+                },
+            }
+        ],
+    }
 
 
 def unsupported(title, severity, reason):
@@ -4648,11 +4793,7 @@ def main():
     args = parse_arguments()
     catalog = load_catalog(args.input_dir)
     findings = evaluate_findings(catalog)
-    output = {
-        "input_dir": str(Path(args.input_dir)),
-        "files_loaded": sorted(catalog.keys()),
-        "findings": findings,
-    }
+    output = sarif_output(args.input_dir, catalog, findings)
     flat_output = {
         "input_dir": str(Path(args.input_dir)),
         "files_loaded": sorted(catalog.keys()),
