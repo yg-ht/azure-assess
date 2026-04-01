@@ -272,7 +272,12 @@ def attach_references(finding, source_files):
     deduped_links = []
     seen = set()
     for item in references["evidence_links"]:
-        key = (item.get("type"), item.get("id"), item.get("portal"))
+        key = (
+            item.get("type"),
+            item.get("id"),
+            item.get("portal"),
+            item.get("href"),
+        )
         if key in seen:
             continue
         seen.add(key)
