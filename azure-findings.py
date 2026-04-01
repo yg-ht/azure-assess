@@ -26,8 +26,8 @@ def parse_arguments():
         "-o",
         "--output-file",
         type=str,
-        default="azure-findings.json",
-        help="Path to save the findings as JSON",
+        default=None,
+        help="Path to save the findings as JSON (defaults to <input-dir>/azure-findings.json)",
     )
     parser.add_argument(
         "--no-save",
@@ -37,10 +37,16 @@ def parse_arguments():
     parser.add_argument(
         "--flat-output-file",
         type=str,
-        default="azure-findings-flat.json",
-        help="Path to save a flat list of findings for easier viewing in azure-present",
+        default=None,
+        help="Path to save a flat list of findings for easier viewing in azure-present (defaults to <input-dir>/azure-findings-flat.json)",
     )
     return parser.parse_args()
+
+
+def resolve_output_path(input_dir, output_file, default_filename):
+    if output_file:
+        return Path(output_file)
+    return Path(input_dir) / default_filename
 
 
 def strip_timestamp(path):
@@ -1692,10 +1698,10 @@ def main():
     print_summary(findings)
 
     if not args.no_save:
-        output_path = Path(args.output_file)
+        output_path = resolve_output_path(args.input_dir, args.output_file, "azure-findings.json")
         with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(output, handle, indent=2)
-        flat_output_path = Path(args.flat_output_file)
+        flat_output_path = resolve_output_path(args.input_dir, args.flat_output_file, "azure-findings-flat.json")
         with open(flat_output_path, "w", encoding="utf-8") as handle:
             json.dump(flat_output, handle, indent=2)
         print(f"\nSaved findings JSON to: {output_path}")

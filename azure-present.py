@@ -44,6 +44,14 @@ app = Flask(__name__)
 FINDINGS_FLAT_FILENAME = "azure-findings-flat.json"
 FINDINGS_STRUCTURED_FILENAME = "azure-findings.json"
 FINDINGS_FILENAMES = {FINDINGS_FLAT_FILENAME, FINDINGS_STRUCTURED_FILENAME}
+FINDING_STATUS_OPTIONS = OrderedDict(
+    [
+        ("confirmed", {"label": "Confirmed Findings", "statuses": {"supported"}}),
+        ("not_found", {"label": "Not Found Items", "statuses": {"not_found"}}),
+        ("not_evaluated", {"label": "Not Evaluated Items", "statuses": {"not_evaluated"}}),
+        ("all", {"label": "All Findings", "statuses": None}),
+    ]
+)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Azure Audit Data Presentation Tool")
@@ -221,8 +229,20 @@ HTML_TEMPLATE = """
               {% endfor %}
             </select>
           </div>
+          {% if findings_status_options %}
+          <div class="mt-3 mb-3">
+            <label for="findingsStatusSelect" class="form-label">Findings Status:</label>
+            <select id="findingsStatusSelect" name="status" class="form-select">
+              {% for option in findings_status_options %}
+              <option value="{{ option.value }}" {% if findings_status == option.value %}selected{% endif %}>
+                {{ option.label }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endif %}
           <!-- Search Form (using GET so the search term is preserved) -->
-          <form method="get" action="/query/{{ current_tab }}">
+          <form method="get" action="{{ search_action }}">
             <div class="mb-3 mt-3">
               <label for="query" class="form-label">Filter Data (search within JSON):</label>
               <input type="text"
@@ -232,8 +252,11 @@ HTML_TEMPLATE = """
                      placeholder="Enter search term"
                      value="{{ request.args.get('query', '') }}">
             </div>
+            {% if findings_status_options %}
+            <input type="hidden" id="findingsStatusInput" name="status" value="{{ findings_status }}">
+            {% endif %}
             <button type="submit" class="btn btn-primary">Search</button>
-            <a href="/query/{{ current_tab }}" class="btn btn-secondary">Reset Search</a>
+            <a href="{{ reset_action }}" class="btn btn-secondary">Reset Search</a>
           </form>
         </div>
         <!-- Scrollable Table Container fills remaining height -->
@@ -272,6 +295,22 @@ HTML_TEMPLATE = """
         window.location.href = "/query/" + selected;
       });
     </script>
+
+    {% if findings_status_options %}
+    <script>
+      document.getElementById('findingsStatusSelect').addEventListener('change', function() {
+        const params = new URLSearchParams(window.location.search);
+        params.set('status', this.value);
+        const queryInput = document.getElementById('query');
+        if (queryInput && queryInput.value) {
+          params.set('query', queryInput.value);
+        } else {
+          params.delete('query');
+        }
+        window.location.href = "{{ search_action }}" + "?" + params.toString();
+      });
+    </script>
+    {% endif %}
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
@@ -423,6 +462,24 @@ def standard_data_files():
 
 def findings_flat_path():
     return DATA_DIR / FINDINGS_FLAT_FILENAME
+
+
+def normalize_findings_status_filter(value):
+    if not value:
+        return "confirmed"
+    normalized = str(value).strip().lower().replace(" ", "_")
+    if normalized in {"supported", "confirmed_findings"}:
+        normalized = "confirmed"
+    if normalized not in FINDING_STATUS_OPTIONS:
+        return "confirmed"
+    return normalized
+
+
+def filter_findings_by_status(data, status_filter):
+    allowed_statuses = FINDING_STATUS_OPTIONS[status_filter]["statuses"]
+    if allowed_statuses is None or not isinstance(data, list):
+        return data
+    return [item for item in data if item.get("status") in allowed_statuses]
 
 
 def contains_nested_list_of_dicts(obj):
@@ -603,6 +660,7 @@ def dashboard():
 @app.route('/findings', methods=['GET', 'POST'])
 def findings():
     query_param = (request.form.get('query') or request.args.get('query') or "").lower()
+    status_filter = normalize_findings_status_filter(request.form.get('status') or request.args.get('status'))
     filepath = findings_flat_path()
     data = load_json_file(filepath)
     if data is None:
@@ -610,6 +668,8 @@ def findings():
 
     if isinstance(data, dict) and "rows" in data:
         data = data["rows"]
+
+    data = filter_findings_by_status(data, status_filter)
 
     if query_param:
         if isinstance(data, list):
@@ -632,6 +692,13 @@ def findings():
         tabs=tabs,
         table=table,
         current_tab=FINDINGS_FLAT_FILENAME,
+        findings_status=status_filter,
+        findings_status_options=[
+            {"value": value, "label": meta["label"]}
+            for value, meta in FINDING_STATUS_OPTIONS.items()
+        ],
+        search_action="/findings",
+        reset_action=f"/findings?status={status_filter}",
         dashboard=False,
     )
 
@@ -669,7 +736,17 @@ def query(filename):
             "filename": path.name,
             "record_count": record_count
         })
-    return render_template_string(HTML_TEMPLATE, tabs=tabs, table=table, current_tab=filename, dashboard=False)
+    return render_template_string(
+        HTML_TEMPLATE,
+        tabs=tabs,
+        table=table,
+        current_tab=filename,
+        findings_status=None,
+        findings_status_options=None,
+        search_action=f"/query/{filename}",
+        reset_action=f"/query/{filename}",
+        dashboard=False,
+    )
 
 if __name__ == '__main__':
     args = parse_arguments()
