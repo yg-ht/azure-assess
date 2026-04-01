@@ -295,11 +295,11 @@ def flat_rows(findings):
             "severity": finding["severity"],
             "status": finding["status"],
             "reason": finding["reason"],
-            "evidence_count": finding["evidence_count"],
-            "source_files": finding.get("references", {}).get("source_files", []),
-            "reference_links": [item.get("portal") for item in finding.get("references", {}).get("evidence_links", []) if item.get("portal")],
-            "viewer_links": [item.get("href") for item in finding.get("references", {}).get("evidence_links", []) if item.get("href")],
+            "count": finding["evidence_count"],
             "evidence": finding["evidence"] if finding["evidence"] else [],
+            "viewer_links": [item.get("href") for item in finding.get("references", {}).get("evidence_links", []) if item.get("href")],
+            "source_file": finding.get("references", {}).get("source_files", []),
+            "azure_portal_links": [item.get("portal") for item in finding.get("references", {}).get("evidence_links", []) if item.get("portal")],
         }
         rows.append(row)
     return rows
