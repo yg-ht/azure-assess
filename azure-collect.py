@@ -86,6 +86,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Defender Settings", "cli_command": "az security pricing list", "needs_pagination": False},
     {"name": "Defender Auto Provisioning Settings", "cli_command": "az security auto-provisioning-setting list", "needs_pagination": False},
     {"name": "Defender JIT Policies", "cli_command": "az security jit-policy list", "needs_pagination": False},
+    {"name": "Defender General Settings", "cli_command": "az security setting list", "needs_pagination": False},
     {"name": "Defender Workspace Settings", "cli_command": "az security workspace-setting list", "needs_pagination": False},
     {"name": "DNS Zones", "cli_command": "az network dns zone list", "needs_pagination": False},
     {"name": "Event Grid Domains", "cli_command": "az eventgrid domain list", "needs_pagination": False},
@@ -677,6 +678,16 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "required_params": {"serverName": "az_sql_db_list", "name": "az_sql_db_list", "resourceGroup": "az_sql_db_list"},
     },
     {
+        "name": "SQL Database Auditing Policy",
+        "cli_command": "az sql db audit-policy show --server {serverName} --name {name} --resource-group {resourceGroup}",
+        "required_params": {"serverName": "az_sql_db_list", "name": "az_sql_db_list", "resourceGroup": "az_sql_db_list"},
+    },
+    {
+        "name": "SQL Database Threat Policy",
+        "cli_command": "az sql db threat-policy show --server {serverName} --name {name} --resource-group {resourceGroup}",
+        "required_params": {"serverName": "az_sql_db_list", "name": "az_sql_db_list", "resourceGroup": "az_sql_db_list"},
+    },
+    {
         "name": "SQL Server Vulnerability Assessment",
         "cli_command": "az sql server vuln-assessment show --server {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
@@ -695,6 +706,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Managed Disk Details",
         "cli_command": "az disk show --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_disk_list", "resourceGroup": "az_disk_list"},
+    },
+    {
+        "name": "VM Extensions",
+        "cli_command": "az vm extension list --vm-name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_vm_list", "resourceGroup": "az_vm_list"},
     },
     {
         "name": "PostgreSQL Firewall Rules",

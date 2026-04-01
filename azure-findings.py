@@ -6,12 +6,14 @@
 import argparse
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+VERSION_RE = re.compile(r"(\d+)(?:\.(\d+))?")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
 
 REQUESTED_HEADLINES = [
@@ -583,6 +585,129 @@ EXISTING_FINDING_HEADLINES = {
     "Virtual machine scale sets are not associated with a load balancer": [
         "vm_scaleset_associated_with_load_balancer",
     ],
+    "Azure AD Users Can Create Security Groups": [
+        "entra_policy_default_users_cannot_create_security_groups",
+    ],
+    "App Service Authentication Not Enabled": [
+        "app_ensure_auth_is_set_up",
+    ],
+    "App Service Client Certificates Not Required": [
+        "app_client_certificates_on",
+    ],
+    "App Service FTP Deployment Enabled": [
+        "app_ftp_deployment_disabled",
+    ],
+    "App Service HTTP/2 Not Enabled": [
+        "app_ensure_using_http20",
+    ],
+    "App Service Allows Unencrypted HTTP": [
+        "app_ensure_http_is_redirected_to_https",
+    ],
+    "App Service Managed Identity Not Enabled": [
+        "app_register_with_identity",
+    ],
+    "App Service Running Outdated Java Version": [
+        "app_ensure_java_version_is_latest",
+    ],
+    "App Service Running Outdated PHP Version": [
+        "app_ensure_php_version_is_latest",
+    ],
+    "App Service Running Outdated Python Version": [
+        "app_ensure_python_version_is_latest",
+    ],
+    "App Service Supports TLS 1.0 or 1.1": [
+        "app_minimum_tls_version_12",
+    ],
+    "Key Vault Recovery Protection Not Enabled": [
+        "keyvault_purge_protection_enabled",
+    ],
+    "Key Vault RBAC Authorisation Not Enabled": [
+        "keyvault_rbac_enabled",
+    ],
+    "Key Vault Logging Not Enabled": [
+        "keyvault_logging_enabled",
+    ],
+    "Diagnostic Settings Not Configured": [
+        "monitor_diagnostic_settings_exists",
+    ],
+    "Users with Permission to Administer Resource Locks Assigned": [
+        "iam_custom_role_has_permissions_to_administer_resource_locks",
+    ],
+    "MySQL Server SSL Enforcement Not Enabled": [
+        "mysql_flexible_server_ssl_connection_enabled",
+    ],
+    "Network Watcher Not Enabled": [
+        "network_watcher_enabled",
+    ],
+    "Network Watcher Not Provisioned": [
+        "network_watcher_enabled",
+    ],
+    "PostgreSQL Server Checkpoint Logging Not Enabled": [
+        "postgresql_flexible_server_log_checkpoints_on",
+    ],
+    "PostgreSQL Server Connection Logging Not Enabled": [
+        "postgresql_flexible_server_log_connections_on",
+    ],
+    "PostgreSQL Server Disconnection Logging Not Enabled": [
+        "postgresql_flexible_server_log_disconnections_on",
+    ],
+    "PostgreSQL Server Log Retention Below 4 Days": [
+        "postgresql_flexible_server_log_retention_days_greater_3",
+    ],
+    "PostgreSQL Server SSL Enforcement Not Enabled": [
+        "postgresql_flexible_server_enforce_ssl_enabled",
+    ],
+    "SQL Server Allows Access from Any IP": [
+        "sqlserver_unrestricted_inbound_access",
+    ],
+    "SQL Database Transparent Data Encryption Not Enabled": [
+        "sqlserver_tde_encryption_enabled",
+    ],
+    "SQL Server TDE Not Using Customer Managed Keys": [
+        "sqlserver_tde_encrypted_with_cmk",
+    ],
+    "SQL Server Auditing Retention Period Too Low": [
+        "sqlserver_auditing_retention_90_days",
+    ],
+    "SQL Server Azure AD Administrator Not Configured": [
+        "sqlserver_azuread_administrator_enabled",
+    ],
+    "SQL Server Auditing Not Enabled": [
+        "sqlserver_auditing_enabled",
+    ],
+    "SQL Server Threat Detection Not Enabled": [
+        "sqlserver_atp_enabled",
+    ],
+    "SQL Server Vulnerability Assessment Not Enabled": [
+        "sqlserver_vulnerability_assessment_enabled",
+    ],
+    "SQL Server Vulnerability Assessment Recurring Scans Not Enabled": [
+        "sqlserver_va_periodic_recurring_scans_enabled",
+    ],
+    "Storage Account Allows Unencrypted Traffic": [
+        "storage_secure_transfer_required_is_enabled",
+    ],
+    "Storage Account Not Encrypted with Customer Managed Keys": [
+        "storage_ensure_encryption_with_customer_managed_keys",
+    ],
+    "Blob Containers Allow Public Access": [
+        "storage_container_public_access_disabled",
+    ],
+    "Storage Account Allows Public Network Access": [
+        "storage_default_network_access_rule_denied",
+    ],
+    "Storage Account Soft Delete Not Enabled": [
+        "storage_ensure_soft_delete_is_enabled",
+    ],
+    "Storage Account Permits Trusted Microsoft Services Bypass": [
+        "storage_ensure_azure_services_are_trusted_to_access_is_enabled",
+    ],
+    "VM OS and Data Disks Not Encrypted with Customer Managed Keys": [
+        "vm_ensure_attached_disks_encrypted_with_cmk",
+    ],
+    "Unattached Managed Disks Not Encrypted with Customer Managed Keys": [
+        "vm_ensure_unattached_disks_encrypted_with_cmk",
+    ],
 }
 
 
@@ -725,6 +850,86 @@ def normalize_text(value):
     if value is None:
         return ""
     return str(value).strip().lower()
+
+
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    text = str(value).strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def extract_version_tuple(value):
+    if not value:
+        return None
+    match = VERSION_RE.search(str(value))
+    if not match:
+        return None
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    return major, minor
+
+
+def version_is_older(value, minimum):
+    version = extract_version_tuple(value)
+    if not version:
+        return True
+    return version < minimum
+
+
+def app_stack_value(config, stack_name):
+    candidates = [
+        first_value(config, "linuxFxVersion", ("properties", "linuxFxVersion")),
+        first_value(config, "windowsFxVersion", ("properties", "windowsFxVersion")),
+        first_value(config, "javaVersion", ("properties", "javaVersion")),
+        first_value(config, "phpVersion", ("properties", "phpVersion")),
+        first_value(config, "pythonVersion", ("properties", "pythonVersion")),
+        first_value(config, "netFrameworkVersion", ("properties", "netFrameworkVersion")),
+    ]
+    wanted = normalize_text(stack_name)
+    for candidate in candidates:
+        text = str(candidate or "")
+        lowered = text.lower()
+        if not lowered:
+            continue
+        if wanted == "dotnet" and ("dotnet" in lowered or lowered.startswith("v")):
+            return candidate
+        if wanted in lowered:
+            return candidate
+    return {
+        "java": first_value(config, "javaVersion", ("properties", "javaVersion")),
+        "php": first_value(config, "phpVersion", ("properties", "phpVersion")),
+        "python": first_value(config, "pythonVersion", ("properties", "pythonVersion")),
+        "dotnet": first_value(config, "netFrameworkVersion", ("properties", "netFrameworkVersion")),
+    }.get(wanted)
+
+
+def alert_policy_has_email_notifications(policy):
+    admins_enabled = first_value(policy, "emailAccountAdmins", ("properties", "emailAccountAdmins"))
+    recipients = first_value(policy, "emailAddresses", ("properties", "emailAddresses"))
+    if admins_enabled is True:
+        return True
+    if isinstance(recipients, list) and recipients:
+        return True
+    if isinstance(recipients, str) and recipients.strip():
+        return True
+    return False
+
+
+def alert_policy_disabled_alerts(policy):
+    disabled = first_value(policy, "disabledAlerts", ("properties", "disabledAlerts"))
+    if not disabled:
+        return []
+    if isinstance(disabled, list):
+        return disabled
+    if isinstance(disabled, str):
+        return [item.strip() for item in disabled.split(",") if item.strip()]
+    return [disabled]
 
 
 def resource_brief(resource):
@@ -1388,26 +1593,35 @@ def find_key_vault_not_recoverable(key_vaults):
     )
 
 
-def find_resource_lock_admin_role_gap(role_definitions):
-    evidence = []
+def find_resource_lock_admin_role_gap(role_definitions, role_assignments):
+    role_map = {}
     for role in role_definitions:
         actions = {action.lower() for action in flatten_permission_actions(role)}
         if "microsoft.authorization/locks/*" in actions or "microsoft.authorization/*" in actions or "*" in actions:
-            evidence.append(
-                {
-                    "id": role.get("id"),
-                    "name": role.get("roleName") or role.get("name"),
-                    "roleType": role.get("roleType"),
-                }
-            )
-    return {
-        "title": "Azure subscription does not have a role for administration of resource locks",
-        "severity": "Low",
-        "status": "confirmed" if evidence else "not_found",
-        "reason": "Looks for any role definition that appears able to manage resource locks.",
-        "evidence_count": len(evidence),
-        "evidence": evidence,
-    }
+            role_map[str(role.get("id") or "").lower()] = role
+
+    evidence = []
+    for assignment in role_assignments:
+        role = role_map.get(str(assignment.get("roleDefinitionId") or "").lower())
+        if not role:
+            continue
+        evidence.append(
+            {
+                "scope": assignment.get("scope"),
+                "principalId": assignment.get("principalId"),
+                "principalType": assignment.get("principalType"),
+                "resolvedPrincipal": assignment.get("resolvedPrincipal"),
+                "roleDefinitionId": role.get("id"),
+                "roleDefinitionName": role.get("roleName") or role.get("name"),
+            }
+        )
+
+    return result(
+        "Users with Permission to Administer Resource Locks Assigned",
+        "Low",
+        "Flags role assignments where the resolved role definition grants Microsoft.Authorization/locks permissions.",
+        evidence,
+    )
 
 
 def find_app_service_deprecated_http(web_app_configs):
@@ -3262,14 +3476,19 @@ def find_storage_keys_not_rotated(storage_accounts, storage_keys):
     for account in storage_accounts:
         stale = []
         for key in keys_by_account.get(record_key(account), []):
-            creation_time = normalize_text(key.get("creationTime"))
-            stale.append({"keyName": key.get("keyName") or key.get("keyName"), "creationTime": creation_time})
+            created_at = parse_iso_datetime(key.get("creationTime"))
+            if not created_at:
+                stale.append({"keyName": key.get("keyName"), "creationTime": key.get("creationTime"), "ageDays": None})
+                continue
+            age_days = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).days
+            if age_days > 90:
+                stale.append({"keyName": key.get("keyName"), "creationTime": key.get("creationTime"), "ageDays": age_days})
         if stale:
             evidence.append(compact_dict(account, keys=stale))
     return result(
-        "Storage account keys may not be rotated within 90 days",
+        "Storage Account Access Keys Not Rotated",
         "Low",
-        "Exposes collected storage key creation timestamps for review; no rotation-age calculation is currently available in the collector output.",
+        "Flags storage account access keys older than 90 days using the collected creationTime value.",
         evidence,
     )
 
@@ -3317,17 +3536,34 @@ def find_vm_attached_disks_not_cmk(vm_details, managed_disks):
     disks_by_id = {normalize_text(disk.get("id")): disk for disk in managed_disks}
     evidence = []
     for vm in vm_details:
+        os_disk = first_value(vm, ("storageProfile", "osDisk"), ("properties", "storageProfile", "osDisk")) or {}
+        os_disk_ref = os_disk.get("managedDisk", {}).get("id")
+        if os_disk_ref:
+            disk = disks_by_id.get(normalize_text(os_disk_ref))
+            if disk:
+                key_source = normalize_text(first_value(disk, ("encryption", "type"), ("properties", "encryption", "type")))
+                if "customer" not in key_source:
+                    evidence.append(
+                        {
+                            "vmId": vm.get("id"),
+                            "vmName": vm.get("name"),
+                            "diskId": disk.get("id"),
+                            "diskName": disk.get("name"),
+                            "diskRole": "os",
+                            "encryptionType": first_value(disk, ("encryption", "type"), ("properties", "encryption", "type")),
+                        }
+                    )
         for disk_ref in first_value(vm, ("storageProfile", "dataDisks"), ("properties", "storageProfile", "dataDisks")) or []:
             disk = disks_by_id.get(normalize_text(disk_ref.get("managedDisk", {}).get("id")))
             if not disk:
                 continue
             key_source = normalize_text(first_value(disk, ("encryption", "type"), ("properties", "encryption", "type")))
             if "customer" not in key_source:
-                evidence.append({"vmId": vm.get("id"), "vmName": vm.get("name"), "diskId": disk.get("id"), "diskName": disk.get("name"), "encryptionType": first_value(disk, ("encryption", "type"), ("properties", "encryption", "type"))})
+                evidence.append({"vmId": vm.get("id"), "vmName": vm.get("name"), "diskId": disk.get("id"), "diskName": disk.get("name"), "diskRole": "data", "encryptionType": first_value(disk, ("encryption", "type"), ("properties", "encryption", "type"))})
     return result(
-        "Virtual machine attached disks are not encrypted with customer-managed keys",
+        "VM OS and Data Disks Not Encrypted with Customer Managed Keys",
         "Low",
-        "Checks attached managed disks for a customer-managed encryption type.",
+        "Checks OS and attached managed disks for a customer-managed encryption type.",
         evidence,
     )
 
@@ -3349,7 +3585,450 @@ def find_unattached_disks_not_cmk(managed_disks):
     )
 
 
+def find_guest_users_present(ad_users, registration_details):
+    registrations = {}
+    for item in registration_details:
+        registrations[normalize_text(item.get("userPrincipalName"))] = item
+
+    evidence = []
+    for user in ad_users:
+        if normalize_text(user.get("userType")) != "guest":
+            continue
+        upn = normalize_text(user.get("userPrincipalName"))
+        registration = registrations.get(upn, {})
+        is_mfa_capable = first_value(registration, "isMfaCapable", ("isMfaCapable",))
+        if registration and is_mfa_capable is True:
+            continue
+        evidence.append(
+            {
+                "id": user.get("id"),
+                "name": user.get("displayName"),
+                "userPrincipalName": user.get("userPrincipalName"),
+                "userType": user.get("userType"),
+                "accountEnabled": user.get("accountEnabled"),
+                "isMfaCapable": is_mfa_capable,
+            }
+        )
+    return result(
+        "Unauthenticated Guest Users Present in Azure AD",
+        "Medium",
+        "Flags guest users lacking positive MFA capability evidence in the collected Microsoft Graph registration details.",
+        evidence,
+    )
+
+
+def find_appservice_outdated_runtime(web_app_configs, stack_name, minimum_version, title):
+    evidence = []
+    for config in web_app_configs:
+        version_value = app_stack_value(config, stack_name)
+        if not version_value:
+            continue
+        if version_is_older(version_value, minimum_version):
+            evidence.append(compact_dict(config, stack=stack_name, runtimeVersion=version_value))
+    return result(
+        title,
+        "Low",
+        f"Flags App Services whose detected {stack_name} runtime is older than the built-in minimum baseline {minimum_version[0]}.{minimum_version[1]}.",
+        evidence,
+    )
+
+
+def find_appservice_outdated_programming_language(web_app_configs):
+    checks = [
+        ("dotnet", (8, 0)),
+        ("java", (17, 0)),
+        ("php", (8, 1)),
+        ("python", (3, 10)),
+    ]
+    evidence = []
+    for config in web_app_configs:
+        for stack_name, minimum in checks:
+            version_value = app_stack_value(config, stack_name)
+            if version_value and version_is_older(version_value, minimum):
+                evidence.append(compact_dict(config, stack=stack_name, runtimeVersion=version_value))
+                break
+    return result(
+        "App Service Running Outdated Programming Language Version",
+        "Low",
+        "Flags App Services whose detected language runtime is older than the built-in minimum baselines used by azure-findings.",
+        evidence,
+    )
+
+
+def find_keyvault_public_network_enabled(key_vaults):
+    evidence = []
+    for vault in key_vaults:
+        public_network = normalize_text(first_value(vault, "publicNetworkAccess", ("properties", "publicNetworkAccess")))
+        if public_network in {"", "enabled"}:
+            evidence.append(compact_dict(vault, publicNetworkAccess=first_value(vault, "publicNetworkAccess", ("properties", "publicNetworkAccess"))))
+    return result(
+        "Key Vault Allows Public Network Access",
+        "Low",
+        "Flags Key Vaults whose public network access setting is enabled or unset.",
+        evidence,
+    )
+
+
+def find_keyvault_recovery_protection_disabled(key_vaults):
+    evidence = []
+    for vault in key_vaults:
+        enabled = first_value(vault, "enablePurgeProtection", ("properties", "enablePurgeProtection"))
+        if enabled is not True:
+            evidence.append(compact_dict(vault, enablePurgeProtection=enabled))
+    return result(
+        "Key Vault Recovery Protection Not Enabled",
+        "Low",
+        "Flags Key Vaults without purge protection enabled.",
+        evidence,
+    )
+
+
+def find_resource_diagnostic_settings_missing(resources, diagnostic_settings):
+    configured = set()
+    for setting in diagnostic_settings:
+        resource_id = normalize_text(collection_parameters(setting).get("id"))
+        if resource_id:
+            configured.add(resource_id)
+
+    evidence = []
+    for resource in resources:
+        resource_id = normalize_text(resource.get("id"))
+        if resource_id and resource_id not in configured:
+            evidence.append(resource_brief(resource))
+    return result(
+        "Diagnostic Settings Not Configured",
+        "Low",
+        "Flags collected Azure resources for which azure-collect found no resource-scoped diagnostic setting.",
+        evidence,
+    )
+
+
+def find_activity_log_profile_incomplete(log_profiles):
+    evidence = []
+    required_categories = {"write", "delete", "action"}
+    for profile in log_profiles:
+        categories = {normalize_text(item) for item in first_value(profile, "categories", ("properties", "categories")) or []}
+        locations = {normalize_text(item) for item in first_value(profile, "locations", ("properties", "locations")) or []}
+        if not required_categories.issubset(categories) or "global" not in locations:
+            evidence.append(
+                {
+                    "id": profile.get("id"),
+                    "name": profile.get("name"),
+                    "categories": sorted(categories),
+                    "locations": sorted(locations),
+                }
+            )
+    if not log_profiles:
+        evidence.append({"scope": "subscription", "reason": "no_log_profiles_collected"})
+    return result(
+        "Activity Log Profile Does Not Capture All Events",
+        "Low",
+        "Checks Azure Monitor log profiles for write, delete, action categories and the global location.",
+        evidence,
+    )
+
+
+def find_nsg_open_all_ports(nsgs):
+    evidence = []
+    for nsg in nsgs:
+        for rule in first_value(nsg, ("securityRules",), ("properties", "securityRules")) or []:
+            if normalize_text(rule.get("direction")) != "inbound" or normalize_text(rule.get("access")) != "allow":
+                continue
+            if not is_any_source(rule):
+                continue
+            ports = rule_port_values(rule)
+            if "*" in ports:
+                evidence.append({"nsgId": nsg.get("id"), "nsgName": nsg.get("name"), "ruleName": rule.get("name"), "priority": rule.get("priority"), "ports": ports})
+    return result(
+        "NSG Inbound Rule Allows Internet Access to All Ports",
+        "High",
+        "Flags NSG inbound allow rules from any source that expose all destination ports.",
+        evidence,
+    )
+
+
+def find_nsg_open_mssql(nsgs):
+    evidence = []
+    for nsg in nsgs:
+        for rule in first_value(nsg, ("securityRules",), ("properties", "securityRules")) or []:
+            if normalize_text(rule.get("direction")) != "inbound" or normalize_text(rule.get("access")) != "allow":
+                continue
+            if not is_any_source(rule):
+                continue
+            ports = rule_port_values(rule)
+            if ports_match(ports, {"1433"}):
+                evidence.append({"nsgId": nsg.get("id"), "nsgName": nsg.get("name"), "ruleName": rule.get("name"), "priority": rule.get("priority"), "ports": ports})
+    return result(
+        "NSG Inbound Rule Allows Internet Access to MSSQL Service",
+        "Medium",
+        "Flags NSG inbound allow rules from any source to TCP port 1433.",
+        evidence,
+    )
+
+
+def find_nsg_open_udp(nsgs):
+    evidence = []
+    for nsg in nsgs:
+        for rule in first_value(nsg, ("securityRules",), ("properties", "securityRules")) or []:
+            if normalize_text(rule.get("direction")) != "inbound" or normalize_text(rule.get("access")) != "allow":
+                continue
+            if not is_any_source(rule):
+                continue
+            protocol = normalize_text(rule.get("protocol"))
+            if protocol not in {"udp", "*", "any"}:
+                continue
+            evidence.append({"nsgId": nsg.get("id"), "nsgName": nsg.get("name"), "ruleName": rule.get("name"), "priority": rule.get("priority"), "ports": rule_port_values(rule), "protocol": rule.get("protocol")})
+    return result(
+        "NSG Inbound Rule Allows Internet Access to UDP Services",
+        "Medium",
+        "Flags NSG inbound allow rules from any source that permit UDP traffic.",
+        evidence,
+    )
+
+
+def find_nsg_open_exposed_services(nsgs):
+    evidence = []
+    exposed_ports = {"1433", "3306", "5432", "6379", "9200", "27017", "5601", "8080", "8443", "2375", "2376", "10250"}
+    for nsg in nsgs:
+        for rule in first_value(nsg, ("securityRules",), ("properties", "securityRules")) or []:
+            if normalize_text(rule.get("direction")) != "inbound" or normalize_text(rule.get("access")) != "allow":
+                continue
+            if not is_any_source(rule):
+                continue
+            ports = rule_port_values(rule)
+            if ports_match(ports, exposed_ports):
+                evidence.append({"nsgId": nsg.get("id"), "nsgName": nsg.get("name"), "ruleName": rule.get("name"), "priority": rule.get("priority"), "ports": ports})
+    return result(
+        "NSG Inbound Rule Allows Internet Access to Exposed Services",
+        "Medium",
+        "Flags NSG inbound allow rules from any source to common exposed service ports.",
+        evidence,
+    )
+
+
+def find_postgres_firewall_any_ip(postgres_firewall_rules):
+    evidence = []
+    for rule in postgres_firewall_rules:
+        start_ip = normalize_text(rule.get("startIpAddress"))
+        end_ip = normalize_text(rule.get("endIpAddress"))
+        if start_ip == "0.0.0.0" and end_ip == "255.255.255.255":
+            params = collection_parameters(rule)
+            evidence.append({"serverName": params.get("name"), "resourceGroup": params.get("resourceGroup"), "ruleName": rule.get("name"), "startIpAddress": rule.get("startIpAddress"), "endIpAddress": rule.get("endIpAddress")})
+    return result(
+        "PostgreSQL Server Firewall Allows Access from Any IP",
+        "High",
+        "Flags PostgreSQL flexible server firewall rules that allow the full IPv4 address space.",
+        evidence,
+    )
+
+
+def find_security_contacts_missing(security_contacts):
+    evidence = [] if security_contacts else [{"scope": "subscription"}]
+    return result(
+        "Security Contacts Not Configured",
+        "Low",
+        "Checks whether any Microsoft Defender for Cloud security contact records were collected.",
+        evidence,
+    )
+
+
+def find_security_contact_email_missing(security_contacts):
+    evidence = []
+    for contact in security_contacts:
+        email = first_value(contact, "email", ("properties", "email"))
+        if not normalize_text(email):
+            evidence.append({"name": contact.get("name"), "id": contact.get("id"), "email": email})
+    return result(
+        "Security Contact Email Address Not Configured",
+        "Low",
+        "Flags Microsoft Defender for Cloud security contacts with no email address configured.",
+        evidence,
+    )
+
+
+def find_security_contact_alert_notifications_disabled(security_contacts):
+    evidence = []
+    for contact in security_contacts:
+        state = first_value(contact, ("alertNotifications", "state"), ("properties", "alertNotifications", "state"))
+        if normalize_text(state) not in {"on", "enabled"}:
+            evidence.append({"name": contact.get("name"), "id": contact.get("id"), "alertNotifications": state})
+    return result(
+        "Security Contact Email Notifications Not Enabled",
+        "Low",
+        "Flags security contacts where alert notification email delivery is disabled.",
+        evidence,
+    )
+
+
+def find_security_contact_admin_notifications_disabled(security_contacts):
+    evidence = []
+    for contact in security_contacts:
+        state = first_value(contact, ("notificationsByRole", "state"), ("properties", "notificationsByRole", "state"))
+        if normalize_text(state) not in {"on", "enabled"}:
+            evidence.append({"name": contact.get("name"), "id": contact.get("id"), "notificationsByRole": state})
+    return result(
+        "Security Contact Admin Email Notifications Not Enabled",
+        "Low",
+        "Flags security contacts where admin and subscription-owner notification by role is disabled.",
+        evidence,
+    )
+
+
+def find_defender_setting_disabled(defender_general_settings, expected_name, title):
+    evidence = []
+    matched = False
+    for setting in defender_general_settings:
+        name = normalize_text(setting.get("name"))
+        if expected_name not in name:
+            continue
+        matched = True
+        enabled = normalize_text(first_value(setting, "enabled", ("properties", "enabled"), "value", ("properties", "value")))
+        if enabled not in {"true", "on", "enabled"}:
+            evidence.append({"name": setting.get("name"), "id": setting.get("id"), "enabled": first_value(setting, "enabled", ("properties", "enabled"), "value", ("properties", "value"))})
+    if not matched:
+        evidence.append({"setting": expected_name, "status": "missing"})
+    return result(
+        title,
+        "Low",
+        "Checks Defender general settings for the requested integration state.",
+        evidence,
+    )
+
+
+def find_sql_policy_disabled(policies, title):
+    evidence = []
+    for policy in policies:
+        state = normalize_text(first_value(policy, "state", ("properties", "state")))
+        if state not in {"enabled", "on"}:
+            params = collection_parameters(policy)
+            evidence.append({"database": params.get("name"), "server": params.get("serverName"), "resourceGroup": params.get("resourceGroup"), "state": first_value(policy, "state", ("properties", "state"))})
+    return result(title, "Low", "Checks SQL database/server policy state.", evidence)
+
+
+def find_sql_policy_retention_short(policies, title):
+    evidence = []
+    for policy in policies:
+        days = first_value(policy, "retentionDays", ("properties", "retentionDays"))
+        if not isinstance(days, int) or days < 90:
+            params = collection_parameters(policy)
+            evidence.append({"database": params.get("name"), "server": params.get("serverName"), "resourceGroup": params.get("resourceGroup"), "retentionDays": days})
+    return result(title, "Low", "Checks SQL policy retentionDays for a 90-day minimum.", evidence)
+
+
+def find_sql_policy_alerts_disabled(policies, title):
+    evidence = []
+    for policy in policies:
+        disabled_alerts = alert_policy_disabled_alerts(policy)
+        if disabled_alerts:
+            params = collection_parameters(policy)
+            evidence.append({"database": params.get("name"), "server": params.get("serverName"), "resourceGroup": params.get("resourceGroup"), "disabledAlerts": disabled_alerts})
+    return result(title, "Low", "Flags SQL threat-detection policies with disabled alert types.", evidence)
+
+
+def find_sql_policy_email_alerts_disabled(policies, title):
+    evidence = []
+    for policy in policies:
+        if alert_policy_has_email_notifications(policy):
+            continue
+        params = collection_parameters(policy)
+        evidence.append({"database": params.get("name"), "server": params.get("serverName"), "resourceGroup": params.get("resourceGroup"), "emailAccountAdmins": first_value(policy, "emailAccountAdmins", ("properties", "emailAccountAdmins")), "emailAddresses": first_value(policy, "emailAddresses", ("properties", "emailAddresses"))})
+    return result(title, "Low", "Flags SQL threat-detection policies with no email alert recipients configured.", evidence)
+
+
+def find_sqlserver_va_admin_notifications_disabled(vuln_assessments):
+    evidence = []
+    for item in vuln_assessments:
+        admins_enabled = first_value(item, ("recurringScans", "emailSubscriptionAdmins"), ("properties", "recurringScans", "emailSubscriptionAdmins"))
+        if admins_enabled is not True:
+            params = collection_parameters(item)
+            evidence.append({"server": params.get("name"), "resourceGroup": params.get("resourceGroup"), "emailSubscriptionAdmins": admins_enabled})
+    return result(
+        "SQL Server Vulnerability Assessment Email Notifications to Admins and Owners Not Enabled",
+        "Low",
+        "Flags SQL Server vulnerability assessments without recurring scan email notifications to admins and owners.",
+        evidence,
+    )
+
+
+def find_sqlserver_va_recipients_missing(vuln_assessments):
+    evidence = []
+    for item in vuln_assessments:
+        recipients = first_value(item, ("recurringScans", "emails"), ("properties", "recurringScans", "emails"))
+        has_recipients = isinstance(recipients, list) and recipients or isinstance(recipients, str) and recipients.strip()
+        if has_recipients:
+            continue
+        params = collection_parameters(item)
+        evidence.append({"server": params.get("name"), "resourceGroup": params.get("resourceGroup"), "emails": recipients})
+    return result(
+        "SQL Server Vulnerability Assessment Scan Report Recipients Not Configured",
+        "Low",
+        "Flags SQL Server vulnerability assessments without recurring scan email recipients.",
+        evidence,
+    )
+
+
+def find_storage_azure_services_bypass_enabled(storage_accounts):
+    evidence = []
+    for account in storage_accounts:
+        bypass = normalize_text(first_value(account, ("networkAcls", "bypass"), ("properties", "networkAcls", "bypass")))
+        if "azureservices" in bypass:
+            evidence.append(compact_dict(account, bypass=first_value(account, ("networkAcls", "bypass"), ("properties", "networkAcls", "bypass"))))
+    return result(
+        "Storage Account Permits Trusted Microsoft Services Bypass",
+        "Low",
+        "Flags storage accounts whose network ACL bypass includes AzureServices.",
+        evidence,
+    )
+
+
+def find_vm_disk_encryption_not_enabled(managed_disks):
+    evidence = []
+    for disk in managed_disks:
+        encryption_type = normalize_text(first_value(disk, ("encryption", "type"), ("properties", "encryption", "type")))
+        if not encryption_type:
+            evidence.append(compact_dict(disk, encryptionType=first_value(disk, ("encryption", "type"), ("properties", "encryption", "type"))))
+    return result(
+        "VM Disk Encryption Not Enabled",
+        "Low",
+        "Flags managed disks with no explicit encryption type recorded in the collected disk payload.",
+        evidence,
+    )
+
+
+def find_vm_not_using_managed_disks(vm_details):
+    evidence = []
+    for vm in vm_details:
+        os_disk = first_value(vm, ("storageProfile", "osDisk"), ("properties", "storageProfile", "osDisk")) or {}
+        os_managed = os_disk.get("managedDisk", {}).get("id")
+        data_disks = first_value(vm, ("storageProfile", "dataDisks"), ("properties", "storageProfile", "dataDisks")) or []
+        if not os_managed or any(not disk.get("managedDisk", {}).get("id") for disk in data_disks):
+            evidence.append({"vmId": vm.get("id"), "vmName": vm.get("name"), "osManagedDiskId": os_managed, "dataDiskCount": len(data_disks)})
+    return result(
+        "VM Not Using Managed Disks",
+        "Low",
+        "Flags virtual machines whose OS disk or any data disk does not use a managed disk reference.",
+        evidence,
+    )
+
+
+def find_unapproved_vm_extensions(vm_extensions):
+    evidence = []
+    for item in vm_extensions:
+        publisher = normalize_text(item.get("publisher"))
+        if publisher.startswith("microsoft.") or publisher == "microsoft.azure.extensions":
+            continue
+        params = collection_parameters(item)
+        evidence.append({"vmName": params.get("name"), "resourceGroup": params.get("resourceGroup"), "extensionName": item.get("name"), "publisher": item.get("publisher"), "type": item.get("type")})
+    return result(
+        "Unapproved VM Extensions Installed",
+        "Low",
+        "Flags installed VM extensions from non-Microsoft publishers as potentially unapproved.",
+        evidence,
+    )
+
+
 def evaluate_findings(catalog):
+    ad_users = dataset_records(catalog, "az_ad_user_list")
     storage_accounts = dataset_records(catalog, "az_storage_account_list")
     storage_keys = dataset_records(catalog, "az_storage_account_keys_list")
     storage_blob_service_properties = dataset_records(catalog, "az_storage_account_blob-service-properties_show")
@@ -3366,6 +4045,7 @@ def evaluate_findings(catalog):
     key_vault_private_endpoint_connections = dataset_records(catalog, "az_keyvault_show", "privateendpointconnections")
     metric_alerts = dataset_records(catalog, "az_monitor_metrics_alert_list")
     defender_settings = dataset_records(catalog, "az_security_pricing_list")
+    defender_general_settings = dataset_records(catalog, "az_security_setting_list")
     defender_auto_provisioning_settings = dataset_records(catalog, "az_security_auto-provisioning-setting_list")
     defender_jit_policies = dataset_records(catalog, "az_security_jit-policy_list")
     security_contacts = dataset_records(catalog, "az_security_contact_list")
@@ -3377,6 +4057,7 @@ def evaluate_findings(catalog):
     diagnostic_settings = dataset_records(catalog, "az_monitor_diagnostic-settings_list")
     diagnostic_categories = dataset_records(catalog, "az_monitor_diagnostic-settings_categories_list")
     activity_log_alerts = dataset_records(catalog, "az_monitor_activity-log_alert_list")
+    log_profiles = dataset_records(catalog, "az_monitor_log-profiles_list")
     web_app_configs = dataset_records(catalog, "az_webapp_config_show")
     web_app_access_restrictions = dataset_records(catalog, "az_webapp_config_access-restriction_show")
     web_app_auth_settings = dataset_records(catalog, "az_webapp_auth_show")
@@ -3413,6 +4094,8 @@ def evaluate_findings(catalog):
     sql_server_threat_policies = dataset_records(catalog, "az_sql_server_threat-policy_show")
     sql_server_tde_keys = dataset_records(catalog, "az_sql_server_tde-key_show")
     sql_server_vuln_assessments = dataset_records(catalog, "az_sql_server_vuln-assessment_show")
+    sql_database_audit_policies = dataset_records(catalog, "az_sql_db_audit-policy_show")
+    sql_database_threat_policies = dataset_records(catalog, "az_sql_db_threat-policy_show")
     sql_database_tde = dataset_records(catalog, "az_sql_db_tde_show")
     backup_items = dataset_records(catalog, "az_backup_item_list")
     managed_disks = dataset_records(catalog, "az_disk_list")
@@ -3421,13 +4104,16 @@ def evaluate_findings(catalog):
     flow_logs = dataset_records(catalog, "az_network_watcher_flow-log_list")
     public_ip_addresses = dataset_records(catalog, "az_network_public-ip_list")
     vm_details = dataset_records(catalog, "az_vm_show")
+    vm_extensions = dataset_records(catalog, "az_vm_extension_list")
     vm_scale_sets = dataset_records(catalog, "az_vmss_list")
     nsgs = dataset_records(catalog, "az_network_nsg_list")
     graph_conditional_access_policies = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "conditionalaccess", "policies"))
     graph_named_locations = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "namedlocations"))
     graph_authorization_policy = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "authorizationpolicy"))
     graph_security_defaults_policy = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"))
+    graph_user_registration_details = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "userregistrationdetails"))
     source_map = {
+        "ad_users": dataset_paths(catalog, "az_ad_user_list"),
         "storage_accounts": dataset_paths(catalog, "az_storage_account_list"),
         "storage_keys": dataset_paths(catalog, "az_storage_account_keys_list"),
         "storage_blob_service_properties": dataset_paths(catalog, "az_storage_account_blob-service-properties_show"),
@@ -3443,6 +4129,7 @@ def evaluate_findings(catalog):
         "key_vault_private_endpoint_connections": dataset_paths(catalog, "az_keyvault_show", "privateendpointconnections"),
         "metric_alerts": dataset_paths(catalog, "az_monitor_metrics_alert_list"),
         "defender_settings": dataset_paths(catalog, "az_security_pricing_list"),
+        "defender_general_settings": dataset_paths(catalog, "az_security_setting_list"),
         "defender_auto_provisioning_settings": dataset_paths(catalog, "az_security_auto-provisioning-setting_list"),
         "defender_jit_policies": dataset_paths(catalog, "az_security_jit-policy_list"),
         "security_contacts": dataset_paths(catalog, "az_security_contact_list"),
@@ -3454,6 +4141,7 @@ def evaluate_findings(catalog):
         "diagnostic_settings": dataset_paths(catalog, "az_monitor_diagnostic-settings_list"),
         "diagnostic_categories": dataset_paths(catalog, "az_monitor_diagnostic-settings_categories_list"),
         "activity_log_alerts": dataset_paths(catalog, "az_monitor_activity-log_alert_list"),
+        "log_profiles": dataset_paths(catalog, "az_monitor_log-profiles_list"),
         "web_app_configs": dataset_paths(catalog, "az_webapp_config_show"),
         "web_app_access_restrictions": dataset_paths(catalog, "az_webapp_config_access-restriction_show"),
         "web_app_auth_settings": dataset_paths(catalog, "az_webapp_auth_show"),
@@ -3490,6 +4178,8 @@ def evaluate_findings(catalog):
         "sql_server_threat_policies": dataset_paths(catalog, "az_sql_server_threat-policy_show"),
         "sql_server_tde_keys": dataset_paths(catalog, "az_sql_server_tde-key_show"),
         "sql_server_vuln_assessments": dataset_paths(catalog, "az_sql_server_vuln-assessment_show"),
+        "sql_database_audit_policies": dataset_paths(catalog, "az_sql_db_audit-policy_show"),
+        "sql_database_threat_policies": dataset_paths(catalog, "az_sql_db_threat-policy_show"),
         "sql_database_tde": dataset_paths(catalog, "az_sql_db_tde_show"),
         "backup_items": dataset_paths(catalog, "az_backup_item_list"),
         "managed_disks": dataset_paths(catalog, "az_disk_list"),
@@ -3498,12 +4188,14 @@ def evaluate_findings(catalog):
         "flow_logs": dataset_paths(catalog, "az_network_watcher_flow-log_list"),
         "public_ip_addresses": dataset_paths(catalog, "az_network_public-ip_list"),
         "vm_details": dataset_paths(catalog, "az_vm_show"),
+        "vm_extensions": dataset_paths(catalog, "az_vm_extension_list"),
         "vm_scale_sets": dataset_paths(catalog, "az_vmss_list"),
         "nsgs": dataset_paths(catalog, "az_network_nsg_list"),
         "graph_conditional_access_policies": dataset_paths(catalog, "graph.microsoft.com", "conditionalaccess", "policies"),
         "graph_named_locations": dataset_paths(catalog, "graph.microsoft.com", "namedlocations"),
         "graph_authorization_policy": dataset_paths(catalog, "graph.microsoft.com", "authorizationpolicy"),
         "graph_security_defaults_policy": dataset_paths(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"),
+        "graph_user_registration_details": dataset_paths(catalog, "graph.microsoft.com", "userregistrationdetails"),
     }
 
     findings = []
@@ -3524,6 +4216,15 @@ def evaluate_findings(catalog):
             "Custom Azure subscription owner roles permitted",
             "Medium",
             "Role definitions and enriched role assignments are required.",
+        )
+    )
+    findings.append(
+        find_guest_users_present(ad_users, graph_user_registration_details)
+        if ad_users
+        else unsupported(
+            "Unauthenticated Guest Users Present in Azure AD",
+            "Medium",
+            "Azure AD user inventory is required.",
         )
     )
     findings.append(
@@ -3568,6 +4269,15 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_resource_diagnostic_settings_missing(resources, diagnostic_settings)
+        if resources and dataset_present(catalog, "az_monitor_diagnostic-settings_list")
+        else unsupported(
+            "Diagnostic Settings Not Configured",
+            "Low",
+            "Azure resource inventory and resource-scoped diagnostic settings are required.",
+        )
+    )
+    findings.append(
         find_postgres_azure_services_access(postgres_firewall_rules)
         if postgres_firewall_rules
         else unsupported(
@@ -3586,6 +4296,15 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_keyvault_public_network_enabled(key_vaults)
+        if key_vaults
+        else unsupported(
+            "Key Vault Allows Public Network Access",
+            "Low",
+            "No Key Vault dataset was found.",
+        )
+    )
+    findings.append(
         find_monitor_alert_notification_gaps(metric_alerts)
         if metric_alerts
         else unsupported(
@@ -3601,13 +4320,6 @@ def evaluate_findings(catalog):
             "Storage Accounts not using private IP endpoints",
             "Low",
             "No storage account dataset was found.",
-        )
-    )
-    findings.append(
-        unsupported(
-            "PostgreSQL server without connection throttling",
-            "Low",
-            "azure-collect does not gather PostgreSQL configuration parameters for connection throttling.",
         )
     )
     findings.append(
@@ -3647,24 +4359,28 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
-        unsupported(
-            "MySQL server without audit logging enabled",
-            "Low",
-            "azure-collect does not currently gather MySQL server datasets.",
-        )
-    )
-    findings.append(
-        unsupported(
-            "PostgreSQL server with short log retention period",
-            "Low",
-            "azure-collect does not gather PostgreSQL log retention settings.",
-        )
-    )
-    findings.append(
         find_security_contact_phone_missing(security_contacts)
         if security_contacts
         else unsupported(
             "Security contact phone number is not set in Azure tenant",
+            "Low",
+            "No security contact dataset was found.",
+        )
+    )
+    findings.append(
+        find_security_contacts_missing(security_contacts)
+        if dataset_present(catalog, "az_security_contact_list")
+        else unsupported(
+            "Security Contacts Not Configured",
+            "Low",
+            "No security contact dataset was found.",
+        )
+    )
+    findings.append(
+        find_security_contact_email_missing(security_contacts)
+        if dataset_present(catalog, "az_security_contact_list")
+        else unsupported(
+            "Security Contact Email Address Not Configured",
             "Low",
             "No security contact dataset was found.",
         )
@@ -3697,6 +4413,15 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_keyvault_recovery_protection_disabled(key_vaults)
+        if key_vaults
+        else unsupported(
+            "Key Vault Recovery Protection Not Enabled",
+            "Low",
+            "No Key Vault dataset was found.",
+        )
+    )
+    findings.append(
         find_diagnostic_category_gaps(diagnostic_settings, diagnostic_categories)
         if diagnostic_settings and diagnostic_categories
         else unsupported(
@@ -3706,12 +4431,12 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
-        find_resource_lock_admin_role_gap(role_definitions)
-        if role_definitions
+        find_resource_lock_admin_role_gap(role_definitions, role_assignments)
+        if role_definitions and role_assignments
         else unsupported(
-            "Azure subscription does not have a role for administration of resource locks",
+            "Users with Permission to Administer Resource Locks Assigned",
             "Low",
-            "No role definition dataset was found.",
+            "Role definitions and role assignments are required.",
         )
     )
     findings.append(
@@ -3809,6 +4534,42 @@ def evaluate_findings(catalog):
         if nsgs
         else unsupported(
             "Network security groups expose common data ports to the Internet",
+            "Medium",
+            "No NSG dataset was found.",
+        )
+    )
+    findings.append(
+        find_nsg_open_all_ports(nsgs)
+        if nsgs
+        else unsupported(
+            "NSG Inbound Rule Allows Internet Access to All Ports",
+            "High",
+            "No NSG dataset was found.",
+        )
+    )
+    findings.append(
+        find_nsg_open_mssql(nsgs)
+        if nsgs
+        else unsupported(
+            "NSG Inbound Rule Allows Internet Access to MSSQL Service",
+            "Medium",
+            "No NSG dataset was found.",
+        )
+    )
+    findings.append(
+        find_nsg_open_udp(nsgs)
+        if nsgs
+        else unsupported(
+            "NSG Inbound Rule Allows Internet Access to UDP Services",
+            "Medium",
+            "No NSG dataset was found.",
+        )
+    )
+    findings.append(
+        find_nsg_open_exposed_services(nsgs)
+        if nsgs
+        else unsupported(
+            "NSG Inbound Rule Allows Internet Access to Exposed Services",
             "Medium",
             "No NSG dataset was found.",
         )
@@ -3919,6 +4680,51 @@ def evaluate_findings(catalog):
             "Azure App Services are not registered with a managed identity",
             "Low",
             "No Web App dataset was found.",
+        )
+    )
+    findings.append(
+        find_appservice_outdated_runtime(web_app_configs, "dotnet", (8, 0), "App Service Running Outdated .NET Version")
+        if web_app_configs
+        else unsupported(
+            "App Service Running Outdated .NET Version",
+            "Low",
+            "No Web App configuration dataset was found.",
+        )
+    )
+    findings.append(
+        find_appservice_outdated_runtime(web_app_configs, "java", (17, 0), "App Service Running Outdated Java Version")
+        if web_app_configs
+        else unsupported(
+            "App Service Running Outdated Java Version",
+            "Low",
+            "No Web App configuration dataset was found.",
+        )
+    )
+    findings.append(
+        find_appservice_outdated_runtime(web_app_configs, "php", (8, 1), "App Service Running Outdated PHP Version")
+        if web_app_configs
+        else unsupported(
+            "App Service Running Outdated PHP Version",
+            "Low",
+            "No Web App configuration dataset was found.",
+        )
+    )
+    findings.append(
+        find_appservice_outdated_runtime(web_app_configs, "python", (3, 10), "App Service Running Outdated Python Version")
+        if web_app_configs
+        else unsupported(
+            "App Service Running Outdated Python Version",
+            "Low",
+            "No Web App configuration dataset was found.",
+        )
+    )
+    findings.append(
+        find_appservice_outdated_programming_language(web_app_configs)
+        if web_app_configs
+        else unsupported(
+            "App Service Running Outdated Programming Language Version",
+            "Low",
+            "No Web App configuration dataset was found.",
         )
     )
     findings.append(
@@ -4093,6 +4899,42 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_security_contact_alert_notifications_disabled(security_contacts)
+        if dataset_present(catalog, "az_security_contact_list")
+        else unsupported(
+            "Security Contact Email Notifications Not Enabled",
+            "Low",
+            "No security contact dataset was found.",
+        )
+    )
+    findings.append(
+        find_security_contact_admin_notifications_disabled(security_contacts)
+        if dataset_present(catalog, "az_security_contact_list")
+        else unsupported(
+            "Security Contact Admin Email Notifications Not Enabled",
+            "Low",
+            "No security contact dataset was found.",
+        )
+    )
+    findings.append(
+        find_defender_setting_disabled(defender_general_settings, "mcas", "Microsoft Cloud App Security Integration Not Enabled")
+        if dataset_present(catalog, "az_security_setting_list")
+        else unsupported(
+            "Microsoft Cloud App Security Integration Not Enabled",
+            "Low",
+            "No Defender general settings dataset was found.",
+        )
+    )
+    findings.append(
+        find_defender_setting_disabled(defender_general_settings, "wdatp", "Microsoft Defender ATP Integration Not Enabled")
+        if dataset_present(catalog, "az_security_setting_list")
+        else unsupported(
+            "Microsoft Defender ATP Integration Not Enabled",
+            "Low",
+            "No Defender general settings dataset was found.",
+        )
+    )
+    findings.append(
         find_entra_security_defaults_disabled(graph_security_defaults_policy)
         if dataset_present(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy")
         else unsupported(
@@ -4228,6 +5070,15 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_activity_log_profile_incomplete(log_profiles)
+        if dataset_present(catalog, "az_monitor_log-profiles_list")
+        else unsupported(
+            "Activity Log Profile Does Not Capture All Events",
+            "Low",
+            "No Azure Monitor log profile dataset was found.",
+        )
+    )
+    findings.append(
         find_monitor_storage_targets_not_cmk(subscriptions, subscription_diagnostic_settings, storage_accounts)
         if subscription_diagnostic_settings and storage_accounts
         else unsupported(
@@ -4303,6 +5154,22 @@ def evaluate_findings(catalog):
         find_postgres_parameter_disabled(
             postgres_servers,
             postgres_parameters,
+            "connection_throttling",
+            "PostgreSQL Server Connection Throttling Not Enabled",
+            "Uses the PostgreSQL flexible server parameter dataset to check connection_throttling.",
+            "connectionThrottling",
+        )
+        if postgres_servers and postgres_parameters
+        else unsupported(
+            "PostgreSQL Server Connection Throttling Not Enabled",
+            "Low",
+            "PostgreSQL server and parameter datasets are required.",
+        )
+    )
+    findings.append(
+        find_postgres_parameter_disabled(
+            postgres_servers,
+            postgres_parameters,
             "log_checkpoints",
             "PostgreSQL flexible servers do not log checkpoints",
             "Uses the PostgreSQL flexible server parameter dataset to check log_checkpoints.",
@@ -4329,6 +5196,31 @@ def evaluate_findings(catalog):
             "PostgreSQL flexible servers do not log connections",
             "Low",
             "PostgreSQL server and parameter datasets are required.",
+        )
+    )
+    findings.append(
+        find_postgres_parameter_disabled(
+            postgres_servers,
+            postgres_parameters,
+            "log_duration",
+            "PostgreSQL Server Duration Logging Not Enabled",
+            "Uses the PostgreSQL flexible server parameter dataset to check log_duration.",
+            "logDuration",
+        )
+        if postgres_servers and postgres_parameters
+        else unsupported(
+            "PostgreSQL Server Duration Logging Not Enabled",
+            "Low",
+            "PostgreSQL server and parameter datasets are required.",
+        )
+    )
+    findings.append(
+        find_postgres_firewall_any_ip(postgres_firewall_rules)
+        if postgres_firewall_rules
+        else unsupported(
+            "PostgreSQL Server Firewall Allows Access from Any IP",
+            "High",
+            "No PostgreSQL firewall rule dataset was found.",
         )
     )
     findings.append(
@@ -4411,6 +5303,33 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_sql_policy_alerts_disabled(sql_server_threat_policies, "SQL Server Threat Detection Alerts Not Enabled")
+        if sql_server_threat_policies
+        else unsupported(
+            "SQL Server Threat Detection Alerts Not Enabled",
+            "Low",
+            "No SQL server threat policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_sql_policy_retention_short(sql_server_threat_policies, "SQL Server Threat Detection Retention Period Too Low")
+        if sql_server_threat_policies
+        else unsupported(
+            "SQL Server Threat Detection Retention Period Too Low",
+            "Low",
+            "No SQL server threat policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_sql_policy_email_alerts_disabled(sql_server_threat_policies, "SQL Server Threat Detection Email Alerts Not Enabled")
+        if sql_server_threat_policies
+        else unsupported(
+            "SQL Server Threat Detection Email Alerts Not Enabled",
+            "Low",
+            "No SQL server threat policy dataset was found.",
+        )
+    )
+    findings.append(
         find_sqlserver_auditing_disabled(sql_server_audit_policies)
         if sql_server_audit_policies
         else unsupported(
@@ -4456,6 +5375,60 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_sql_policy_disabled(sql_database_audit_policies, "SQL Database Auditing Not Enabled")
+        if sql_database_audit_policies
+        else unsupported(
+            "SQL Database Auditing Not Enabled",
+            "Low",
+            "No SQL database auditing dataset was found.",
+        )
+    )
+    findings.append(
+        find_sql_policy_retention_short(sql_database_audit_policies, "SQL Database Auditing Retention Period Too Low")
+        if sql_database_audit_policies
+        else unsupported(
+            "SQL Database Auditing Retention Period Too Low",
+            "Low",
+            "No SQL database auditing dataset was found.",
+        )
+    )
+    findings.append(
+        find_sql_policy_disabled(sql_database_threat_policies, "SQL Database Threat Detection Not Enabled")
+        if sql_database_threat_policies
+        else unsupported(
+            "SQL Database Threat Detection Not Enabled",
+            "Low",
+            "No SQL database threat policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_sql_policy_alerts_disabled(sql_database_threat_policies, "SQL Database Threat Detection Alerts Not Enabled")
+        if sql_database_threat_policies
+        else unsupported(
+            "SQL Database Threat Detection Alerts Not Enabled",
+            "Low",
+            "No SQL database threat policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_sql_policy_retention_short(sql_database_threat_policies, "SQL Database Threat Detection Retention Period Too Low")
+        if sql_database_threat_policies
+        else unsupported(
+            "SQL Database Threat Detection Retention Period Too Low",
+            "Low",
+            "No SQL database threat policy dataset was found.",
+        )
+    )
+    findings.append(
+        find_sql_policy_email_alerts_disabled(sql_database_threat_policies, "SQL Database Threat Detection Email Alerts Not Enabled")
+        if sql_database_threat_policies
+        else unsupported(
+            "SQL Database Threat Detection Email Alerts Not Enabled",
+            "Low",
+            "No SQL database threat policy dataset was found.",
+        )
+    )
+    findings.append(
         find_sqlserver_unrestricted_inbound_access(sql_server_firewall_rules)
         if sql_server_firewall_rules
         else unsupported(
@@ -4469,6 +5442,24 @@ def evaluate_findings(catalog):
         if sql_server_vuln_assessments
         else unsupported(
             "SQL servers do not have vulnerability assessment configured",
+            "Low",
+            "No SQL server vulnerability assessment dataset was found.",
+        )
+    )
+    findings.append(
+        find_sqlserver_va_admin_notifications_disabled(sql_server_vuln_assessments)
+        if sql_server_vuln_assessments
+        else unsupported(
+            "SQL Server Vulnerability Assessment Email Notifications to Admins and Owners Not Enabled",
+            "Low",
+            "No SQL server vulnerability assessment dataset was found.",
+        )
+    )
+    findings.append(
+        find_sqlserver_va_recipients_missing(sql_server_vuln_assessments)
+        if sql_server_vuln_assessments
+        else unsupported(
+            "SQL Server Vulnerability Assessment Scan Report Recipients Not Configured",
             "Low",
             "No SQL server vulnerability assessment dataset was found.",
         )
@@ -4528,6 +5519,24 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_storage_azure_services_bypass_enabled(storage_accounts)
+        if storage_accounts
+        else unsupported(
+            "Storage Account Permits Trusted Microsoft Services Bypass",
+            "Low",
+            "No storage account dataset was found.",
+        )
+    )
+    findings.append(
+        find_storage_keys_not_rotated(storage_accounts, storage_keys)
+        if storage_accounts and dataset_present(catalog, "az_storage_account_keys_list")
+        else unsupported(
+            "Storage Account Access Keys Not Rotated",
+            "Low",
+            "Storage account and key datasets are required.",
+        )
+    )
+    findings.append(
         find_storage_geo_replication_disabled(storage_accounts)
         if storage_accounts
         else unsupported(
@@ -4567,7 +5576,7 @@ def evaluate_findings(catalog):
         find_vm_attached_disks_not_cmk(vm_details, managed_disks)
         if vm_details and managed_disks
         else unsupported(
-            "Virtual machine attached disks are not encrypted with customer-managed keys",
+            "VM OS and Data Disks Not Encrypted with Customer Managed Keys",
             "Low",
             "VM detail and managed disk datasets are required.",
         )
@@ -4579,6 +5588,24 @@ def evaluate_findings(catalog):
             "Unattached managed disks are not encrypted with customer-managed keys",
             "Low",
             "No managed disk dataset was found.",
+        )
+    )
+    findings.append(
+        find_vm_disk_encryption_not_enabled(managed_disks)
+        if managed_disks
+        else unsupported(
+            "VM Disk Encryption Not Enabled",
+            "Low",
+            "No managed disk dataset was found.",
+        )
+    )
+    findings.append(
+        find_vm_not_using_managed_disks(vm_details)
+        if vm_details
+        else unsupported(
+            "VM Not Using Managed Disks",
+            "Low",
+            "No VM detail dataset was found.",
         )
     )
     findings.append(
@@ -4635,13 +5662,21 @@ def evaluate_findings(catalog):
             "No VM scale set dataset was found.",
         )
     )
+    findings.append(
+        find_unapproved_vm_extensions(vm_extensions)
+        if dataset_present(catalog, "az_vm_extension_list")
+        else unsupported(
+            "Unapproved VM Extensions Installed",
+            "Low",
+            "No VM extension dataset was found.",
+        )
+    )
 
     if postgres_servers and not postgres_firewall_rules:
         for finding in findings:
             if finding["title"] in {
                 "Access permitted to PostgreSQL server from Azure services",
-                "PostgreSQL server without connection throttling",
-                "PostgreSQL server with short log retention period",
+                "PostgreSQL Server Firewall Allows Access from Any IP",
             }:
                 finding["reason"] += " PostgreSQL servers were collected, but the required supporting sub-resource data was not."
 
@@ -4770,6 +5805,47 @@ def evaluate_findings(catalog):
         "Unattached managed disks are not encrypted with customer-managed keys": source_map["managed_disks"],
         "Linux virtual machines allow password-based SSH authentication": source_map["vm_details"],
         "Virtual machine scale sets are not associated with a load balancer": source_map["vm_scale_sets"],
+        "Unauthenticated Guest Users Present in Azure AD": source_map["ad_users"] + source_map["graph_user_registration_details"],
+        "App Service Running Outdated .NET Version": source_map["web_app_configs"],
+        "App Service Running Outdated Java Version": source_map["web_app_configs"],
+        "App Service Running Outdated PHP Version": source_map["web_app_configs"],
+        "App Service Running Outdated Python Version": source_map["web_app_configs"],
+        "App Service Running Outdated Programming Language Version": source_map["web_app_configs"],
+        "Key Vault Allows Public Network Access": source_map["key_vaults"],
+        "Key Vault Recovery Protection Not Enabled": source_map["key_vaults"],
+        "Diagnostic Settings Not Configured": source_map["resources"] + source_map["diagnostic_settings"],
+        "Activity Log Profile Does Not Capture All Events": source_map["log_profiles"],
+        "Users with Permission to Administer Resource Locks Assigned": source_map["role_definitions"] + source_map["role_assignments"],
+        "NSG Inbound Rule Allows Internet Access to All Ports": source_map["nsgs"],
+        "NSG Inbound Rule Allows Internet Access to MSSQL Service": source_map["nsgs"],
+        "NSG Inbound Rule Allows Internet Access to UDP Services": source_map["nsgs"],
+        "NSG Inbound Rule Allows Internet Access to Exposed Services": source_map["nsgs"],
+        "PostgreSQL Server Connection Throttling Not Enabled": source_map["postgres_parameters"] + dataset_paths(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL Server Duration Logging Not Enabled": source_map["postgres_parameters"] + dataset_paths(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL Server Firewall Allows Access from Any IP": source_map["postgres_firewall_rules"],
+        "Security Contacts Not Configured": source_map["security_contacts"],
+        "Security Contact Email Address Not Configured": source_map["security_contacts"],
+        "Security Contact Email Notifications Not Enabled": source_map["security_contacts"],
+        "Security Contact Admin Email Notifications Not Enabled": source_map["security_contacts"],
+        "Microsoft Cloud App Security Integration Not Enabled": source_map["defender_general_settings"],
+        "Microsoft Defender ATP Integration Not Enabled": source_map["defender_general_settings"],
+        "SQL Server Threat Detection Alerts Not Enabled": source_map["sql_server_threat_policies"],
+        "SQL Server Threat Detection Retention Period Too Low": source_map["sql_server_threat_policies"],
+        "SQL Server Threat Detection Email Alerts Not Enabled": source_map["sql_server_threat_policies"],
+        "SQL Database Auditing Not Enabled": source_map["sql_database_audit_policies"],
+        "SQL Database Auditing Retention Period Too Low": source_map["sql_database_audit_policies"],
+        "SQL Database Threat Detection Not Enabled": source_map["sql_database_threat_policies"],
+        "SQL Database Threat Detection Alerts Not Enabled": source_map["sql_database_threat_policies"],
+        "SQL Database Threat Detection Retention Period Too Low": source_map["sql_database_threat_policies"],
+        "SQL Database Threat Detection Email Alerts Not Enabled": source_map["sql_database_threat_policies"],
+        "SQL Server Vulnerability Assessment Email Notifications to Admins and Owners Not Enabled": source_map["sql_server_vuln_assessments"],
+        "SQL Server Vulnerability Assessment Scan Report Recipients Not Configured": source_map["sql_server_vuln_assessments"],
+        "Storage Account Permits Trusted Microsoft Services Bypass": source_map["storage_accounts"],
+        "Storage Account Access Keys Not Rotated": source_map["storage_accounts"] + source_map["storage_keys"],
+        "VM Disk Encryption Not Enabled": source_map["managed_disks"],
+        "VM Not Using Managed Disks": source_map["vm_details"],
+        "Unapproved VM Extensions Installed": source_map["vm_extensions"],
+        "VM OS and Data Disks Not Encrypted with Customer Managed Keys": source_map["vm_details"] + source_map["managed_disks"],
     }
 
     findings = annotate_requested_headlines(findings)
