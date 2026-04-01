@@ -50,12 +50,47 @@ Parameters:
 - `-L`, `--listparamendpoints`: list all parameterised endpoints and exit
 - `-n`, `--donotenrich`: disable enrichment steps and perform enumeration only
 - `-p`, `--paramendpointsonly`: collect only parameter-driven datasets
+- `--auth-method`: authentication mode for Azure CLI. Supported values: `existing`, `device-code`, `browser`, `service-principal`, `managed-identity`. Default: `existing`
+- `--tenant-id`: Azure tenant ID for login and/or context selection. Defaults to `AZURE_TENANT_ID`
+- `--subscription-id`: Azure subscription ID to select after authentication. Defaults to `AZURE_SUBSCRIPTION_ID`
+- `--client-id`: service principal or user-assigned managed identity client ID. Defaults to `AZURE_CLIENT_ID`
+- `--client-secret`: service principal client secret. Defaults to `AZURE_CLIENT_SECRET`
+- `--client-certificate`: certificate path for service principal auth. Defaults to `AZURE_CLIENT_CERTIFICATE_PATH`
+- `--client-certificate-password`: certificate password for service principal auth. Defaults to `AZURE_CLIENT_CERTIFICATE_PASSWORD`
 
 Notes:
 
 - The script expects the Azure CLI to be installed and available on `PATH`.
-- On first use it will prompt for Azure authentication using the Azure CLI login flow.
+- The default authentication mode is `existing`, which reuses the current Azure CLI session and does not trigger a login flow.
+- If `--auth-method existing` is used and no valid Azure CLI session is present, the tool exits with guidance instead of forcing device code authentication.
+- Authentication validation checks both the current Azure account context and token acquisition for Azure Resource Manager and Microsoft Graph before collection starts.
+- `--subscription-id` applies the Azure CLI account context after authentication and can also be supplied through `AZURE_SUBSCRIPTION_ID`.
 - Output files are timestamped in their filenames, which is used by the dashboard to track dataset history.
+
+Authentication examples:
+
+```bash
+# Reuse an existing Azure CLI session
+az login
+pipenv run python azure-collect.py --auth-method existing
+
+# Trigger device code login explicitly
+pipenv run python azure-collect.py --auth-method device-code --tenant-id <tenant-id>
+
+# Trigger browser-based login explicitly
+pipenv run python azure-collect.py --auth-method browser --tenant-id <tenant-id>
+
+# Use service principal credentials from environment variables
+export AZURE_TENANT_ID=<tenant-id>
+export AZURE_CLIENT_ID=<client-id>
+export AZURE_CLIENT_SECRET=<client-secret>
+export AZURE_SUBSCRIPTION_ID=<subscription-id>
+pipenv run python azure-collect.py --auth-method service-principal
+
+# Use a user-assigned managed identity
+export AZURE_CLIENT_ID=<managed-identity-client-id>
+pipenv run python azure-collect.py --auth-method managed-identity --subscription-id <subscription-id>
+```
 
 ### `azure-findings.py`
 

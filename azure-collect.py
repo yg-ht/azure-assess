@@ -48,12 +48,15 @@ import json
 import subprocess
 import argparse
 import os
+import shlex
 from collections import Counter
 from datetime import datetime
 from itertools import product
 from pathlib import Path
 from time import sleep
 from tqdm import tqdm
+
+AUTH_CONFIG = {}
 
 AZURE_CLI_ENDPOINTS = [
     {"name": "API Management Services", "cli_command": "az apim list", "needs_pagination": False},
@@ -755,6 +758,48 @@ def parse_arguments():
         action="store_true",
         help="Restricts collection to just datasets that require parameters, does not affect enrichment"
     )
+    parser.add_argument(
+        "--auth-method",
+        choices=["existing", "device-code", "browser", "service-principal", "managed-identity"],
+        default="existing",
+        help=(
+            "Azure authentication mode. 'existing' reuses the current Azure CLI session "
+            "and will not trigger a login flow."
+        )
+    )
+    parser.add_argument(
+        "--tenant-id",
+        type=str,
+        help="Azure tenant ID for login and/or context selection. Defaults to AZURE_TENANT_ID."
+    )
+    parser.add_argument(
+        "--subscription-id",
+        type=str,
+        help="Azure subscription ID to select after authentication. Defaults to AZURE_SUBSCRIPTION_ID."
+    )
+    parser.add_argument(
+        "--client-id",
+        type=str,
+        help="Service principal or user-assigned managed identity client ID. Defaults to AZURE_CLIENT_ID."
+    )
+    parser.add_argument(
+        "--client-secret",
+        type=str,
+        help="Service principal client secret. Defaults to AZURE_CLIENT_SECRET."
+    )
+    parser.add_argument(
+        "--client-certificate",
+        type=str,
+        help="Client certificate path for service principal auth. Defaults to AZURE_CLIENT_CERTIFICATE_PATH."
+    )
+    parser.add_argument(
+        "--client-certificate-password",
+        type=str,
+        help=(
+            "Client certificate password for service principal auth. "
+            "Defaults to AZURE_CLIENT_CERTIFICATE_PASSWORD."
+        )
+    )
     return parser.parse_args()
 
 
@@ -812,24 +857,174 @@ def run_and_parse(cmd, entity_type, object_id):
     }
 
 
-def ensure_az_login():
-    print("[*] Checking Azure CLI login status...")
-    result =  subprocess.run("az account show", shell=True, capture_output=True, text=True)
-    stderr = result.stderr.lower()
+def get_argument_or_env(argument_value, env_name):
+    if argument_value:
+        return argument_value
+    return os.getenv(env_name)
 
+
+def build_auth_config(args):
+    return {
+        "auth_method": args.auth_method,
+        "tenant_id": get_argument_or_env(args.tenant_id, "AZURE_TENANT_ID"),
+        "subscription_id": get_argument_or_env(args.subscription_id, "AZURE_SUBSCRIPTION_ID"),
+        "client_id": get_argument_or_env(args.client_id, "AZURE_CLIENT_ID"),
+        "client_secret": get_argument_or_env(args.client_secret, "AZURE_CLIENT_SECRET"),
+        "client_certificate": get_argument_or_env(args.client_certificate, "AZURE_CLIENT_CERTIFICATE_PATH"),
+        "client_certificate_password": get_argument_or_env(
+            args.client_certificate_password,
+            "AZURE_CLIENT_CERTIFICATE_PASSWORD"
+        ),
+    }
+
+
+def shell_quote(value):
+    return shlex.quote(str(value))
+
+
+def run_az_command(command, capture_output=False):
+    return subprocess.run(command, shell=True, capture_output=capture_output, text=True)
+
+
+def set_az_account_context(subscription_id=None):
+    if not subscription_id:
+        return
+
+    print(f"[*] Selecting Azure subscription context: {subscription_id}")
+    result = run_az_command(
+        f"az account set --subscription {shell_quote(subscription_id)}",
+        capture_output=True
+    )
     if result.returncode != 0:
-        print("[!] Not authenticated / authorised")
-        if "az login" in stderr:
-            print("[!] Not logged in. Attempting login...")
-            login_result = subprocess.run("az login --use-device-code", shell=True)
-            if login_result.returncode != 0:
-                print("[ERROR] Login failed. Exiting.")
-                exit(1)
-        else:
-            print("[ERROR] Unhandled login error:\n", stderr)
+        print("[ERROR] Failed to set Azure subscription context.")
+        if result.stderr:
+            print(result.stderr.strip())
+        exit(1)
+
+
+def validate_access_token(resource):
+    result = run_az_command(
+        f"az account get-access-token --resource {shell_quote(resource)} --output json",
+        capture_output=True
+    )
+    return result.returncode == 0
+
+
+def validate_auth_session(subscription_id=None):
+    print("[*] Verifying Azure CLI authentication context...")
+    account_result = run_az_command("az account show --output json", capture_output=True)
+    if account_result.returncode != 0:
+        return False
+
+    try:
+        account = json.loads(account_result.stdout)
+    except json.JSONDecodeError:
+        return False
+
+    if subscription_id and account.get("id") != subscription_id:
+        print(
+            f"[!] Azure CLI is authenticated for subscription {account.get('id')}, "
+            f"expected {subscription_id}."
+        )
+        return False
+
+    for resource in ("https://management.azure.com/", "https://graph.microsoft.com/"):
+        if not validate_access_token(resource):
+            print(f"[!] Azure CLI could not obtain an access token for {resource}")
+            return False
+
+    return True
+
+
+def authenticate_with_selected_method(auth_config):
+    method = auth_config["auth_method"]
+    tenant_id = auth_config["tenant_id"]
+    subscription_id = auth_config["subscription_id"]
+    client_id = auth_config["client_id"]
+    client_secret = auth_config["client_secret"]
+    client_certificate = auth_config["client_certificate"]
+    client_certificate_password = auth_config["client_certificate_password"]
+
+    if method == "existing":
+        return
+
+    if method == "device-code":
+        login_cmd = "az login --use-device-code"
+        if tenant_id:
+            login_cmd = f"{login_cmd} --tenant {shell_quote(tenant_id)}"
+    elif method == "browser":
+        login_cmd = "az login"
+        if tenant_id:
+            login_cmd = f"{login_cmd} --tenant {shell_quote(tenant_id)}"
+    elif method == "service-principal":
+        if not tenant_id:
+            print("[ERROR] Service principal auth requires --tenant-id or AZURE_TENANT_ID.")
             exit(1)
+        if not client_id:
+            print("[ERROR] Service principal auth requires --client-id or AZURE_CLIENT_ID.")
+            exit(1)
+        if not client_secret and not client_certificate:
+            print(
+                "[ERROR] Service principal auth requires either "
+                "--client-secret/AZURE_CLIENT_SECRET or "
+                "--client-certificate/AZURE_CLIENT_CERTIFICATE_PATH."
+            )
+            exit(1)
+
+        login_cmd = (
+            "az login --service-principal "
+            f"--username {shell_quote(client_id)} "
+            f"--tenant {shell_quote(tenant_id)}"
+        )
+        if client_secret:
+            login_cmd = f"{login_cmd} --password {shell_quote(client_secret)}"
+        else:
+            login_cmd = f"{login_cmd} --password {shell_quote(client_certificate)}"
+            if client_certificate_password:
+                login_cmd = f"{login_cmd} --certificate-password {shell_quote(client_certificate_password)}"
+    elif method == "managed-identity":
+        login_cmd = "az login --identity"
+        if client_id:
+            login_cmd = f"{login_cmd} --username {shell_quote(client_id)}"
+        if tenant_id:
+            login_cmd = f"{login_cmd} --tenant {shell_quote(tenant_id)}"
     else:
+        print(f"[ERROR] Unsupported auth method: {method}")
+        exit(1)
+
+    print(f"[*] Authenticating to Azure using '{method}' mode...")
+    login_result = run_az_command(login_cmd)
+    if login_result.returncode != 0:
+        print("[ERROR] Azure authentication failed. Exiting.")
+        exit(1)
+
+    set_az_account_context(subscription_id)
+
+
+def ensure_az_login(force_reauth=False):
+    global AUTH_CONFIG
+
+    auth_method = AUTH_CONFIG.get("auth_method", "existing")
+    subscription_id = AUTH_CONFIG.get("subscription_id")
+
+    if validate_auth_session(subscription_id) and not force_reauth:
         print("[✓] Azure CLI is authenticated.")
+        set_az_account_context(subscription_id)
+        return
+
+    if auth_method == "existing":
+        print("[ERROR] No usable Azure CLI session found.")
+        print("Authenticate before running this tool, or select --auth-method explicitly.")
+        print("Examples: az login, az login --service-principal ..., az login --identity")
+        exit(1)
+
+    authenticate_with_selected_method(AUTH_CONFIG)
+
+    if not validate_auth_session(subscription_id):
+        print("[ERROR] Azure authentication completed but token validation failed.")
+        exit(1)
+
+    print("[✓] Azure CLI authentication is ready.")
 
 
 def run_az_cli(cmd):
@@ -877,11 +1072,24 @@ def run_az_cli(cmd):
                 "interactionrequired",
             ]
             if any(sig in result["stdout"].lower() for sig in error_auth_signatures):
-                print("[!] Azure token not valid. Forcing reauthentication...")
-                subprocess.run("az logout", shell=True)
-                login_result = subprocess.run("az login", shell=True)
-                if login_result.returncode != 0:
-                    error_message = "Login failed. Exiting."
+                print("[!] Azure token not valid. Attempting authentication refresh...")
+                ensure_az_login(force_reauth=True)
+                retry_result = run_az_command(cmd, capture_output=True)
+                result = {
+                    "args": cmd,
+                    "returncode": retry_result.returncode,
+                    "success": retry_result.returncode == 0,
+                    "stdout": retry_result.stdout.strip(),
+                    "json": None,
+                    "raw": retry_result.stdout
+                }
+                if result["success"] and (result["stdout"].strip().startswith("{") or result["stdout"].strip().startswith("[")):
+                    try:
+                        result["json"] = json.loads(result["stdout"])
+                    except Exception as e:
+                        print(f"JSON parsing error: {e}")
+                if not result["success"]:
+                    error_message = "Authentication refresh failed to restore Azure CLI access."
                     must_exit = True
 
             error_cli_signatures = [
@@ -1326,6 +1534,7 @@ if __name__ == "__main__":
     global DEBUG
     START_TIMESTAMP = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     args = parse_arguments()
+    AUTH_CONFIG = build_auth_config(args)
 
     if args.debug == True:
         DEBUG = True
