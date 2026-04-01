@@ -37,6 +37,7 @@ import importlib.util
 import json
 import re
 from collections import OrderedDict
+from datetime import datetime
 from flask import Flask, render_template_string, request
 from json2html import json2html
 from pathlib import Path
@@ -54,7 +55,7 @@ FINDING_STATUS_OPTIONS = OrderedDict(
     ]
 )
 
-TIMESTAMP_SUFFIX_PATTERN = re.compile(r"_\d{8}-\d{6}$")
+TIMESTAMP_SUFFIX_PATTERN = re.compile(r"_(\d{8}-\d{6})$")
 
 
 def parse_arguments():
@@ -201,6 +202,7 @@ HTML_TEMPLATE = """
           <thead>
             <tr>
               <th>Data Source</th>
+              <th>Version</th>
               <th>Record Count</th>
               <th>Actions</th>
             </tr>
@@ -209,6 +211,19 @@ HTML_TEMPLATE = """
             {% for tab in tabs %}
             <tr>
               <td>{{ tab.name }}</td>
+              <td>
+                {% if tab.versions|length > 1 %}
+                <select class="form-select form-select-sm dataset-version-select" data-default-target="/query/{{ tab.filename }}">
+                  {% for version in tab.versions %}
+                  <option value="/query/{{ version.filename }}" {% if version.filename == tab.filename %}selected{% endif %}>
+                    {{ version.label }}
+                  </option>
+                  {% endfor %}
+                </select>
+                {% else %}
+                {{ tab.version_label }}
+                {% endif %}
+              </td>
               <td>{{ tab.record_count }}</td>
               <td><a href="/query/{{ tab.filename }}" class="btn btn-primary btn-sm">View Data</a></td>
             </tr>
@@ -228,8 +243,20 @@ HTML_TEMPLATE = """
             <label for="dataSourceSelect" class="form-label">Select Data Source:</label>
             <select id="dataSourceSelect" class="form-select">
               {% for tab in tabs %}
-              <option value="{{ tab.filename }}" {% if current_tab == tab.filename %}selected{% endif %}>
+              <option value="{{ tab.filename }}" {% if current_dataset_filename == tab.filename %}selected{% endif %}>
                 {{ tab.name }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endif %}
+          {% if show_version_select %}
+          <div class="mt-3 mb-3">
+            <label for="datasetVersionSelect" class="form-label">Select Dataset Version:</label>
+            <select id="datasetVersionSelect" class="form-select">
+              {% for version in current_versions %}
+              <option value="{{ version.filename }}" {% if current_tab == version.filename %}selected{% endif %}>
+                {{ version.label }}
               </option>
               {% endfor %}
             </select>
@@ -292,12 +319,31 @@ HTML_TEMPLATE = """
       });
     </script>
 
+    {% if dashboard %}
+    <script>
+      document.querySelectorAll('.dataset-version-select').forEach(function(select) {
+        select.addEventListener('change', function() {
+          window.location.href = this.value;
+        });
+      });
+    </script>
+    {% endif %}
+
 
     <!-- JavaScript for Data Source Drop-down (only on data table view) -->
     {% if not dashboard %}
     {% if show_data_source_select %}
     <script>
       document.getElementById('dataSourceSelect').addEventListener('change', function() {
+        var selected = this.value;
+        window.location.href = "/query/" + selected;
+      });
+    </script>
+    {% endif %}
+
+    {% if show_version_select %}
+    <script>
+      document.getElementById('datasetVersionSelect').addEventListener('change', function() {
         var selected = this.value;
         window.location.href = "/query/" + selected;
       });
@@ -499,14 +545,40 @@ DATASET_NAME_MAP = load_collect_endpoint_name_map()
 
 def display_name_for_dataset(filename):
     stem = Path(filename).stem
-    normalized_stem = TIMESTAMP_SUFFIX_PATTERN.sub("", stem)
+    normalized_stem = dataset_key_for_filename(filename)
     mapped_name = DATASET_NAME_MAP.get(normalized_stem)
     if mapped_name:
         return mapped_name
     return normalized_stem.replace("_", " ").strip().title()
 
 
-def build_tab(path, data):
+def dataset_key_for_filename(filename):
+    return TIMESTAMP_SUFFIX_PATTERN.sub("", Path(filename).stem)
+
+
+def extract_dataset_timestamp(filename):
+    match = TIMESTAMP_SUFFIX_PATTERN.search(Path(filename).stem)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d-%H%M%S")
+    except ValueError:
+        return None
+
+
+def format_dataset_version_label(path):
+    timestamp = extract_dataset_timestamp(path.name)
+    if timestamp is None:
+        return "Current"
+    return timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def dataset_sort_key(path):
+    timestamp = extract_dataset_timestamp(path.name)
+    return (timestamp is not None, timestamp or datetime.min, path.name)
+
+
+def build_dataset_version(path, data):
     if isinstance(data, list):
         record_count = len(data)
     elif isinstance(data, dict):
@@ -514,14 +586,52 @@ def build_tab(path, data):
     else:
         record_count = 0
     return {
-        "name": display_name_for_dataset(path.name),
         "filename": path.name,
         "record_count": record_count,
+        "label": format_dataset_version_label(path),
+        "timestamp": extract_dataset_timestamp(path.name),
     }
 
 
 def standard_data_files():
     return [path for path in sorted(DATA_DIR.glob("*.json")) if path.name not in FINDINGS_FILENAMES]
+
+
+def dataset_groups():
+    groups = OrderedDict()
+    for path in standard_data_files():
+        key = dataset_key_for_filename(path.name)
+        groups.setdefault(key, []).append(path)
+
+    grouped_tabs = []
+    for key, paths in groups.items():
+        sorted_paths = sorted(paths, key=dataset_sort_key, reverse=True)
+        versions = []
+        for path in sorted_paths:
+            data = load_json_file(path)
+            if data is None:
+                continue
+            versions.append(build_dataset_version(path, data))
+        if not versions:
+            continue
+        latest = versions[0]
+        grouped_tabs.append({
+            "dataset_key": key,
+            "name": display_name_for_dataset(latest["filename"]),
+            "filename": latest["filename"],
+            "record_count": latest["record_count"],
+            "version_label": latest["label"],
+            "versions": versions,
+        })
+    return grouped_tabs
+
+
+def dataset_group_by_filename(filename):
+    key = dataset_key_for_filename(filename)
+    for group in dataset_groups():
+        if group["dataset_key"] == key:
+            return group
+    return None
 
 
 def findings_flat_path():
@@ -703,14 +813,9 @@ def linkify_rendered_urls(html):
 
 @app.route('/')
 def dashboard():
-    tabs = []
     if not DATA_DIR.exists():
         return "<p>Data directory not found. Please create a 'data' folder with JSON files.</p>"
-    for filepath in standard_data_files():
-        data = load_json_file(filepath)
-        if data is None:
-            continue
-        tabs.append(build_tab(filepath, data))
+    tabs = dataset_groups()
     return render_template_string(HTML_TEMPLATE, tabs=tabs, dashboard=True)
 
 
@@ -749,6 +854,7 @@ def findings():
         tabs=tabs,
         table=table,
         current_tab=FINDINGS_FLAT_FILENAME,
+        current_dataset_filename=FINDINGS_FLAT_FILENAME,
         findings_status=status_filter,
         findings_status_options=[
             {"value": value, "label": meta["label"]}
@@ -765,6 +871,9 @@ def query(filename):
     # Retrieve search term from GET or POST
     query_param = (request.form.get('query') or request.args.get('query') or "").lower()
     filepath = DATA_DIR / filename
+    dataset_group = dataset_group_by_filename(filename)
+    if dataset_group is None:
+        return f"<p>Unknown dataset requested: {filename}.</p>"
     data = load_json_file(filepath)
     if data is None:
         return f"<p>Error loading data from {filename}.</p>"
@@ -778,21 +887,18 @@ def query(filename):
     else:
         filtered_data = data
     table = generate_html_table(filtered_data)
-    tabs = []
-    # Build tabs info for drop-down
-    for path in standard_data_files():
-        file_data = load_json_file(path)
-        if file_data is None:
-            continue
-        tabs.append(build_tab(path, file_data))
+    tabs = dataset_groups()
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
         table=table,
         current_tab=filename,
+        current_dataset_filename=dataset_group["filename"],
         findings_status=None,
         findings_status_options=None,
         show_data_source_select=True,
+        show_version_select=len(dataset_group["versions"]) > 1,
+        current_versions=dataset_group["versions"],
         search_action=f"/query/{filename}",
         reset_action=f"/query/{filename}",
         dashboard=False,
