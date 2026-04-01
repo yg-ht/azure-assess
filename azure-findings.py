@@ -285,7 +285,7 @@ def attach_references(finding, source_files):
 def flat_rows(findings):
     rows = []
     for finding in findings:
-        base = {
+        row = {
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -293,18 +293,9 @@ def flat_rows(findings):
             "evidence_count": finding["evidence_count"],
             "source_files": finding.get("references", {}).get("source_files", []),
             "reference_links": [item.get("portal") for item in finding.get("references", {}).get("evidence_links", []) if item.get("portal")],
+            "evidence": finding["evidence"] if finding["evidence"] else [],
         }
-        if finding["evidence"]:
-            for index, evidence in enumerate(finding["evidence"], start=1):
-                row = dict(base)
-                row["evidence_index"] = index
-                row["evidence"] = evidence
-                rows.append(row)
-        else:
-            row = dict(base)
-            row["evidence_index"] = None
-            row["evidence"] = None
-            rows.append(row)
+        rows.append(row)
     return rows
 
 
