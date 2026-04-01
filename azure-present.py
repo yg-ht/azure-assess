@@ -43,6 +43,7 @@ from json2html import json2html
 from pathlib import Path
 
 app = Flask(__name__)
+DATA_DIR = Path("azure-collect")
 FINDINGS_FLAT_FILENAME = "azure-findings-flat.json"
 FINDINGS_STRUCTURED_FILENAME = "azure-findings.json"
 FINDINGS_FILENAMES = {FINDINGS_FLAT_FILENAME, FINDINGS_STRUCTURED_FILENAME}
@@ -198,6 +199,23 @@ HTML_TEMPLATE = """
       <!-- DASHBOARD PAGE -->
       <div class="mt-4">
         <h2>Dashboard</h2>
+        {% if summary_cards %}
+        <div class="row g-3 mb-4">
+          {% for card in summary_cards %}
+          <div class="col-12 col-md-6 col-xl-3">
+            <div class="card h-100 bg-transparent border-secondary">
+              <div class="card-body">
+                <h3 class="h6 text-uppercase text-secondary">{{ card.label }}</h3>
+                <div class="fs-3 fw-bold">{{ card.value }}</div>
+                {% if card.detail %}
+                <div class="small text-secondary">{{ card.detail }}</div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
         <table class="table table-striped">
           <thead>
             <tr>
@@ -634,6 +652,76 @@ def dataset_group_by_filename(filename):
     return None
 
 
+def latest_resource_object_count(tabs):
+    for tab in tabs:
+        if tab["dataset_key"] == "az_resource_list":
+            return tab["record_count"], "From latest Azure Resource List dataset"
+    return sum(tab["record_count"] for tab in tabs), "Fallback: sum of latest dataset record counts"
+
+
+def findings_summary():
+    filepath = findings_flat_path()
+    if not filepath.exists():
+        return None
+    data = load_json_file(filepath)
+    if data is None:
+        return None
+    if isinstance(data, dict) and "rows" in data:
+        rows = data["rows"]
+    elif isinstance(data, list):
+        rows = data
+    else:
+        return None
+
+    counts = {
+        "executed": len(rows),
+        "issues": 0,
+        "not_found": 0,
+        "not_evaluated": 0,
+    }
+    for row in rows:
+        status = row.get("status") if isinstance(row, dict) else None
+        if status in {"confirmed", "supported"}:
+            counts["issues"] += 1
+        elif status == "not_found":
+            counts["not_found"] += 1
+        elif status == "not_evaluated":
+            counts["not_evaluated"] += 1
+    return counts
+
+
+def build_dashboard_summary_cards(tabs):
+    object_count, object_detail = latest_resource_object_count(tabs)
+    total_versions = sum(len(tab["versions"]) for tab in tabs)
+    historical_versions = sum(max(len(tab["versions"]) - 1, 0) for tab in tabs)
+    latest_collection = None
+    for tab in tabs:
+        timestamp = tab["versions"][0]["timestamp"]
+        if timestamp is not None and (latest_collection is None or timestamp > latest_collection):
+            latest_collection = timestamp
+
+    cards = [
+        {"label": "Objects In Subscription", "value": object_count, "detail": object_detail},
+        {"label": "Dataset Types Collected", "value": len(tabs), "detail": "Logical dataset families on the dashboard"},
+        {"label": "Stored Dataset Snapshots", "value": total_versions, "detail": f"{historical_versions} older versions available"},
+        {
+            "label": "Latest Collection",
+            "value": latest_collection.strftime("%Y-%m-%d %H:%M:%S") if latest_collection else "Unknown",
+            "detail": "Most recent timestamp found in collected dataset filenames",
+        },
+    ]
+
+    findings = findings_summary()
+    if findings is not None:
+        cards.extend([
+            {"label": "Finding Checks Executed", "value": findings["executed"], "detail": "Rows in azure-findings-flat.json"},
+            {"label": "Finding Checks With Issues", "value": findings["issues"], "detail": "Statuses: confirmed or supported"},
+            {"label": "Finding Checks Clear", "value": findings["not_found"], "detail": "Status: not_found"},
+            {"label": "Finding Checks Not Evaluated", "value": findings["not_evaluated"], "detail": "Status: not_evaluated"},
+        ])
+    return cards
+
+
 def findings_flat_path():
     return DATA_DIR / FINDINGS_FLAT_FILENAME
 
@@ -816,7 +904,12 @@ def dashboard():
     if not DATA_DIR.exists():
         return "<p>Data directory not found. Please create a 'data' folder with JSON files.</p>"
     tabs = dataset_groups()
-    return render_template_string(HTML_TEMPLATE, tabs=tabs, dashboard=True)
+    return render_template_string(
+        HTML_TEMPLATE,
+        tabs=tabs,
+        summary_cards=build_dashboard_summary_cards(tabs),
+        dashboard=True,
+    )
 
 
 @app.route('/findings', methods=['GET', 'POST'])
@@ -856,6 +949,7 @@ def findings():
         current_tab=FINDINGS_FLAT_FILENAME,
         current_dataset_filename=FINDINGS_FLAT_FILENAME,
         findings_status=status_filter,
+        summary_cards=None,
         findings_status_options=[
             {"value": value, "label": meta["label"]}
             for value, meta in FINDING_STATUS_OPTIONS.items()
@@ -896,6 +990,7 @@ def query(filename):
         current_dataset_filename=dataset_group["filename"],
         findings_status=None,
         findings_status_options=None,
+        summary_cards=None,
         show_data_source_select=True,
         show_version_select=len(dataset_group["versions"]) > 1,
         current_versions=dataset_group["versions"],
@@ -906,6 +1001,5 @@ def query(filename):
 
 if __name__ == '__main__':
     args = parse_arguments()
-    global DATA_DIR
     DATA_DIR = Path(args.input_dir)
     app.run(host='127.0.0.1', port=5000, debug=False)
