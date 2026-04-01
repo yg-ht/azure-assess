@@ -46,7 +46,7 @@ FINDINGS_STRUCTURED_FILENAME = "azure-findings.json"
 FINDINGS_FILENAMES = {FINDINGS_FLAT_FILENAME, FINDINGS_STRUCTURED_FILENAME}
 FINDING_STATUS_OPTIONS = OrderedDict(
     [
-        ("confirmed", {"label": "Confirmed Findings", "statuses": {"supported"}}),
+        ("confirmed", {"label": "Confirmed Findings", "statuses": {"confirmed", "supported"}}),
         ("not_found", {"label": "Not Found Items", "statuses": {"not_found"}}),
         ("not_evaluated", {"label": "Not Evaluated Items", "statuses": {"not_evaluated"}}),
         ("all", {"label": "All Findings", "statuses": None}),
@@ -218,6 +218,7 @@ HTML_TEMPLATE = """
       <div class="data-view">
         <!-- Controls: Drop-down and Search -->
         <div class="data-controls">
+          {% if show_data_source_select %}
           <!-- Drop-down for Data Source Selection -->
           <div class="mt-3 mb-3">
             <label for="dataSourceSelect" class="form-label">Select Data Source:</label>
@@ -229,6 +230,7 @@ HTML_TEMPLATE = """
               {% endfor %}
             </select>
           </div>
+          {% endif %}
           {% if findings_status_options %}
           <div class="mt-3 mb-3">
             <label for="findingsStatusSelect" class="form-label">Findings Status:</label>
@@ -289,12 +291,14 @@ HTML_TEMPLATE = """
 
     <!-- JavaScript for Data Source Drop-down (only on data table view) -->
     {% if not dashboard %}
+    {% if show_data_source_select %}
     <script>
       document.getElementById('dataSourceSelect').addEventListener('change', function() {
         var selected = this.value;
         window.location.href = "/query/" + selected;
       });
     </script>
+    {% endif %}
 
     {% if findings_status_options %}
     <script>
@@ -697,6 +701,7 @@ def findings():
             {"value": value, "label": meta["label"]}
             for value, meta in FINDING_STATUS_OPTIONS.items()
         ],
+        show_data_source_select=False,
         search_action="/findings",
         reset_action=f"/findings?status={status_filter}",
         dashboard=False,
@@ -743,6 +748,7 @@ def query(filename):
         current_tab=filename,
         findings_status=None,
         findings_status_options=None,
+        show_data_source_select=True,
         search_action=f"/query/{filename}",
         reset_action=f"/query/{filename}",
         dashboard=False,

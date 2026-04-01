@@ -293,6 +293,7 @@ def flat_rows(findings):
             "evidence_count": finding["evidence_count"],
             "source_files": finding.get("references", {}).get("source_files", []),
             "reference_links": [item.get("portal") for item in finding.get("references", {}).get("evidence_links", []) if item.get("portal")],
+            "viewer_links": [item.get("href") for item in finding.get("references", {}).get("evidence_links", []) if item.get("href")],
             "evidence": finding["evidence"] if finding["evidence"] else [],
         }
         rows.append(row)
@@ -314,7 +315,7 @@ def result(title, severity, reason, evidence):
     return {
         "title": title,
         "severity": severity,
-        "status": "found" if evidence else "not_found",
+        "status": "confirmed" if evidence else "not_found",
         "reason": reason,
         "evidence_count": len(evidence),
         "evidence": evidence,
@@ -619,7 +620,7 @@ def find_resource_lock_admin_role_gap(role_definitions):
     return {
         "title": "Azure subscription does not have a role for administration of resource locks",
         "severity": "Low",
-        "status": "not_found" if evidence else "supported",
+        "status": "confirmed" if evidence else "not_found",
         "reason": "Looks for any role definition that appears able to manage resource locks.",
         "evidence_count": len(evidence),
         "evidence": evidence,
