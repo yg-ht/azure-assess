@@ -2836,6 +2836,67 @@ def find_keyvault_key_rotation_disabled(vaults, keys, rotation_policies):
         evidence,
     )
 
+def find_keyvault_keys_older_than_90_days(vaults, keys, collection_time):
+    vaults_by_name = {normalize_text(vault.get("name")): vault for vault in vaults}
+    keys_by_vault = {}
+    for key in keys:
+        vault_name = normalize_text(collection_parameters(key).get("name"))
+        if vault_name not in vaults_by_name:
+            continue
+        keys_by_vault.setdefault(vault_name, []).append(key)
+
+    reference_time = collection_time.astimezone(timezone.utc) if collection_time else datetime.now(timezone.utc)
+    evidence = []
+    for vault_name, vault_keys in keys_by_vault.items():
+        if len(vault_keys) != 2:
+            continue
+        aged_keys = []
+        for key in vault_keys:
+            created_value = first_value(
+                key,
+                "creationTime",
+                "created",
+                "createdOn",
+                ("attributes", "created"),
+                ("attributes", "createdOn"),
+                ("properties", "created"),
+                ("properties", "createdOn"),
+                ("properties", "attributes", "created"),
+                ("properties", "attributes", "createdOn"),
+            )
+            created_at = parse_iso_datetime(created_value)
+            if not created_at:
+                aged_keys = []
+                break
+            age_days = (reference_time - created_at.astimezone(timezone.utc)).days
+            if age_days <= 90:
+                aged_keys = []
+                break
+            aged_keys.append(
+                {
+                    "name": key.get("name"),
+                    "id": key.get("kid") or key.get("id"),
+                    "created": created_value,
+                    "ageDays": age_days,
+                }
+            )
+        if not any(item["ageDays"] > 135 for item in aged_keys):
+            continue
+        evidence.append(
+            {
+                "vaultName": vaults_by_name[vault_name].get("name"),
+                "keyCount": len(vault_keys),
+                "keys": aged_keys,
+                "referenceDate": reference_time.isoformat(),
+            }
+        )
+    return result(
+        "Key Vault keys are older than 90 days",
+        "Low",
+        "Flags vaults with exactly two collected keys where both keys are older than 90 days as of the dataset collection date and at least one key is older than 135 days.",
+        evidence,
+    )
+
 def find_mysql_audit_log_connection_disabled(mysql_servers, mysql_parameters):
     params_by_server = {}
     for item in mysql_parameters:

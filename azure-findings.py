@@ -4,6 +4,7 @@
 # Search previously collected Azure JSON data for evidence supporting known findings.
 
 import argparse
+from datetime import datetime, timezone
 import json
 import re
 from pathlib import Path
@@ -58,6 +59,26 @@ def resolve_output_path(input_dir, output_file, default_filename):
 
 def strip_timestamp(path):
     return TIMESTAMP_SUFFIX_RE.sub("", path.stem.lower())
+
+
+def extract_path_timestamp(path):
+    match = TIMESTAMP_SUFFIX_RE.search(path.stem)
+    if not match:
+        return None
+    suffix = match.group(0).lstrip("_")
+    try:
+        return datetime.strptime(suffix, "%Y%m%d-%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def latest_dataset_timestamp(paths):
+    latest = None
+    for path in paths:
+        timestamp = extract_path_timestamp(Path(path))
+        if timestamp is not None and (latest is None or timestamp > latest):
+            latest = timestamp
+    return latest
 
 
 def load_catalog(input_dir):
@@ -1587,6 +1608,19 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_keyvault_keys_older_than_90_days(
+            key_vaults,
+            key_vault_keys,
+            latest_dataset_timestamp(source_map["key_vault_keys"]),
+        )
+        if key_vaults and key_vault_keys
+        else unsupported(
+            "Key Vault keys are older than 90 days",
+            "Low",
+            "Key Vault and key metadata datasets are required.",
+        )
+    )
+    findings.append(
         find_keyvault_expiry_missing(key_vaults, key_vault_secrets, "Non-RBAC Key Vault secrets do not have expiration dates", "secret", require_rbac=False)
         if key_vaults and key_vault_secrets
         else unsupported(
@@ -2734,6 +2768,7 @@ def evaluate_findings(catalog):
         "User Access Administrator role is assigned directly to users": source_map["role_assignments"],
         "Non-RBAC Key Vault keys do not have expiration dates": source_map["key_vaults"] + source_map["key_vault_keys"],
         "Key Vault keys do not have rotation enabled": source_map["key_vaults"] + source_map["key_vault_keys"] + source_map["key_vault_key_rotation_policies"],
+        "Key Vault keys are older than 90 days": source_map["key_vaults"] + source_map["key_vault_keys"],
         "Non-RBAC Key Vault secrets do not have expiration dates": source_map["key_vaults"] + source_map["key_vault_secrets"],
         "RBAC Key Vault keys do not have expiration dates": source_map["key_vaults"] + source_map["key_vault_keys"],
         "RBAC Key Vault secrets do not have expiration dates": source_map["key_vaults"] + source_map["key_vault_secrets"],
