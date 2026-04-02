@@ -195,6 +195,36 @@ HTML_TEMPLATE = """
       .data-controls {
         flex: 0 0 auto;
       }
+      .dashboard-chart-card {
+        background-color: transparent;
+        border: 1px solid var(--table-border);
+      }
+      .dashboard-chart-wrap {
+        position: relative;
+        width: 100%;
+        min-height: 320px;
+      }
+      .dashboard-chart-canvas {
+        width: 100%;
+        height: 320px;
+      }
+      .chart-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 16px;
+      }
+      .chart-legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .chart-legend-swatch {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        display: inline-block;
+      }
     </style>
   </head>
   <!-- Dark mode enabled by default via the dark-mode class -->
@@ -230,6 +260,18 @@ HTML_TEMPLATE = """
             </div>
           </div>
           {% endfor %}
+        </div>
+        {% endif %}
+        {% if findings_chart_data %}
+        <div class="card dashboard-chart-card">
+          <div class="card-body">
+            <h3 class="h5">Findings Overview</h3>
+            <p class="text-secondary mb-3">Current distribution of findings, clear checks, and checks with no data to assess.</p>
+            <div class="dashboard-chart-wrap">
+              <canvas id="findingsPieChart" class="dashboard-chart-canvas"></canvas>
+            </div>
+            <div id="findingsPieLegend" class="chart-legend"></div>
+          </div>
         </div>
         {% endif %}
       </div>
@@ -372,6 +414,76 @@ HTML_TEMPLATE = """
           window.location.href = this.value;
         });
       });
+    </script>
+    {% endif %}
+
+    {% if dashboard and findings_chart_data %}
+    <script>
+      (function() {
+        const canvas = document.getElementById('findingsPieChart');
+        const legend = document.getElementById('findingsPieLegend');
+        if (!canvas || !legend) return;
+
+        const chartData = {{ findings_chart_data|tojson }};
+        const segments = chartData.filter(function(item) { return item.value > 0; });
+        if (segments.length === 0) return;
+
+        function drawPieChart() {
+          const ratio = window.devicePixelRatio || 1;
+          const rect = canvas.getBoundingClientRect();
+          const width = Math.max(rect.width, 320);
+          const height = Math.max(rect.height, 320);
+          canvas.width = width * ratio;
+          canvas.height = height * ratio;
+
+          const ctx = canvas.getContext('2d');
+          ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+          ctx.clearRect(0, 0, width, height);
+
+          const total = segments.reduce(function(sum, item) { return sum + item.value; }, 0);
+          const centerX = width / 2;
+          const centerY = height / 2;
+          const radius = Math.min(width, height) * 0.32;
+          let startAngle = -Math.PI / 2;
+
+          segments.forEach(function(segment) {
+            const slice = (segment.value / total) * Math.PI * 2;
+            const endAngle = startAngle + slice;
+
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY);
+            ctx.arc(centerX, centerY, radius, startAngle, endAngle);
+            ctx.closePath();
+            ctx.fillStyle = segment.color;
+            ctx.fill();
+
+            const midAngle = startAngle + (slice / 2);
+            const labelX = centerX + Math.cos(midAngle) * (radius + 24);
+            const labelY = centerY + Math.sin(midAngle) * (radius + 24);
+            const percentage = ((segment.value / total) * 100).toFixed(1);
+
+            ctx.fillStyle = getComputedStyle(document.body).getPropertyValue('--text-color').trim() || '#212529';
+            ctx.font = '14px sans-serif';
+            ctx.textAlign = labelX >= centerX ? 'left' : 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(percentage + '%', labelX, labelY);
+
+            startAngle = endAngle;
+          });
+        }
+
+        legend.innerHTML = '';
+        segments.forEach(function(segment) {
+          const item = document.createElement('div');
+          item.className = 'chart-legend-item';
+          item.innerHTML = '<span class="chart-legend-swatch" style="background-color: ' + segment.color + ';"></span>' +
+            '<span>' + segment.label + ': ' + segment.value + '</span>';
+          legend.appendChild(item);
+        });
+
+        drawPieChart();
+        window.addEventListener('resize', drawPieChart);
+      })();
     </script>
     {% endif %}
 
@@ -946,11 +1058,20 @@ def dashboard():
     if not DATA_DIR.exists():
         return "<p>Data directory not found. Please create a 'data' folder with JSON files.</p>"
     tabs = dataset_groups()
+    findings = findings_summary()
+    findings_chart_data = None
+    if findings is not None:
+        findings_chart_data = [
+            {"label": "Findings", "value": findings["found"], "color": "#dc3545"},
+            {"label": "No Findings", "value": findings["not_found"], "color": "#198754"},
+            {"label": "No Data To Assess", "value": findings["no_data_to_assess"], "color": "#ffc107"},
+        ]
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
         summary_cards=build_dashboard_summary_cards(tabs),
         dashboard=True,
+        findings_chart_data=findings_chart_data,
         dataset_index=False,
     )
 
@@ -965,6 +1086,7 @@ def datasets():
         tabs=tabs,
         summary_cards=None,
         dashboard=False,
+        findings_chart_data=None,
         dataset_index=True,
     )
 
@@ -1012,6 +1134,7 @@ def findings():
         current_dataset_filename=FINDINGS_FLAT_FILENAME,
         findings_status=status_filter,
         summary_cards=None,
+        findings_chart_data=None,
         dataset_index=False,
         findings_status_options=[
             {"value": value, "label": meta["label"]}
@@ -1054,6 +1177,7 @@ def query(filename):
         findings_status=None,
         findings_status_options=None,
         summary_cards=None,
+        findings_chart_data=None,
         dataset_index=False,
         show_data_source_select=True,
         show_version_select=len(dataset_group["versions"]) > 1,
