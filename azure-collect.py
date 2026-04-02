@@ -1227,6 +1227,38 @@ def attach_collection_context(data, endpoint_name, param_set):
     return data
 
 
+def iter_source_records(data):
+    """Yield dict records from supported JSON payload shapes."""
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                yield item
+        return
+
+    if not isinstance(data, dict):
+        return
+
+    value = data.get("value")
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, dict):
+                yield item
+        return
+
+    yield data
+
+
+def resolve_param_value(item, param):
+    """Resolve a parameter from a record or its collection context."""
+    value = item.get(param)
+    if value is None:
+        value = item.get("_collectionContext", {}).get("parameters", {}).get(param)
+    if value is None or isinstance(value, (dict, list)):
+        return None
+    value = str(value).strip()
+    return value or None
+
+
 def resolve_principal(object_id):
     """Resolve an Azure AD object ID to a readable name/type with status classification."""
     for entity_type, cmd in {
@@ -1332,12 +1364,7 @@ def collect_data_with_params(param_endpoints):
                 try:
                     with open(filepath) as f:
                         data = json.load(f)
-                    if not isinstance(data, list):
-                        continue
-
-                    for item in data:
-                        if not isinstance(item, dict):
-                            continue
+                    for item in iter_source_records(data):
                         source_records[source].append(item)
                 except Exception as e:
                     print(f"[!] Failed to parse {file}: {e}")
@@ -1351,14 +1378,14 @@ def collect_data_with_params(param_endpoints):
         for param, source in required_param_sources.items():
             values = []
             for item in source_records.get(source, []):
-                value = item.get(param)
-                if value and isinstance(value, str):
+                value = resolve_param_value(item, param)
+                if value:
                     values.append(value)
             if not values:
                 missing_params.append(param)
 
         if missing_params:
-            print(f"[~] Skipping {name}: Missing required parameters: {required_params}")
+            print(f"[~] Skipping {name}: Missing required parameters: {missing_params}")
             continue
 
         from collections import defaultdict
@@ -1379,8 +1406,8 @@ def collect_data_with_params(param_endpoints):
                 missing_value = False
 
                 for param in params_in_group:
-                    value = item.get(param)
-                    if not value or not isinstance(value, str):
+                    value = resolve_param_value(item, param)
+                    if not value:
                         missing_value = True
                         break
                     grouped_record[param] = value
