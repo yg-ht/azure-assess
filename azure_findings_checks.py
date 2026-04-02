@@ -155,7 +155,14 @@ def find_storage_default_network_access(storage_accounts):
     for account in storage_accounts:
         public_network = str(first_value(account, "publicNetworkAccess", ("properties", "publicNetworkAccess")) or "")
         default_action = str(
-            first_value(account, ("networkAcls", "defaultAction"), ("properties", "networkAcls", "defaultAction")) or ""
+            first_value(
+                account,
+                ("networkRuleSet", "defaultAction"),
+                ("properties", "networkRuleSet", "defaultAction"),
+                ("networkAcls", "defaultAction"),
+                ("properties", "networkAcls", "defaultAction"),
+            )
+            or ""
         )
         if public_network.lower() == "enabled" or default_action.lower() == "allow":
             item = resource_brief(account)
@@ -1358,7 +1365,13 @@ def find_storage_entra_auth_not_default(storage_accounts):
 def find_storage_azure_services_bypass_disabled(storage_accounts):
     evidence = []
     for account in storage_accounts:
-        bypass = first_value(account, ("networkAcls", "bypass"), ("properties", "networkAcls", "bypass"))
+        bypass = first_value(
+            account,
+            ("networkRuleSet", "bypass"),
+            ("properties", "networkRuleSet", "bypass"),
+            ("networkAcls", "bypass"),
+            ("properties", "networkAcls", "bypass"),
+        )
         bypass_values = {normalize_text(item) for item in (bypass if isinstance(bypass, list) else str(bypass).split(","))}
         if "azureservices" not in bypass_values:
             evidence.append(compact_dict(account, bypass=bypass))
@@ -3078,9 +3091,28 @@ def find_sqlserver_va_recipients_missing(vuln_assessments):
 def find_storage_azure_services_bypass_enabled(storage_accounts):
     evidence = []
     for account in storage_accounts:
-        bypass = normalize_text(first_value(account, ("networkAcls", "bypass"), ("properties", "networkAcls", "bypass")))
+        bypass = normalize_text(
+            first_value(
+                account,
+                ("networkRuleSet", "bypass"),
+                ("properties", "networkRuleSet", "bypass"),
+                ("networkAcls", "bypass"),
+                ("properties", "networkAcls", "bypass"),
+            )
+        )
         if "azureservices" in bypass:
-            evidence.append(compact_dict(account, bypass=first_value(account, ("networkAcls", "bypass"), ("properties", "networkAcls", "bypass"))))
+            evidence.append(
+                compact_dict(
+                    account,
+                    bypass=first_value(
+                        account,
+                        ("networkRuleSet", "bypass"),
+                        ("properties", "networkRuleSet", "bypass"),
+                        ("networkAcls", "bypass"),
+                        ("properties", "networkAcls", "bypass"),
+                    ),
+                )
+            )
     return result(
         "Storage Account Permits Trusted Microsoft Services Bypass",
         "Low",
