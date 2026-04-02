@@ -2061,29 +2061,35 @@ def find_storage_file_soft_delete_disabled(file_service_properties):
         evidence,
     )
 
-def find_storage_keys_not_rotated(storage_accounts, storage_keys, title="Storage Account Access Keys Not Rotated"):
+def find_storage_keys_not_rotated(storage_accounts, storage_keys, collection_time, title="Storage Account Access Keys Not Rotated"):
     keys_by_account = {}
     for item in storage_keys:
         key = collection_key(item)
         if key and key != "::":
             keys_by_account.setdefault(key, []).append(item)
+    reference_time = collection_time.astimezone(timezone.utc) if collection_time else datetime.now(timezone.utc)
     evidence = []
     for account in storage_accounts:
         stale = []
-        for key in keys_by_account.get(record_key(account), []):
+        account_keys = keys_by_account.get(record_key(account), [])
+        if len(account_keys) != 2:
+            continue
+        for key in account_keys:
             created_at = parse_iso_datetime(key.get("creationTime"))
             if not created_at:
-                stale.append({"keyName": key.get("keyName"), "creationTime": key.get("creationTime"), "ageDays": None})
-                continue
-            age_days = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).days
-            if age_days > 90:
-                stale.append({"keyName": key.get("keyName"), "creationTime": key.get("creationTime"), "ageDays": age_days})
-        if stale:
-            evidence.append(compact_dict(account, keys=stale))
+                stale = []
+                break
+            age_days = (reference_time - created_at.astimezone(timezone.utc)).days
+            if age_days <= 90:
+                stale = []
+                break
+            stale.append({"keyName": key.get("keyName"), "creationTime": key.get("creationTime"), "ageDays": age_days})
+        if stale and any(item["ageDays"] > 135 for item in stale):
+            evidence.append(compact_dict(account, keyCount=len(account_keys), referenceDate=reference_time.isoformat(), keys=stale))
     return result(
         title,
         "Low",
-        "Flags storage account access keys older than 90 days using the collected creationTime value.",
+        "Flags storage accounts with exactly two collected access keys where both keys are older than 90 days as of the dataset collection date and at least one key is older than 135 days.",
         evidence,
     )
 
@@ -2836,7 +2842,7 @@ def find_keyvault_key_rotation_disabled(vaults, keys, rotation_policies):
         evidence,
     )
 
-def find_keyvault_keys_older_than_90_days(vaults, keys, collection_time):
+def find_keyvault_keys_older_than_365_days(vaults, keys, collection_time):
     vaults_by_name = {normalize_text(vault.get("name")): vault for vault in vaults}
     keys_by_vault = {}
     for key in keys:
@@ -2848,9 +2854,6 @@ def find_keyvault_keys_older_than_90_days(vaults, keys, collection_time):
     reference_time = collection_time.astimezone(timezone.utc) if collection_time else datetime.now(timezone.utc)
     evidence = []
     for vault_name, vault_keys in keys_by_vault.items():
-        if len(vault_keys) != 2:
-            continue
-        aged_keys = []
         for key in vault_keys:
             created_value = first_value(
                 key,
@@ -2866,34 +2869,24 @@ def find_keyvault_keys_older_than_90_days(vaults, keys, collection_time):
             )
             created_at = parse_iso_datetime(created_value)
             if not created_at:
-                aged_keys = []
-                break
+                continue
             age_days = (reference_time - created_at.astimezone(timezone.utc)).days
-            if age_days <= 90:
-                aged_keys = []
-                break
-            aged_keys.append(
+            if age_days <= 365:
+                continue
+            evidence.append(
                 {
+                    "vaultName": vaults_by_name[vault_name].get("name"),
                     "name": key.get("name"),
                     "id": key.get("kid") or key.get("id"),
                     "created": created_value,
                     "ageDays": age_days,
+                    "referenceDate": reference_time.isoformat(),
                 }
             )
-        if not any(item["ageDays"] > 135 for item in aged_keys):
-            continue
-        evidence.append(
-            {
-                "vaultName": vaults_by_name[vault_name].get("name"),
-                "keyCount": len(vault_keys),
-                "keys": aged_keys,
-                "referenceDate": reference_time.isoformat(),
-            }
-        )
     return result(
-        "Key Vault keys are older than 90 days",
+        "Key Vault keys are older than 365 days",
         "Low",
-        "Flags vaults with exactly two collected keys where both keys are older than 90 days as of the dataset collection date and at least one key is older than 135 days.",
+        "Flags any collected Key Vault key older than 365 days as of the dataset collection date.",
         evidence,
     )
 

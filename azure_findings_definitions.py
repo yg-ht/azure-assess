@@ -767,8 +767,8 @@ EXISTING_FINDING_HEADLINES = {
     "Key Vault keys do not have rotation enabled": [
         "keyvault_key_rotation_enabled",
     ],
-    "Key Vault keys are older than 90 days": [
-        "keyvault_keys_rotated_with_stagger_allowance",
+    "Key Vault keys are older than 365 days": [
+        "keyvault_keys_older_than_365_days",
     ],
     "Non-RBAC Key Vault secrets do not have expiration dates": [
         "keyvault_non_rbac_secret_expiration_set",

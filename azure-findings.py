@@ -671,6 +671,7 @@ def evaluate_findings(catalog):
         find_storage_keys_not_rotated(
             storage_accounts,
             storage_keys,
+            latest_dataset_timestamp(source_map["storage_keys"]),
             title="Stale Azure access keys present",
         )
         if storage_accounts and dataset_present(catalog, "az_storage_account_keys_list")
@@ -1608,14 +1609,14 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
-        find_keyvault_keys_older_than_90_days(
+        find_keyvault_keys_older_than_365_days(
             key_vaults,
             key_vault_keys,
             latest_dataset_timestamp(source_map["key_vault_keys"]),
         )
         if key_vaults and key_vault_keys
         else unsupported(
-            "Key Vault keys are older than 90 days",
+            "Key Vault keys are older than 365 days",
             "Low",
             "Key Vault and key metadata datasets are required.",
         )
@@ -2768,7 +2769,7 @@ def evaluate_findings(catalog):
         "User Access Administrator role is assigned directly to users": source_map["role_assignments"],
         "Non-RBAC Key Vault keys do not have expiration dates": source_map["key_vaults"] + source_map["key_vault_keys"],
         "Key Vault keys do not have rotation enabled": source_map["key_vaults"] + source_map["key_vault_keys"] + source_map["key_vault_key_rotation_policies"],
-        "Key Vault keys are older than 90 days": source_map["key_vaults"] + source_map["key_vault_keys"],
+        "Key Vault keys are older than 365 days": source_map["key_vaults"] + source_map["key_vault_keys"],
         "Non-RBAC Key Vault secrets do not have expiration dates": source_map["key_vaults"] + source_map["key_vault_secrets"],
         "RBAC Key Vault keys do not have expiration dates": source_map["key_vaults"] + source_map["key_vault_keys"],
         "RBAC Key Vault secrets do not have expiration dates": source_map["key_vaults"] + source_map["key_vault_secrets"],
