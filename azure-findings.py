@@ -672,11 +672,10 @@ def evaluate_findings(catalog):
             storage_accounts,
             storage_keys,
             latest_dataset_timestamp(source_map["storage_keys"] or source_map["storage_accounts"]),
-            title="Stale Azure access keys present",
         )
         if storage_accounts
         else unsupported(
-            "Stale Azure access keys present",
+            "Storage Account Access Keys Not Rotated",
             "Medium",
             "Storage account dataset is required.",
         )
@@ -2588,7 +2587,7 @@ def evaluate_findings(catalog):
     reference_sources = {
         "Azure blob container permits public access": source_map["storage_accounts"],
         "Custom Azure subscription owner roles permitted": source_map["role_definitions"] + source_map["role_assignments"],
-        "Stale Azure access keys present": source_map["storage_accounts"] + source_map["storage_keys"],
+        "Storage Account Access Keys Not Rotated": source_map["storage_accounts"] + source_map["storage_keys"],
         "Azure Storage accounts do not enforce encrypted data transfer": source_map["storage_accounts"],
         "Azure policy permits users to create security groups": source_map["graph_authorization_policy"],
         "Azure Storage Accounts permitting deprecated TLS versions": source_map["storage_accounts"],
@@ -2746,7 +2745,6 @@ def evaluate_findings(catalog):
         "SQL Server Vulnerability Assessment Email Notifications to Admins and Owners Not Enabled": source_map["sql_server_vuln_assessments"],
         "SQL Server Vulnerability Assessment Scan Report Recipients Not Configured": source_map["sql_server_vuln_assessments"],
         "Storage Account Permits Trusted Microsoft Services Bypass": source_map["storage_accounts"],
-        "Storage Account Access Keys Not Rotated": source_map["storage_accounts"] + source_map["storage_keys"],
         "App Service Environment vNet injection not deployed": source_map["app_service_environments"] + source_map["subscriptions"],
         "Function Apps have managed identities with administrative privileges": source_map["function_apps"] + source_map["function_app_identities"] + source_map["role_assignments"],
         "Function Apps are not using the latest Functions runtime major version": source_map["function_app_configs"] + source_map["function_app_appsettings"],

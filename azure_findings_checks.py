@@ -2071,15 +2071,26 @@ def find_storage_keys_not_rotated(storage_accounts, storage_keys, collection_tim
     evidence = []
     for account in storage_accounts:
         stale = []
-        account_keys = keys_by_account.get(record_key(account), [])
+        account_key_times = first_value(account, "keyCreationTime", ("properties", "keyCreationTime")) or {}
+        if not isinstance(account_key_times, dict):
+            account_key_times = {}
+
+        account_keys = []
+        for key_record in keys_by_account.get(record_key(account), []):
+            enriched = dict(key_record)
+            key_name = normalize_text(first_value(enriched, "keyName", ("properties", "keyName")))
+            if not first_value(enriched, "creationTime", ("properties", "creationTime")) and key_name:
+                fallback_creation = account_key_times.get(key_name)
+                if fallback_creation:
+                    enriched["creationTime"] = fallback_creation
+            account_keys.append(enriched)
+
         if not account_keys:
-            key_creation_times = first_value(account, "keyCreationTime", ("properties", "keyCreationTime")) or {}
-            if isinstance(key_creation_times, dict):
-                account_keys = [
-                    {"keyName": key_name, "creationTime": created_at}
-                    for key_name, created_at in sorted(key_creation_times.items())
-                    if created_at
-                ]
+            account_keys = [
+                {"keyName": key_name, "creationTime": created_at}
+                for key_name, created_at in sorted(account_key_times.items())
+                if created_at
+            ]
         if len(account_keys) != 2:
             continue
         for key in account_keys:

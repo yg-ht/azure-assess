@@ -209,7 +209,7 @@ EXISTING_FINDING_HEADLINES = {
     "Azure Storage accounts do not enforce encrypted data transfer": [
         "storage_secure_transfer_required_is_enabled",
     ],
-    "Stale Azure access keys present": [
+    "Storage Account Access Keys Not Rotated": [
         "storage_key_rotation_90_days",
     ],
     "Azure policy permits users to create security groups": [
@@ -820,9 +820,6 @@ EXISTING_FINDING_HEADLINES = {
     ],
     "SQL Server Vulnerability Assessment Email Notifications to Admins and Owners Not Enabled": [
         "sqlserver_va_emails_notifications_admins_enabled",
-    ],
-    "Storage Account Access Keys Not Rotated": [
-        "storage_key_rotation_90_days",
     ],
     "Storage queues allow public access": [
         "storage_queue_public_access_disabled",
