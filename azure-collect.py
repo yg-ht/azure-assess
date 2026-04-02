@@ -85,6 +85,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Data Factory Instances", "cli_command": "az datafactory list", "needs_pagination": False},
     {"name": "Defender Settings", "cli_command": "az security pricing list", "needs_pagination": False},
     {"name": "Defender Auto Provisioning Settings", "cli_command": "az security auto-provisioning-setting list", "needs_pagination": False},
+    {"name": "Defender Assessments", "cli_command": "az security assessment list", "needs_pagination": False},
     {"name": "Defender JIT Policies", "cli_command": "az security jit-policy list", "needs_pagination": False},
     {"name": "Defender General Settings", "cli_command": "az security setting list", "needs_pagination": False},
     {"name": "Defender Workspace Settings", "cli_command": "az security workspace-setting list", "needs_pagination": False},
@@ -303,6 +304,21 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Key Vault Private Endpoint Connections",
         "cli_command": "az keyvault show --name {name} --resource-group {resourceGroup} --query privateEndpointConnections",
         "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
+    },
+    {
+        "name": "Key Vault Keys",
+        "cli_command": "az keyvault key list --vault-name {name}",
+        "required_params": {"name": "az_keyvault_list"},
+    },
+    {
+        "name": "Key Vault Key Rotation Policies",
+        "cli_command": "az keyvault key rotation-policy show --id {kid}",
+        "required_params": {"kid": "az_keyvault_key_list"},
+    },
+    {
+        "name": "Key Vault Secrets",
+        "cli_command": "az keyvault secret list --vault-name {name}",
+        "required_params": {"name": "az_keyvault_list"},
     },
     {
         "name": "Storage Account Keys",
