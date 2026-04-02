@@ -671,14 +671,14 @@ def evaluate_findings(catalog):
         find_storage_keys_not_rotated(
             storage_accounts,
             storage_keys,
-            latest_dataset_timestamp(source_map["storage_keys"]),
+            latest_dataset_timestamp(source_map["storage_keys"] or source_map["storage_accounts"]),
             title="Stale Azure access keys present",
         )
-        if storage_accounts and dataset_present(catalog, "az_storage_account_keys_list")
+        if storage_accounts
         else unsupported(
             "Stale Azure access keys present",
             "Medium",
-            "Storage account and key datasets are required.",
+            "Storage account dataset is required.",
         )
     )
     findings.append(
@@ -2588,7 +2588,7 @@ def evaluate_findings(catalog):
     reference_sources = {
         "Azure blob container permits public access": source_map["storage_accounts"],
         "Custom Azure subscription owner roles permitted": source_map["role_definitions"] + source_map["role_assignments"],
-        "Stale Azure access keys present": dataset_paths(catalog, "az_storage_account_keys_list"),
+        "Stale Azure access keys present": source_map["storage_accounts"] + source_map["storage_keys"],
         "Azure Storage accounts do not enforce encrypted data transfer": source_map["storage_accounts"],
         "Azure policy permits users to create security groups": source_map["graph_authorization_policy"],
         "Azure Storage Accounts permitting deprecated TLS versions": source_map["storage_accounts"],

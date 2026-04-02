@@ -2072,10 +2072,19 @@ def find_storage_keys_not_rotated(storage_accounts, storage_keys, collection_tim
     for account in storage_accounts:
         stale = []
         account_keys = keys_by_account.get(record_key(account), [])
+        if not account_keys:
+            key_creation_times = first_value(account, "keyCreationTime", ("properties", "keyCreationTime")) or {}
+            if isinstance(key_creation_times, dict):
+                account_keys = [
+                    {"keyName": key_name, "creationTime": created_at}
+                    for key_name, created_at in sorted(key_creation_times.items())
+                    if created_at
+                ]
         if len(account_keys) != 2:
             continue
         for key in account_keys:
-            created_at = parse_iso_datetime(key.get("creationTime"))
+            creation_time = first_value(key, "creationTime", ("properties", "creationTime"))
+            created_at = parse_iso_datetime(creation_time)
             if not created_at:
                 stale = []
                 break
@@ -2083,7 +2092,7 @@ def find_storage_keys_not_rotated(storage_accounts, storage_keys, collection_tim
             if age_days <= 90:
                 stale = []
                 break
-            stale.append({"keyName": key.get("keyName"), "creationTime": key.get("creationTime"), "ageDays": age_days})
+            stale.append({"keyName": key.get("keyName"), "creationTime": creation_time, "ageDays": age_days})
         if stale and any(item["ageDays"] > 135 for item in stale):
             evidence.append(compact_dict(account, keyCount=len(account_keys), referenceDate=reference_time.isoformat(), keys=stale))
     return result(
