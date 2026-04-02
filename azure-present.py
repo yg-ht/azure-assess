@@ -234,9 +234,9 @@ HTML_TEMPLATE = """
       <div class="header d-flex justify-content-between align-items-center mt-4">
         <h1>Azure Audit Data Viewer</h1>
         <div>
-          <button id="dataViewerIndex" class="btn btn-secondary">Data Viewer</button>
-          <button id="findingsView" class="btn btn-secondary">Findings</button>
           <button id="returnToDashboard" class="btn btn-secondary">Dashboard</button>
+          <button id="findingsView" class="btn btn-secondary">Findings</button>
+          <button id="dataViewerIndex" class="btn btn-secondary">Data Viewer</button>
         </div>
         <button id="darkModeToggle" class="btn btn-secondary">Toggle Dark Mode</button>
       </div>
@@ -529,32 +529,39 @@ document.addEventListener('DOMContentLoaded', function () {
   const table = document.querySelector('table');
   if (!table) return;
 
-  // Use table.rows to access every row (header and data rows)
-  const rows = table.rows;
-  if (rows.length === 0) return;
+  const headerRow = table.rows[0];
+  if (!headerRow || headerRow.cells.length === 0) return;
 
-  // Process header row (assumed to be the first row)
-  const headerRow = rows[0];
-  if (headerRow.cells.length > 0) {
-    // Hide the first header cell (assumed to be 'json')
-    headerRow.cells[0].style.display = 'none';
-
-    // Create and insert a new header cell for "Actions"
-    const newTh = document.createElement('th');
-    newTh.textContent = 'Actions';
-    headerRow.insertBefore(newTh, headerRow.cells[1]);
+  let jsonColumnIndex = -1;
+  for (let i = 0; i < headerRow.cells.length; i++) {
+    const headerText = headerRow.cells[i].textContent.trim().toLowerCase();
+    if (headerText === 'json_string') {
+      jsonColumnIndex = i;
+      break;
+    }
   }
 
-  // Loop through all remaining rows
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i];
+  if (jsonColumnIndex === -1) return;
+
+  headerRow.cells[jsonColumnIndex].style.display = 'none';
+
+  const newTh = document.createElement('th');
+  newTh.textContent = 'Actions';
+  if (jsonColumnIndex + 1 < headerRow.cells.length) {
+    headerRow.insertBefore(newTh, headerRow.cells[jsonColumnIndex + 1]);
+  } else {
+    headerRow.appendChild(newTh);
+  }
+
+  for (let i = 1; i < table.rows.length; i++) {
+    const row = table.rows[i];
     if (row.cells.length === 0) continue;
+    if (jsonColumnIndex >= row.cells.length) continue;
 
-    // Hide the first cell (raw JSON)
-    row.cells[0].style.display = 'none';
+    const jsonCell = row.cells[jsonColumnIndex];
+    jsonCell.style.display = 'none';
 
-    // Insert a new cell for the "View JSON" button
-    const toggleCell = row.insertCell(1);
+    const toggleCell = row.insertCell(Math.min(jsonColumnIndex + 1, row.cells.length));
     const toggleBtn = document.createElement('button');
 
     toggleBtn.textContent = 'View JSON';
@@ -564,13 +571,12 @@ document.addEventListener('DOMContentLoaded', function () {
 
     toggleBtn.addEventListener('click', () => {
       try {
-        // Retrieve and pretty-print the JSON from the hidden cell
-        const rawText = row.cells[0].textContent.trim();
+        const rawText = jsonCell.textContent.trim();
         const pretty = JSON.stringify(JSON.parse(rawText), null, 2);
         document.getElementById('jsonModalLabel').textContent = `Record #${i}`;
         document.getElementById('jsonModalContent').textContent = pretty;
       } catch (err) {
-        document.getElementById('jsonModalContent').textContent = 'Invalid JSON or corrupted entry.';
+        document.getElementById('jsonModalContent').textContent = 'Broken or missing JSON for this row.';
       }
     });
 
