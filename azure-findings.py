@@ -34,7 +34,7 @@ def parse_arguments():
         "--output-file",
         type=str,
         default=None,
-        help="Path to save confirmed findings as SARIF 2.1.0 JSON (defaults to <input-dir>/azure-findings.json)",
+        help="Path to save found findings as SARIF 2.1.0 JSON (defaults to <input-dir>/azure-findings.json)",
     )
     parser.add_argument(
         "--no-save",
@@ -297,7 +297,7 @@ def sarif_rule_descriptor(finding):
 
 def sarif_result_message(finding):
     return (
-        f"{finding['title']} confirmed with {finding['evidence_count']} evidence item(s). "
+        f"{finding['title']} found with {finding['evidence_count']} evidence item(s). "
         f"{finding['reason']}"
     )
 
@@ -353,9 +353,9 @@ def sarif_result(finding):
 
 
 def sarif_output(input_dir, catalog, findings):
-    confirmed = [finding for finding in findings if finding["status"] == "confirmed"]
+    found = [finding for finding in findings if finding["status"] == "found"]
     unique_rules = {}
-    for finding in confirmed:
+    for finding in found:
         unique_rules.setdefault(sarif_rule_id(finding), sarif_rule_descriptor(finding))
     return {
         "$schema": SARIF_SCHEMA_URI,
@@ -372,7 +372,7 @@ def sarif_output(input_dir, catalog, findings):
                 "automationDetails": {
                     "id": str(Path(input_dir)),
                     "description": {
-                        "text": "Confirmed Azure findings generated from azure-collect datasets."
+                        "text": "Azure findings in the found state generated from azure-collect datasets."
                     },
                 },
                 "invocations": [
@@ -381,15 +381,15 @@ def sarif_output(input_dir, catalog, findings):
                         "properties": {
                             "input_dir": str(Path(input_dir)),
                             "files_loaded": sorted(catalog.keys()),
-                            "confirmed_findings": len(confirmed),
+                            "found_findings": len(found),
                         },
                     }
                 ],
-                "results": [sarif_result(finding) for finding in confirmed],
+                "results": [sarif_result(finding) for finding in found],
                 "properties": {
                     "input_dir": str(Path(input_dir)),
                     "files_loaded": sorted(catalog.keys()),
-                    "result_origin": "azure-findings confirmed results only",
+                    "result_origin": "azure-findings found results only",
                 },
             }
         ],

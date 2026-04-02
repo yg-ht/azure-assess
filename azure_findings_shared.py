@@ -391,10 +391,23 @@ def parameter_value(parameter_map, resource, *parameter_names):
     return None
 
 def unsupported(title, severity, reason):
+    normalized_reason = normalize_text(reason)
+    no_data_markers = (
+        "dataset was found",
+        "dataset is required",
+        "datasets are required",
+        "inventory is required",
+        "is required",
+        "are required",
+    )
     return {
         "title": title,
         "severity": severity,
-        "status": "not_evaluated",
+        "status": (
+            "no_data_to_assess"
+            if normalized_reason.startswith("no ") or any(marker in normalized_reason for marker in no_data_markers)
+            else "not_implemented"
+        ),
         "reason": reason,
         "evidence_count": 0,
         "evidence": [],
@@ -404,7 +417,7 @@ def result(title, severity, reason, evidence):
     return {
         "title": title,
         "severity": severity,
-        "status": "confirmed" if evidence else "not_found",
+        "status": "found" if evidence else "not_found",
         "reason": reason,
         "evidence_count": len(evidence),
         "evidence": evidence,

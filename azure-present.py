@@ -49,9 +49,10 @@ FINDINGS_STRUCTURED_FILENAME = "azure-findings.json"
 FINDINGS_FILENAMES = {FINDINGS_FLAT_FILENAME, FINDINGS_STRUCTURED_FILENAME}
 FINDING_STATUS_OPTIONS = OrderedDict(
     [
-        ("confirmed", {"label": "Confirmed Findings", "statuses": {"confirmed", "supported"}}),
+        ("found", {"label": "Found Items", "statuses": {"found"}}),
         ("not_found", {"label": "Not Found Items", "statuses": {"not_found"}}),
-        ("not_evaluated", {"label": "Not Evaluated / Unimplemented", "statuses": {"not_evaluated"}}),
+        ("no_data_to_assess", {"label": "No Data To Assess", "statuses": {"no_data_to_assess"}}),
+        ("not_implemented", {"label": "Not Implemented", "statuses": {"not_implemented"}}),
         ("all", {"label": "All Findings", "statuses": None}),
     ]
 )
@@ -700,18 +701,15 @@ def findings_summary():
 
     counts = {
         "executed": len(rows),
-        "issues": 0,
+        "found": 0,
         "not_found": 0,
-        "not_evaluated": 0,
+        "no_data_to_assess": 0,
+        "not_implemented": 0,
     }
     for row in rows:
-        status = row.get("status") if isinstance(row, dict) else None
-        if status in {"confirmed", "supported"}:
-            counts["issues"] += 1
-        elif status == "not_found":
-            counts["not_found"] += 1
-        elif status == "not_evaluated":
-            counts["not_evaluated"] += 1
+        status = canonical_finding_status(row.get("status") if isinstance(row, dict) else None)
+        if status in counts:
+            counts[status] += 1
     return counts
 
 
@@ -740,9 +738,10 @@ def build_dashboard_summary_cards(tabs):
     if findings is not None:
         cards.extend([
             {"label": "Finding Checks Executed", "value": findings["executed"], "detail": "Rows in azure-findings-flat.json"},
-            {"label": "Finding Checks With Issues", "value": findings["issues"], "detail": "Statuses: confirmed or supported"},
+            {"label": "Finding Checks Found", "value": findings["found"], "detail": "Status: found"},
             {"label": "Finding Checks Clear", "value": findings["not_found"], "detail": "Status: not_found"},
-            {"label": "Finding Checks Not Evaluated", "value": findings["not_evaluated"], "detail": "Status: not_evaluated"},
+            {"label": "Finding Checks With No Data", "value": findings["no_data_to_assess"], "detail": "Status: no_data_to_assess"},
+            {"label": "Finding Checks Not Implemented", "value": findings["not_implemented"], "detail": "Status: not_implemented"},
         ])
     return cards
 
@@ -751,16 +750,21 @@ def findings_flat_path():
     return DATA_DIR / FINDINGS_FLAT_FILENAME
 
 
+def canonical_finding_status(value):
+    normalized = str(value or "").strip().lower().replace(" ", "_")
+    if normalized in {"supported", "confirmed", "confirmed_findings"}:
+        return "found"
+    if normalized in {"not_evaluated", "unsupported", "unimplemented"}:
+        return "not_implemented"
+    return normalized
+
+
 def normalize_findings_status_filter(value):
     if not value:
-        return "confirmed"
-    normalized = str(value).strip().lower().replace(" ", "_")
-    if normalized in {"supported", "confirmed_findings"}:
-        normalized = "confirmed"
-    if normalized in {"not_implemented", "unimplemented", "unsupported"}:
-        normalized = "not_evaluated"
+        return "found"
+    normalized = canonical_finding_status(value)
     if normalized not in FINDING_STATUS_OPTIONS:
-        return "confirmed"
+        return "found"
     return normalized
 
 
@@ -768,7 +772,7 @@ def filter_findings_by_status(data, status_filter):
     allowed_statuses = FINDING_STATUS_OPTIONS[status_filter]["statuses"]
     if allowed_statuses is None or not isinstance(data, list):
         return data
-    return [item for item in data if item.get("status") in allowed_statuses]
+    return [item for item in data if canonical_finding_status(item.get("status")) in allowed_statuses]
 
 
 def contains_nested_list_of_dicts(obj):
@@ -948,6 +952,11 @@ def findings():
 
     if isinstance(data, dict) and "rows" in data:
         data = data["rows"]
+
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                item["status"] = canonical_finding_status(item.get("status"))
 
     data = filter_findings_by_status(data, status_filter)
 

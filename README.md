@@ -95,7 +95,7 @@ pipenv run python azure-collect.py --auth-method managed-identity --subscription
 ### `azure-findings.py`
 
 Purpose:
-Analyse the JSON produced by `azure-collect.py`, print a status summary for all implemented checks, and generate SARIF output for the confirmed findings.
+Analyse the JSON produced by `azure-collect.py`, print a status summary for all checks, and generate SARIF output for the findings in the `found` state.
 
 Typical usage:
 
@@ -112,7 +112,7 @@ Parameters:
 
 Outputs:
 
-- `azure-findings.json`: SARIF 2.1.0 output containing the full set of confirmed findings
+- `azure-findings.json`: SARIF 2.1.0 output containing the full set of findings in the `found` state
 - `azure-findings-flat.json`: flattened findings rows for easier dashboard display
 
 ### `azure-present.py`
