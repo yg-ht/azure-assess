@@ -1,0 +1,20 @@
+# Generated Azure assessment data
+/azure-collect/
+data/
+output/
+
+# Generated findings artifacts
+azure-findings.json
+azure-findings-flat.json
+*.sarif
+
+# Common local JSON dataset dumps
+*.json
+!requirements*.json
+!package*.json
+
+# Local Python and IDE artifacts
+__pycache__/
+*.py[cod]
+.venv/
+.idea/
