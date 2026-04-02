@@ -647,10 +647,16 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
-        unsupported(
+        find_storage_keys_not_rotated(
+            storage_accounts,
+            storage_keys,
+            title="Stale Azure access keys present",
+        )
+        if storage_accounts and dataset_present(catalog, "az_storage_account_keys_list")
+        else unsupported(
             "Stale Azure access keys present",
             "Medium",
-            "azure-collect does not currently gather storage keys, account keys, or key last-used metadata.",
+            "Storage account and key datasets are required.",
         )
     )
     findings.append(
@@ -663,10 +669,12 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
-        unsupported(
+        find_entra_users_can_create_security_groups(graph_authorization_policy)
+        if graph_authorization_policy
+        else unsupported(
             "Azure policy permits users to create security groups",
             "Medium",
-            "The current collector does not gather the policy/rule data needed to safely infer user group creation capability.",
+            "Microsoft Graph authorization policy data is required.",
         )
     )
     findings.append(
@@ -1961,6 +1969,15 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
+        find_postgres_log_retention_too_short(postgres_servers, postgres_parameters)
+        if postgres_servers and postgres_parameters
+        else unsupported(
+            "PostgreSQL server with short log retention period",
+            "Low",
+            "PostgreSQL server and parameter datasets are required.",
+        )
+    )
+    findings.append(
         find_postgres_private_dns_missing(postgres_servers)
         if postgres_servers
         else unsupported(
@@ -2309,15 +2326,6 @@ def evaluate_findings(catalog):
         )
     )
     findings.append(
-        find_storage_keys_not_rotated(storage_accounts, storage_keys)
-        if storage_accounts and dataset_present(catalog, "az_storage_account_keys_list")
-        else unsupported(
-            "Storage Account Access Keys Not Rotated",
-            "Low",
-            "Storage account and key datasets are required.",
-        )
-    )
-    findings.append(
         find_storage_child_public_access(storage_accounts, storage_queues, "Storage queues allow public access", "queue")
         if storage_accounts and storage_queues
         else unsupported(
@@ -2547,7 +2555,7 @@ def evaluate_findings(catalog):
         "Custom Azure subscription owner roles permitted": source_map["role_definitions"] + source_map["role_assignments"],
         "Stale Azure access keys present": dataset_paths(catalog, "az_storage_account_keys_list"),
         "Azure Storage accounts do not enforce encrypted data transfer": source_map["storage_accounts"],
-        "Azure policy permits users to create security groups": dataset_paths(catalog, "az_policy_assignment_show") + dataset_paths(catalog, "az_policy_definition_show"),
+        "Azure policy permits users to create security groups": source_map["graph_authorization_policy"],
         "Azure Storage Accounts permitting deprecated TLS versions": source_map["storage_accounts"],
         "Storage accounts with default network access permitted": source_map["storage_accounts"],
         "Access permitted to PostgreSQL server from Azure services": source_map["postgres_firewall_rules"],

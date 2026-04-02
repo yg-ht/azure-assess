@@ -209,6 +209,9 @@ EXISTING_FINDING_HEADLINES = {
     "Azure Storage accounts do not enforce encrypted data transfer": [
         "storage_secure_transfer_required_is_enabled",
     ],
+    "Stale Azure access keys present": [
+        "storage_key_rotation_90_days",
+    ],
     "Azure policy permits users to create security groups": [
         "entra_policy_default_users_cannot_create_security_groups",
     ],
@@ -791,6 +794,9 @@ EXISTING_FINDING_HEADLINES = {
     "HTTP is exposed to the internet through NSG rules": [
         "network_http_internet_access_restricted",
     ],
+    "NSG Inbound Rule Allows Internet Access to UDP Services": [
+        "network_udp_internet_access_restricted",
+    ],
     "Public IP addresses are exposed to internet indexing services": [
         "network_public_ip_shodan",
     ],
@@ -837,4 +843,3 @@ EXISTING_FINDING_HEADLINES = {
         "vm_sufficient_daily_backup_retention_period",
     ],
 }
-

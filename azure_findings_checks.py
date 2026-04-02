@@ -1251,6 +1251,24 @@ def find_postgres_parameter_disabled(postgres_servers, postgres_parameters, para
             evidence.append(compact_dict(server, **{evidence_field: parameter_value(parameter_map, server, parameter_name)}))
     return result(title, "Low", description, evidence)
 
+def find_postgres_log_retention_too_short(postgres_servers, postgres_parameters):
+    parameter_map = build_parameter_map(postgres_parameters)
+    evidence = []
+    for server in postgres_servers:
+        raw_value = parameter_value(parameter_map, server, "logfiles.retention_days")
+        try:
+            retention_days = int(str(raw_value).strip())
+        except (TypeError, ValueError):
+            retention_days = None
+        if retention_days is None or retention_days <= 3:
+            evidence.append(compact_dict(server, logRetentionDays=raw_value))
+    return result(
+        "PostgreSQL server with short log retention period",
+        "Low",
+        "Uses the PostgreSQL flexible server parameter dataset to check that logfiles.retention_days is greater than 3.",
+        evidence,
+    )
+
 def find_postgres_private_dns_missing(postgres_servers):
     evidence = []
     for server in postgres_servers:
@@ -1743,6 +1761,19 @@ def find_entra_users_can_create_tenants(auth_policy_records):
         evidence,
     )
 
+def find_entra_users_can_create_security_groups(auth_policy_records):
+    evidence = []
+    for policy in auth_policy_records:
+        allowed = first_value(policy, ("defaultUserRolePermissions", "allowedToCreateSecurityGroups"))
+        if allowed is not False:
+            evidence.append({"id": policy.get("id"), "allowedToCreateSecurityGroups": allowed})
+    return result(
+        "Azure policy permits users to create security groups",
+        "Medium",
+        "Checks the authorization policy default user permissions for security group creation.",
+        evidence,
+    )
+
 def find_entra_guest_invites_not_admin_only(auth_policy_records):
     evidence = []
     for policy in auth_policy_records:
@@ -2030,7 +2061,7 @@ def find_storage_file_soft_delete_disabled(file_service_properties):
         evidence,
     )
 
-def find_storage_keys_not_rotated(storage_accounts, storage_keys):
+def find_storage_keys_not_rotated(storage_accounts, storage_keys, title="Storage Account Access Keys Not Rotated"):
     keys_by_account = {}
     for item in storage_keys:
         key = collection_key(item)
@@ -2050,7 +2081,7 @@ def find_storage_keys_not_rotated(storage_accounts, storage_keys):
         if stale:
             evidence.append(compact_dict(account, keys=stale))
     return result(
-        "Storage Account Access Keys Not Rotated",
+        title,
         "Low",
         "Flags storage account access keys older than 90 days using the collected creationTime value.",
         evidence,
