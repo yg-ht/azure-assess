@@ -204,6 +204,7 @@ HTML_TEMPLATE = """
       <div class="header d-flex justify-content-between align-items-center mt-4">
         <h1>Azure Audit Data Viewer</h1>
         <div>
+          <button id="dataViewerIndex" class="btn btn-secondary">Data Viewer</button>
           <button id="findingsView" class="btn btn-secondary">Findings</button>
           <button id="returnToDashboard" class="btn btn-secondary">Dashboard</button>
         </div>
@@ -231,6 +232,12 @@ HTML_TEMPLATE = """
           {% endfor %}
         </div>
         {% endif %}
+      </div>
+
+      {% elif dataset_index %}
+      <!-- DATASET INDEX PAGE -->
+      <div class="mt-4">
+        <h2>Data Viewer</h2>
         <table class="table table-striped">
           <thead>
             <tr>
@@ -347,12 +354,18 @@ HTML_TEMPLATE = """
     </script>
 
     <script>
+      document.getElementById('dataViewerIndex').addEventListener('click', function() {
+          window.location.href = "/datasets";
+      });
+    </script>
+
+    <script>
       document.getElementById('findingsView').addEventListener('click', function() {
           window.location.href = "/findings";
       });
     </script>
 
-    {% if dashboard %}
+    {% if dashboard or dataset_index %}
     <script>
       document.querySelectorAll('.dataset-version-select').forEach(function(select) {
         select.addEventListener('change', function() {
@@ -938,6 +951,21 @@ def dashboard():
         tabs=tabs,
         summary_cards=build_dashboard_summary_cards(tabs),
         dashboard=True,
+        dataset_index=False,
+    )
+
+
+@app.route('/datasets')
+def datasets():
+    if not DATA_DIR.exists():
+        return "<p>Data directory not found. Please create a 'data' folder with JSON files.</p>"
+    tabs = dataset_groups()
+    return render_template_string(
+        HTML_TEMPLATE,
+        tabs=tabs,
+        summary_cards=None,
+        dashboard=False,
+        dataset_index=True,
     )
 
 
@@ -984,6 +1012,7 @@ def findings():
         current_dataset_filename=FINDINGS_FLAT_FILENAME,
         findings_status=status_filter,
         summary_cards=None,
+        dataset_index=False,
         findings_status_options=[
             {"value": value, "label": meta["label"]}
             for value, meta in FINDING_STATUS_OPTIONS.items()
@@ -1025,6 +1054,7 @@ def query(filename):
         findings_status=None,
         findings_status_options=None,
         summary_cards=None,
+        dataset_index=False,
         show_data_source_select=True,
         show_version_select=len(dataset_group["versions"]) > 1,
         current_versions=dataset_group["versions"],
