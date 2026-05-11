@@ -58,6 +58,17 @@ from tqdm import tqdm
 
 AUTH_CONFIG = {}
 
+
+def command_filename_prefix(command):
+    """Build a filesystem-safe dataset prefix from an Azure CLI command."""
+    normalized = command.lower().replace("{", "").replace("}", "")
+    safe_chars = [
+        char if char.isalnum() or char in "._-" else "_"
+        for char in normalized
+    ]
+    return "_".join(part for part in "".join(safe_chars).split("_") if part)
+
+
 AZURE_CLI_ENDPOINTS = [
     {"name": "API Management Services", "cli_command": "az apim list", "needs_pagination": False},
     {"name": "App Configuration Stores", "cli_command": "az appconfig list", "needs_pagination": False},
@@ -85,7 +96,12 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Data Factory Instances", "cli_command": "az datafactory list", "needs_pagination": False},
     {"name": "Defender Settings", "cli_command": "az security pricing list", "needs_pagination": False},
     {"name": "Defender Auto Provisioning Settings", "cli_command": "az security auto-provisioning-setting list", "needs_pagination": False},
-    {"name": "Defender Assessments", "cli_command": "az security assessment list", "needs_pagination": False},
+    {
+        "name": "Defender Assessments",
+        "cli_command": "az rest --method get --url \"/subscriptions/{subscriptionId}/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
+        "needs_pagination": False,
+        "extract_value": True,
+    },
     {"name": "Defender JIT Policies", "cli_command": "az security jit-policy list", "needs_pagination": False},
     {"name": "Defender General Settings", "cli_command": "az security setting list", "needs_pagination": False},
     {"name": "Defender Workspace Settings", "cli_command": "az security workspace-setting list", "needs_pagination": False},
@@ -1462,6 +1478,9 @@ def collect_data_with_params(param_endpoints):
                 result = run_az_cli(cli_command)
                 data = result.get("json", [])
 
+                if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
+                    data = data["value"]
+
                 if not data:
                     print(f"[!] No data returned for: {name} with {param_set}")
                     continue
@@ -1489,7 +1508,7 @@ def collect_data_with_params(param_endpoints):
                 print(f"[!] Data collect with params failed for {name} with {param_set}: {e}")
 
         if all_results:
-            filename = cli_template.lower().replace("{", "").replace("}", "").replace(" ", "_").replace("(", "").replace(")", "") + f"_{START_TIMESTAMP}.json"
+            filename = command_filename_prefix(cli_template) + f"_{START_TIMESTAMP}.json"
             if DEBUG:
                 print(f"[DEBUG] Writing {len(all_results)} results to {filename}")
             save_json(all_results, filename)
@@ -1540,6 +1559,9 @@ def collect_data(endpoints):
             result = run_az_cli(cmd)
             data = result.get("json", [])
 
+            if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
+                data = data["value"]
+
             if isinstance(data, list):
                 count = len(data)
             elif isinstance(data, dict):
@@ -1556,7 +1578,7 @@ def collect_data(endpoints):
             else:
                 print(f"[~] {name} returned {count}")
 
-            filename = cmd.lower().replace(" ", "_").replace("(", "").replace(")", "") + f"_{START_TIMESTAMP}.json"
+            filename = command_filename_prefix(cmd) + f"_{START_TIMESTAMP}.json"
             save_json(data, filename)
 
         except Exception as e:

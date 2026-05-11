@@ -143,6 +143,20 @@ def dataset_paths(catalog, *fragments):
     return sorted(set(paths))
 
 
+def dataset_records_any(catalog, *fragment_sets):
+    records = []
+    for fragments in fragment_sets:
+        records.extend(dataset_records(catalog, *fragments))
+    return records
+
+
+def dataset_paths_any(catalog, *fragment_sets):
+    paths = []
+    for fragments in fragment_sets:
+        paths.extend(dataset_paths(catalog, *fragments))
+    return sorted(set(paths))
+
+
 def resource_portal_link(resource_id):
     if not resource_id:
         return None
@@ -462,7 +476,11 @@ def evaluate_findings(catalog):
     key_vault_key_rotation_policies = dataset_records(catalog, "az_keyvault_key_rotation-policy_show")
     key_vault_secrets = dataset_records(catalog, "az_keyvault_secret_list")
     metric_alerts = dataset_records(catalog, "az_monitor_metrics_alert_list")
-    defender_assessments = dataset_records(catalog, "az_security_assessment_list")
+    defender_assessments = dataset_records_any(
+        catalog,
+        ("az_security_assessment_list",),
+        ("microsoft.security", "assessments"),
+    )
     defender_settings = dataset_records(catalog, "az_security_pricing_list")
     defender_general_settings = dataset_records(catalog, "az_security_setting_list")
     defender_auto_provisioning_settings = dataset_records(catalog, "az_security_auto-provisioning-setting_list")
@@ -561,7 +579,11 @@ def evaluate_findings(catalog):
         "key_vault_key_rotation_policies": dataset_paths(catalog, "az_keyvault_key_rotation-policy_show"),
         "key_vault_secrets": dataset_paths(catalog, "az_keyvault_secret_list"),
         "metric_alerts": dataset_paths(catalog, "az_monitor_metrics_alert_list"),
-        "defender_assessments": dataset_paths(catalog, "az_security_assessment_list"),
+        "defender_assessments": dataset_paths_any(
+            catalog,
+            ("az_security_assessment_list",),
+            ("microsoft.security", "assessments"),
+        ),
         "defender_settings": dataset_paths(catalog, "az_security_pricing_list"),
         "defender_general_settings": dataset_paths(catalog, "az_security_setting_list"),
         "defender_auto_provisioning_settings": dataset_paths(catalog, "az_security_auto-provisioning-setting_list"),
