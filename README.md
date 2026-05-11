@@ -21,11 +21,55 @@ The normal workflow is:
 Example installation steps:
 
 ```bash
-apt install azure-cli pipenv
+apt install pipenv
+curl -fsSL 'https://azurecliprod.blob.core.windows.net/$root/deb_install.sh' | sudo bash
 git clone https://github.com/yg-ht/azure-assess.git
 cd azure-assess
 pipenv install -r requirements.txt
 ```
+
+You may also want to pre-emptively install / re-install the Az CLI extensions. This can be done with:
+
+```bash
+AZURE_EXTENSION_DIR="$PWD/.azure-cliextensions" pipenv run bash -lc '
+set -euo pipefail
+
+EXT_DIR="${AZURE_EXTENSION_DIR:?AZURE_EXTENSION_DIR must be set}"
+EXTS=(
+  application-insights
+  bastion
+  databricks
+  datafactory
+  ml
+)
+
+echo "[*] Using Azure CLI:"
+az version --output jsonc
+
+echo "[*] Using extension dir: $EXT_DIR"
+mkdir -p "$EXT_DIR"
+
+for ext in "${EXTS[@]}"; do
+  echo "[*] Removing extension: $ext"
+  az extension remove --name "$ext" --only-show-errors >/dev/null 2>&1 || true
+  rm -rf "$EXT_DIR/$ext"
+done
+
+az config set extension.use_dynamic_install=no --only-show-errors >/dev/null
+
+for ext in "${EXTS[@]}"; do
+  echo "[*] Installing extension: $ext"
+  az extension add --name "$ext" --yes --only-show-errors
+done
+
+echo "[*] Installed extensions:"
+az extension list --query "[].{name:name,version:version,path:path}" --output table
+
+echo "[*] Verifying Azure ML command group:"
+az ml --help >/dev/null
+
+echo "[OK] Azure CLI extensions reinstalled cleanly and az ml loads"
+'```
 
 ## Script Reference
 
