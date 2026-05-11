@@ -56,9 +56,36 @@ from itertools import product
 from pathlib import Path
 from time import sleep
 from tqdm import tqdm
+import sys
+import base64
+import fnmatch
+import urllib.parse
 
 AUTH_CONFIG = {}
 DEBUG = False
+
+PERMISSION_BASELINE_CHECKED = False
+
+REQUIRED_DIRECTORY_ROLES = {
+    "Global Reader",
+    "Security Reader",
+}
+
+REQUIRED_CUSTOM_ROLE_ACTIONS = {
+    "microsoft.web/sites/config/web/connectionstrings/read",
+    "Microsoft.KeyVault/vaults/secrets/read",
+    "Microsoft.Storage/storageAccounts/listkeys/action",
+    "Microsoft.Compute/virtualMachines/runCommands/read",
+    "Microsoft.Insights/Components/Read",
+    "Microsoft.Insights/Components/Query/Read",
+    "Microsoft.CostManagement/query/action",
+    "Microsoft.Web/sites/config/list/Action",
+    "Microsoft.Web/sites/slots/config/list/Action",
+}
+
+REQUIRED_CUSTOM_ROLE_DATA_ACTIONS = {
+    "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
+}
 
 AZURE_CLI_EXTENSION_COMMAND_PREFIXES = {
     ("appconfig",): "appconfig",
@@ -884,6 +911,14 @@ def parse_arguments():
             "Defaults to AZURE_CLIENT_CERTIFICATE_PASSWORD."
         )
     )
+    parser.add_argument(
+        "--continue-with-missing-permissions",
+        action="store_true",
+        help=(
+            "Non-interactively confirm that collection should continue when the initial "
+            "permission baseline check reports missing or unverifiable permissions."
+        )
+    )
     return parser.parse_args()
 
 
@@ -959,6 +994,7 @@ def build_auth_config(args):
             args.client_certificate_password,
             "AZURE_CLIENT_CERTIFICATE_PASSWORD"
         ),
+        "continue_with_missing_permissions": args.continue_with_missing_permissions,
     }
 
 
@@ -1184,6 +1220,422 @@ def validate_auth_session(subscription_id=None):
     return True
 
 
+def run_json_command(command):
+    """Run a shell command expected to return JSON."""
+    result = run_az_command(command, capture_output=True)
+    output = "\n".join(
+        stream.strip()
+        for stream in (result.stdout or "", result.stderr or "")
+        if stream and stream.strip()
+    )
+
+    if result.returncode != 0:
+        return None, output or f"Command failed with exit code {result.returncode}"
+
+    if not result.stdout.strip():
+        return None, "Command returned empty output"
+
+    try:
+        return json.loads(result.stdout), None
+    except json.JSONDecodeError as exc:
+        return None, f"Could not parse JSON output: {exc}"
+
+
+def graph_rest_json(url):
+    return run_json_command(
+        f"az rest --method get --url {shell_quote(url)} --output json"
+    )
+
+
+def decode_jwt_payload(token):
+    """Decode a JWT payload without validating the signature.
+
+    This is only used to read Azure-issued token claims such as oid and tid.
+    It is not an authentication decision.
+    """
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+    except Exception as exc:
+        raise ValueError(f"Could not decode access token payload: {exc}") from exc
+
+
+def get_current_principal_context(subscription_id=None):
+    account, account_error = run_json_command("az account show --output json")
+    if account_error:
+        return None, account_error
+
+    token_response, token_error = run_json_command(
+        "az account get-access-token --resource https://graph.microsoft.com/ --output json"
+    )
+    if token_error:
+        return None, token_error
+
+    try:
+        claims = decode_jwt_payload(token_response["accessToken"])
+    except (KeyError, ValueError) as exc:
+        return None, str(exc)
+
+    object_id = claims.get("oid")
+    if not object_id:
+        return None, "Could not determine current principal object ID from Graph token claim 'oid'."
+
+    user_info = account.get("user") or {}
+
+    return {
+        "object_id": object_id,
+        "tenant_id": claims.get("tid") or account.get("tenantId"),
+        "subscription_id": subscription_id or account.get("id"),
+        "principal_name": user_info.get("name") or claims.get("preferred_username") or claims.get("appid"),
+        "principal_type": user_info.get("type") or claims.get("idtyp") or "unknown",
+    }, None
+
+
+def graph_collection_values(url):
+    """Return all value[] entries from a Microsoft Graph collection, following nextLink."""
+    values = []
+    next_url = url
+
+    while next_url:
+        data, error = graph_rest_json(next_url)
+        if error:
+            return values, error
+
+        if isinstance(data, dict):
+            values.extend(data.get("value", []))
+            next_url = data.get("@odata.nextLink")
+        else:
+            return values, "Unexpected Microsoft Graph response shape"
+
+    return values, None
+
+
+def get_transitive_group_ids(principal_object_id):
+    encoded_id = urllib.parse.quote(principal_object_id)
+    url = (
+        f"https://graph.microsoft.com/v1.0/directoryObjects/{encoded_id}/transitiveMemberOf"
+        "?%24select=id,displayName"
+    )
+
+    memberships, error = graph_collection_values(url)
+    if error:
+        return set(), error
+
+    return {
+        item.get("id")
+        for item in memberships
+        if item.get("id")
+    }, None
+
+
+def get_directory_role_names_for_principal_ids(principal_ids):
+    role_names = set()
+    errors = []
+
+    for principal_id in sorted(principal_ids):
+        filter_value = f"principalId eq '{principal_id}'"
+        query = urllib.parse.urlencode({
+            "$filter": filter_value,
+            "$expand": "roleDefinition($select=id,displayName)",
+            "$select": "id,principalId,roleDefinitionId",
+        })
+        url = f"https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?{query}"
+
+        assignments, error = graph_collection_values(url)
+        if error:
+            errors.append(f"{principal_id}: {error}")
+            continue
+
+        for assignment in assignments:
+            role_definition = assignment.get("roleDefinition") or {}
+            display_name = role_definition.get("displayName")
+            if display_name:
+                role_names.add(display_name)
+
+    return role_names, errors
+
+
+def permission_pattern_covers(required_permission, granted_patterns, denied_patterns=None):
+    required = required_permission.lower()
+    granted_patterns = [pattern.lower() for pattern in (granted_patterns or [])]
+    denied_patterns = [pattern.lower() for pattern in (denied_patterns or [])]
+
+    granted = any(fnmatch.fnmatchcase(required, pattern) for pattern in granted_patterns)
+    denied = any(fnmatch.fnmatchcase(required, pattern) for pattern in denied_patterns)
+
+    return granted and not denied
+
+
+def get_subscription_role_assignments(subscription_id):
+    scope = f"/subscriptions/{subscription_id}"
+    return run_json_command(
+        "az role assignment list "
+        f"--scope {shell_quote(scope)} "
+        "--include-inherited "
+        "--output json"
+    )
+
+
+def get_custom_role_definitions_for_assignments(role_assignments):
+    role_definition_ids = {
+        assignment.get("roleDefinitionId")
+        for assignment in role_assignments
+        if assignment.get("roleDefinitionId")
+    }
+
+    if not role_definition_ids:
+        return [], None
+
+    role_definitions, error = run_json_command(
+        "az role definition list --custom-role-only true --output json"
+    )
+    if error:
+        return [], error
+
+    matched_definitions = []
+    missing_definition_ids = set(role_definition_ids)
+
+    for role_definition in role_definitions or []:
+        role_id = role_definition.get("id")
+        role_name_guid = role_definition.get("name")
+
+        if role_id in role_definition_ids or any(
+            role_id and role_id.lower().endswith(f"/{definition_id.split('/')[-1].lower()}")
+            for definition_id in role_definition_ids
+        ) or any(
+            role_name_guid and definition_id.lower().endswith(f"/{role_name_guid.lower()}")
+            for definition_id in role_definition_ids
+        ):
+            matched_definitions.append(role_definition)
+            if role_id:
+                missing_definition_ids.discard(role_id)
+            if role_name_guid:
+                missing_definition_ids = {
+                    definition_id
+                    for definition_id in missing_definition_ids
+                    if not definition_id.lower().endswith(f"/{role_name_guid.lower()}")
+                }
+
+    for definition_id in sorted(missing_definition_ids):
+        definition_name = definition_id.split("/")[-1]
+        role_definition, show_error = run_json_command(
+            f"az role definition list --name {shell_quote(definition_name)} --output json"
+        )
+        if show_error:
+            continue
+
+        if role_definition:
+            candidate = role_definition[0] if isinstance(role_definition, list) else role_definition
+            if candidate.get("roleType") == "CustomRole":
+                matched_definitions.append(candidate)
+
+    return matched_definitions, None
+
+
+def check_custom_role_permissions(subscription_id, principal_ids):
+    assignments, assignment_error = get_subscription_role_assignments(subscription_id)
+    if assignment_error:
+        return {
+            "present_custom_roles": [],
+            "missing_actions": sorted(REQUIRED_CUSTOM_ROLE_ACTIONS),
+            "missing_data_actions": sorted(REQUIRED_CUSTOM_ROLE_DATA_ACTIONS),
+            "errors": [assignment_error],
+        }
+
+    relevant_assignments = [
+        assignment for assignment in assignments or []
+        if assignment.get("principalId") in principal_ids
+    ]
+
+    custom_role_definitions, definition_error = get_custom_role_definitions_for_assignments(relevant_assignments)
+    errors = []
+    if definition_error:
+        errors.append(definition_error)
+
+    allowed_actions = []
+    denied_actions = []
+    allowed_data_actions = []
+    denied_data_actions = []
+    present_custom_roles = []
+
+    for role_definition in custom_role_definitions:
+        present_custom_roles.append(role_definition.get("roleName") or role_definition.get("name"))
+
+        for permission_block in role_definition.get("permissions", []):
+            allowed_actions.extend(permission_block.get("actions", []))
+            denied_actions.extend(permission_block.get("notActions", []))
+            allowed_data_actions.extend(permission_block.get("dataActions", []))
+            denied_data_actions.extend(permission_block.get("notDataActions", []))
+
+    missing_actions = [
+        action for action in REQUIRED_CUSTOM_ROLE_ACTIONS
+        if not permission_pattern_covers(action, allowed_actions, denied_actions)
+    ]
+
+    missing_data_actions = [
+        action for action in REQUIRED_CUSTOM_ROLE_DATA_ACTIONS
+        if not permission_pattern_covers(action, allowed_data_actions, denied_data_actions)
+    ]
+
+    return {
+        "present_custom_roles": sorted({role for role in present_custom_roles if role}),
+        "missing_actions": sorted(missing_actions),
+        "missing_data_actions": sorted(missing_data_actions),
+        "errors": errors,
+    }
+
+
+def print_permission_baseline_warning(report):
+    print("\n[!] Permission baseline check did not pass cleanly.")
+    print("    The collection may be incomplete, especially for identity, security, secret, storage, cost, and app service configuration data.\n")
+
+    print("    Principal:")
+    print(f"      Name:          {report['principal'].get('principal_name')}")
+    print(f"      Type:          {report['principal'].get('principal_type')}")
+    print(f"      Object ID:     {report['principal'].get('object_id')}")
+    print(f"      Subscription:  {report['principal'].get('subscription_id')}")
+    print("")
+
+    if report["missing_directory_roles"]:
+        print("    Missing or unverifiable Microsoft Entra directory roles:")
+        for role in report["missing_directory_roles"]:
+            print(f"      - {role}")
+        print("")
+
+    if report["directory_role_errors"]:
+        print("    Directory role check errors:")
+        for error in report["directory_role_errors"]:
+            print(f"      - {error}")
+        print("")
+
+    custom_role_report = report["custom_role_report"]
+    if not custom_role_report["present_custom_roles"]:
+        print("    No assigned custom Azure RBAC role was found for this principal at the selected subscription scope.")
+        print("")
+    else:
+        print("    Assigned custom Azure RBAC role(s) considered:")
+        for role in custom_role_report["present_custom_roles"]:
+            print(f"      - {role}")
+        print("")
+
+    if custom_role_report["missing_actions"]:
+        print("    Missing custom role actions:")
+        for action in custom_role_report["missing_actions"]:
+            print(f"      - {action}")
+        print("")
+
+    if custom_role_report["missing_data_actions"]:
+        print("    Missing custom role dataActions:")
+        for action in custom_role_report["missing_data_actions"]:
+            print(f"      - {action}")
+        print("")
+
+    if custom_role_report["errors"]:
+        print("    Azure RBAC custom role check errors:")
+        for error in custom_role_report["errors"]:
+            print(f"      - {error}")
+        print("")
+
+    if report["group_membership_error"]:
+        print("    Group membership warning:")
+        print(f"      - {report['group_membership_error']}")
+        print("")
+
+
+def confirm_continue_after_permission_warning(auto_confirm=False):
+    if auto_confirm:
+        print("[!] Continuing despite missing or unverifiable permissions because --continue-with-missing-permissions was supplied.")
+        return
+
+    if not sys.stdin.isatty():
+        print("[ERROR] Permission baseline check failed and this is not an interactive terminal.")
+        print("[ERROR] Re-run interactively and type 'continue', or supply --continue-with-missing-permissions deliberately.")
+        exit(1)
+
+    response = input("Type 'continue' to proceed with potentially incomplete collection, or anything else to abort: ")
+    if response.strip() != "continue":
+        print("[*] Aborted by user.")
+        exit(1)
+
+
+def ensure_required_permission_baseline():
+    global PERMISSION_BASELINE_CHECKED
+
+    if PERMISSION_BASELINE_CHECKED:
+        return
+
+    PERMISSION_BASELINE_CHECKED = True
+
+    subscription_id = AUTH_CONFIG.get("subscription_id")
+    auto_confirm = AUTH_CONFIG.get("continue_with_missing_permissions", False)
+
+    print("[*] Checking Azure permission baseline...")
+
+    principal, principal_error = get_current_principal_context(subscription_id)
+    if principal_error:
+        report = {
+            "principal": {
+                "principal_name": "unknown",
+                "principal_type": "unknown",
+                "object_id": "unknown",
+                "subscription_id": subscription_id or "unknown",
+            },
+            "missing_directory_roles": sorted(REQUIRED_DIRECTORY_ROLES),
+            "directory_role_errors": [principal_error],
+            "custom_role_report": {
+                "present_custom_roles": [],
+                "missing_actions": sorted(REQUIRED_CUSTOM_ROLE_ACTIONS),
+                "missing_data_actions": sorted(REQUIRED_CUSTOM_ROLE_DATA_ACTIONS),
+                "errors": [principal_error],
+            },
+            "group_membership_error": None,
+        }
+        print_permission_baseline_warning(report)
+        confirm_continue_after_permission_warning(auto_confirm)
+        return
+
+    if not principal.get("subscription_id"):
+        print("[ERROR] Could not determine Azure subscription ID for permission baseline check.")
+        exit(1)
+
+    principal_ids = {principal["object_id"]}
+    group_ids, group_membership_error = get_transitive_group_ids(principal["object_id"])
+    principal_ids.update(group_ids)
+
+    directory_role_names, directory_role_errors = get_directory_role_names_for_principal_ids(principal_ids)
+    missing_directory_roles = sorted(REQUIRED_DIRECTORY_ROLES - directory_role_names)
+
+    custom_role_report = check_custom_role_permissions(
+        principal["subscription_id"],
+        principal_ids,
+    )
+
+    has_permission_problem = (
+        missing_directory_roles
+        or directory_role_errors
+        or custom_role_report["missing_actions"]
+        or custom_role_report["missing_data_actions"]
+        or custom_role_report["errors"]
+        or not custom_role_report["present_custom_roles"]
+    )
+
+    report = {
+        "principal": principal,
+        "missing_directory_roles": missing_directory_roles,
+        "directory_role_errors": directory_role_errors,
+        "custom_role_report": custom_role_report,
+        "group_membership_error": group_membership_error,
+    }
+
+    if has_permission_problem:
+        print_permission_baseline_warning(report)
+        confirm_continue_after_permission_warning(auto_confirm)
+        return
+
+    print("[✓] Permission baseline check passed.")
+
+
 def authenticate_with_selected_method(auth_config):
     method = auth_config["auth_method"]
     tenant_id = auth_config["tenant_id"]
@@ -1258,6 +1710,7 @@ def ensure_az_login(force_reauth=False):
     if validate_auth_session(subscription_id) and not force_reauth:
         print("[✓] Azure CLI is authenticated.")
         set_az_account_context(subscription_id)
+        ensure_required_permission_baseline()
         return
 
     if auth_method == "existing":
@@ -1273,6 +1726,7 @@ def ensure_az_login(force_reauth=False):
         exit(1)
 
     print("[✓] Azure CLI authentication is ready.")
+    ensure_required_permission_baseline()
 
 
 def run_az_cli(cmd):
