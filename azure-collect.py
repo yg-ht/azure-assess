@@ -45,6 +45,7 @@
 # ---------------------------------------------------------------------------
 
 import json
+import re
 import subprocess
 import argparse
 import os
@@ -57,6 +58,41 @@ from time import sleep
 from tqdm import tqdm
 
 AUTH_CONFIG = {}
+DEBUG = False
+
+AZURE_CLI_EXTENSION_COMMAND_PREFIXES = {
+    ("appconfig",): "appconfig",
+    ("iot",): "azure-iot",
+    ("ml",): "ml",
+    ("monitor", "app-insights"): "application-insights",
+}
+AZURE_CLI_EXTENSION_CACHE = set()
+AZURE_CLI_OUTPUT_WARNING_SIGNATURES = [
+    "behavior of this command has been altered",
+    "is experimental and under development",
+    "is in preview and under development",
+    "is scheduled for retirement by",
+    "command requires the extension",
+    "command requires extension",
+    "it will be installed first",
+    "was successfully installed",
+    "is already installed",
+]
+AZURE_CLI_MISSING_EXTENSION_SIGNATURES = [
+    "requires the extension",
+    "requires extension",
+    "az extension add --name",
+    "from the following extension",
+    "not in the 'az' command group",
+    "is misspelled or not recognized by the system",
+]
+AZURE_CLI_EXTENSION_NAME_PATTERNS = [
+    re.compile(r"requires\s+the\s+extension\s+['\"]?([A-Za-z0-9_.-]+)", re.IGNORECASE),
+    re.compile(r"requires\s+extension\s+['\"]?([A-Za-z0-9_.-]+)", re.IGNORECASE),
+    re.compile(r"extension\s+['\"]?([A-Za-z0-9_.-]+)['\"]?\s+is\s+required", re.IGNORECASE),
+    re.compile(r"az\s+extension\s+add\s+--name\s+['\"]?([A-Za-z0-9_.-]+)", re.IGNORECASE),
+    re.compile(r"from\s+the\s+following\s+extension:\s*['\"]?([A-Za-z0-9_.-]+)", re.IGNORECASE),
+]
 
 
 def command_filename_prefix(command):
@@ -934,6 +970,170 @@ def run_az_command(command, capture_output=False):
     return subprocess.run(command, shell=True, capture_output=capture_output, text=True)
 
 
+def run_az_cli_process(cmd):
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+    stdout_lines = []
+
+    # Read both stdout and stderr in real time
+    while True:
+        stdout_line = process.stdout.readline()
+        if stdout_line:
+            if DEBUG:
+                print(stdout_line, end='')
+            stdout_lines.append(stdout_line)
+        if not stdout_line and process.poll() is not None:
+            break
+    process.wait()
+
+    stdout = ''.join(stdout_lines).strip()
+    return {
+        "args": cmd,
+        "returncode": process.returncode,
+        "success": process.returncode == 0,
+        "stdout": stdout,
+        "json": None,
+        "raw": stdout,
+    }
+
+
+def extract_required_extension_name(output):
+    for pattern in AZURE_CLI_EXTENSION_NAME_PATTERNS:
+        match = pattern.search(output or "")
+        if match:
+            return match.group(1).strip("'\".,")
+    return None
+
+
+def infer_extension_from_command(cmd):
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return None
+
+    if len(tokens) < 2 or tokens[0] != "az" or tokens[1] == "extension":
+        return None
+
+    command_parts = []
+    for token in tokens[1:]:
+        if token.startswith("-"):
+            break
+        command_parts.append(token)
+
+    for prefix, extension_name in sorted(
+        AZURE_CLI_EXTENSION_COMMAND_PREFIXES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        if tuple(command_parts[:len(prefix)]) == prefix:
+            return extension_name
+
+    return None
+
+
+def resolve_missing_extension_name(cmd, output):
+    explicit_extension_name = extract_required_extension_name(output)
+    if explicit_extension_name:
+        return explicit_extension_name
+
+    output_lower = (output or "").lower()
+    not_in_command_group = "not in the" in output_lower and "command group" in output_lower
+    if any(sig in output_lower for sig in AZURE_CLI_MISSING_EXTENSION_SIGNATURES) or not_in_command_group:
+        return infer_extension_from_command(cmd)
+
+    return None
+
+
+def ensure_az_extension_installed(extension_name):
+    if extension_name in AZURE_CLI_EXTENSION_CACHE:
+        return True
+
+    extension_arg = shell_quote(extension_name)
+    show_result = run_az_command(
+        f"az extension show --name {extension_arg} --output json",
+        capture_output=True,
+    )
+    if show_result.returncode == 0:
+        AZURE_CLI_EXTENSION_CACHE.add(extension_name)
+        return True
+
+    print(f"[*] Installing missing Azure CLI extension: {extension_name}")
+    add_result = run_az_command(
+        f"az extension add --name {extension_arg} --yes",
+        capture_output=True,
+    )
+    if add_result.returncode == 0:
+        AZURE_CLI_EXTENSION_CACHE.add(extension_name)
+        return True
+
+    print(f"[!] Failed to install Azure CLI extension: {extension_name}")
+    install_output = "\n".join(
+        stream.strip()
+        for stream in (add_result.stdout or "", add_result.stderr or "")
+        if stream and stream.strip()
+    )
+    if install_output:
+        print(install_output)
+    return False
+
+
+def install_missing_extension_and_retry(cmd, result):
+    extension_name = resolve_missing_extension_name(cmd, result.get("stdout", ""))
+    if not extension_name:
+        return None
+
+    if not ensure_az_extension_installed(extension_name):
+        return None
+
+    print(f"[*] Retrying command after ensuring Azure CLI extension '{extension_name}' is installed.")
+    return run_az_cli_process(cmd)
+
+
+def filter_az_cli_warning_output(output):
+    matched_sigs = [
+        sig
+        for sig in AZURE_CLI_OUTPUT_WARNING_SIGNATURES
+        if sig in (output or "").lower()
+    ]
+    if not matched_sigs:
+        return output, matched_sigs
+
+    filtered_output = "\n".join(
+        line for line in output.splitlines()
+        if not any(sig in line.lower() for sig in matched_sigs)
+    )
+    return filtered_output, matched_sigs
+
+
+def parse_json_from_az_output(output):
+    stripped_output = (output or "").strip()
+    if not stripped_output:
+        return None
+
+    candidates = [stripped_output]
+    lines = stripped_output.splitlines()
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith(("{", "[")):
+            candidate = "\n".join(lines[index:]).strip()
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+    for candidate in candidates:
+        if not candidate.startswith(("{", "[")):
+            continue
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+    raise ValueError("Azure CLI output did not contain valid JSON")
+
+
 def set_az_account_context(subscription_id=None):
     if not subscription_id:
         return
@@ -1084,37 +1284,11 @@ def run_az_cli(cmd):
     error_message = None
     result = None
     try:
-        process = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True
-        )
-        stdout_lines = []
-
-        # Read both stdout and stderr in real time
-        while True:
-            stdout_line = process.stdout.readline()
-            if stdout_line:
-                if DEBUG:
-                    print(stdout_line, end='')
-                stdout_lines.append(stdout_line)
-            if not stdout_line and process.poll() is not None:
-                break
-        process.wait()
-        result = {
-            "args": cmd,
-            "returncode": process.returncode,
-            "success": process.returncode == 0,
-            "stdout": ''.join(stdout_lines).strip(),
-            "json": None,  # You can add JSON parsing here if needed
-            "raw": None
-        }
-        result["raw"] = str(result["stdout"])
+        result = run_az_cli_process(cmd)
         if DEBUG:
             print(f"Return code: {result['returncode']}")
-        if not result["returncode"] == 0:
+
+        if result["returncode"] != 0:
             error_auth_signatures = [
                 "tokenissuedbeforerevocationtimestamp",
                 "interactionrequired",
@@ -1122,24 +1296,19 @@ def run_az_cli(cmd):
             if any(sig in result["stdout"].lower() for sig in error_auth_signatures):
                 print("[!] Azure token not valid. Attempting authentication refresh...")
                 ensure_az_login(force_reauth=True)
-                retry_result = run_az_command(cmd, capture_output=True)
-                result = {
-                    "args": cmd,
-                    "returncode": retry_result.returncode,
-                    "success": retry_result.returncode == 0,
-                    "stdout": retry_result.stdout.strip(),
-                    "json": None,
-                    "raw": retry_result.stdout
-                }
-                if result["success"] and (result["stdout"].strip().startswith("{") or result["stdout"].strip().startswith("[")):
-                    try:
-                        result["json"] = json.loads(result["stdout"])
-                    except Exception as e:
-                        print(f"JSON parsing error: {e}")
+                result = run_az_cli_process(cmd)
                 if not result["success"]:
                     error_message = "Authentication refresh failed to restore Azure CLI access."
                     must_exit = True
 
+        if result["returncode"] != 0 and not must_exit:
+            retry_result = install_missing_extension_and_retry(cmd, result)
+            if retry_result:
+                result = retry_result
+                if DEBUG:
+                    print(f"Return code after extension retry: {result['returncode']}")
+
+        if result["returncode"] != 0:
             error_cli_signatures = [
                 "is misspelled or not recognized by the system",
                 "the following arguments are required",
@@ -1149,31 +1318,22 @@ def run_az_cli(cmd):
                 must_exit = True
 
         else:
-            output_warning_signatures = [
-                "behavior of this command has been altered",
-                "is experimental and under development",
-                "is in preview and under development",
-                "is scheduled for retirement by",
-                "command requires the extension"
-            ]
-            matched_sigs = [sig for sig in output_warning_signatures if sig in result["stdout"].lower()]
+            result["stdout"], matched_sigs = filter_az_cli_warning_output(result["stdout"])
             if matched_sigs:
                 if DEBUG:
                     print(f"[DEBUG] Found warning message signature(s): {matched_sigs}, attempting to filter")
-                result["stdout"] = "\n".join(
-                    line for line in result["stdout"].splitlines()
-                    if not any(sig in line.lower() for sig in matched_sigs)
-                )
                 if DEBUG:
                     print(f"Filter result is: {result['stdout'][:30]} [END]")
 
-            if (result["stdout"].strip().startswith("{") or result["stdout"].strip().startswith("[")):
+            if result["stdout"].strip():
                 try:
-                    result["json"] = json.loads(result["stdout"])
+                    result["json"] = parse_json_from_az_output(result["stdout"])
                 except Exception as e:
                     print(f"JSON parsing error: {e}")
+                    if not any(sig in result["stdout"].lower() for sig in AZURE_CLI_OUTPUT_WARNING_SIGNATURES):
+                        error_message = "Something has gone wrong - data returned but not JSON"
             elif len(result["stdout"]) > 0:
-                if not any(sig in result["stdout"].lower() for sig in output_warning_signatures):
+                if not any(sig in result["stdout"].lower() for sig in AZURE_CLI_OUTPUT_WARNING_SIGNATURES):
                     error_message = "Something has gone wrong - data returned but not JSON"
 
         if error_message:
@@ -1202,7 +1362,7 @@ def run_az_cli(cmd):
         print("\n\n")
         print(f"===========================================")
         print(f"[ERROR] Exception running command: {cmd}")
-        if result["stdout"]:
+        if result and result.get("stdout"):
             print(f"Process details: {str(result['stdout'])}")
         print(f"Exception message: {str(e)}")
         print(f"===========================================")
@@ -1612,7 +1772,6 @@ def filter_endpoints(keyword=None, endpoints=None):
 
 if __name__ == "__main__":
     global START_TIMESTAMP
-    global DEBUG
     START_TIMESTAMP = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     args = parse_arguments()
     AUTH_CONFIG = build_auth_config(args)

@@ -17,6 +17,26 @@ azure_findings = importlib.util.module_from_spec(FINDINGS_SPEC)
 FINDINGS_SPEC.loader.exec_module(azure_findings)
 
 
+class FakeAzProcess:
+    def __init__(self, returncode, output):
+        self.returncode = returncode
+        self.stdout = FakeStdout(output)
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self):
+        return self.returncode
+
+
+class FakeStdout:
+    def __init__(self, output):
+        self.lines = iter(output.splitlines(keepends=True))
+
+    def readline(self):
+        return next(self.lines, "")
+
+
 class DefenderAssessmentsEndpointTests(unittest.TestCase):
     def test_defender_assessments_use_arm_rest_endpoint(self):
         endpoint = next(
@@ -177,6 +197,72 @@ class CollectDataWithParamsTests(unittest.TestCase):
         )
         self.assertEqual(len(saved_payloads), 1)
         self.assertEqual(len(saved_payloads[0][0]), 2)
+
+
+class AzureCliExtensionInstallTests(unittest.TestCase):
+    def setUp(self):
+        azure_collect.DEBUG = False
+        azure_collect.AZURE_CLI_EXTENSION_CACHE.clear()
+
+    @staticmethod
+    def completed_process(returncode=0, stdout="", stderr=""):
+        return mock.Mock(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def test_missing_iot_extension_is_installed_and_command_is_retried(self):
+        missing_extension_output = (
+            "az iot: 'iot' is not in the 'az' command group. See 'az --help'.\n"
+            "If the command is from an extension, please make sure the corresponding "
+            "extension is installed.\n"
+        )
+        popen_results = [
+            FakeAzProcess(2, missing_extension_output),
+            FakeAzProcess(0, '[{"name": "hub-one"}]\n'),
+        ]
+        az_commands = []
+
+        def fake_run_az_command(cmd, capture_output=False):
+            az_commands.append(cmd)
+            if cmd.startswith("az extension show "):
+                return self.completed_process(returncode=1, stderr="Extension not found")
+            if cmd.startswith("az extension add "):
+                return self.completed_process(returncode=0)
+            return self.completed_process(returncode=0)
+
+        with mock.patch.object(azure_collect.subprocess, "Popen", side_effect=popen_results) as popen_mock:
+            with mock.patch.object(azure_collect, "run_az_command", side_effect=fake_run_az_command):
+                result = azure_collect.run_az_cli("az iot hub list")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["json"], [{"name": "hub-one"}])
+        self.assertEqual(
+            [call.args[0] for call in popen_mock.call_args_list],
+            ["az iot hub list --output json", "az iot hub list --output json"],
+        )
+        self.assertIn("az extension show --name azure-iot --output json", az_commands)
+        self.assertIn("az extension add --name azure-iot --yes", az_commands)
+
+    def test_missing_extension_name_can_be_read_from_cli_output(self):
+        output = "The command requires the extension azure-devops. Install it with az extension add --name azure-devops."
+
+        self.assertEqual(
+            azure_collect.resolve_missing_extension_name("az devops project list", output),
+            "azure-devops",
+        )
+
+    def test_missing_nested_command_group_uses_known_extension_mapping(self):
+        output = "az monitor: 'app-insights' is not in the 'monitor' command group. See 'az monitor --help'."
+
+        self.assertEqual(
+            azure_collect.resolve_missing_extension_name("az monitor app-insights component show", output),
+            "application-insights",
+        )
+
+    def test_mapped_extension_is_not_installed_for_non_extension_errors(self):
+        output = "ERROR: the following arguments are required: --name"
+
+        self.assertIsNone(
+            azure_collect.resolve_missing_extension_name("az iot hub show", output)
+        )
 
 
 if __name__ == "__main__":
