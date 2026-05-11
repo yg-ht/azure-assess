@@ -12,6 +12,32 @@ azure_collect = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(azure_collect)
 
 
+class ApplicationInsightsEndpointTests(unittest.TestCase):
+    def test_application_insights_collection_uses_supported_component_show_command(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS
+            if endpoint["name"] == "Application Insights"
+        )
+
+        self.assertEqual(endpoint["cli_command"], "az monitor app-insights component show")
+
+    def test_application_insights_details_uses_collection_dataset_source(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Application Insights Details"
+        )
+
+        self.assertEqual(
+            endpoint["required_params"],
+            {
+                "name": "az_monitor_app-insights_component_show",
+                "resourceGroup": "az_monitor_app-insights_component_show",
+            },
+        )
+
+
 class CollectDataWithParamsTests(unittest.TestCase):
     def test_parameterised_follow_on_queries_use_collection_context_for_multiple_records(self):
         endpoint = {

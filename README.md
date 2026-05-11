@@ -61,6 +61,7 @@ Parameters:
 Notes:
 
 - The script expects the Azure CLI to be installed and available on `PATH`.
+- Application Insights collection uses the Azure CLI `application-insights` extension. The script enables Azure CLI dynamic extension install, but older CLI installs may still require `az extension add --name application-insights` or an Azure CLI upgrade.
 - The default authentication mode is `existing`, which reuses the current Azure CLI session and does not trigger a login flow.
 - If `--auth-method existing` is used and no valid Azure CLI session is present, the tool exits with guidance instead of forcing device code authentication.
 - Authentication validation checks both the current Azure account context and token acquisition for Azure Resource Manager and Microsoft Graph before collection starts.

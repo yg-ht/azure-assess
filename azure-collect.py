@@ -64,7 +64,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "App Service Environments", "cli_command": "az appservice ase list", "needs_pagination": False},
     {"name": "App Service Plans", "cli_command": "az appservice plan list", "needs_pagination": False},
     {"name": "Application Gateways", "cli_command": "az network application-gateway list", "needs_pagination": False},
-    {"name": "Application Insights", "cli_command": "az monitor app-insights component list", "needs_pagination": False},
+    {"name": "Application Insights", "cli_command": "az monitor app-insights component show", "needs_pagination": False},
     {"name": "Application Insights web tests", "cli_command": "az monitor app-insights web-test list", "needs_pagination": False},
     {"name": "Active Directory Applications", "cli_command": "az ad app list", "needs_pagination": True},
     {"name": "Active Directory Groups", "cli_command": "az ad group list", "needs_pagination": True},
@@ -422,8 +422,8 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     {
         "name": "Application Insights Details",
         "cli_command": "az monitor app-insights component show --app {name} --resource-group {resourceGroup}",
-        "required_params": {"name": "az_monitor_app-insights_component_list",
-                            "resourceGroup": "az_monitor_app-insights_component_list"},
+        "required_params": {"name": "az_monitor_app-insights_component_show",
+                            "resourceGroup": "az_monitor_app-insights_component_show"},
     },
     {
         "name": "Cognitive Services Account Details",
