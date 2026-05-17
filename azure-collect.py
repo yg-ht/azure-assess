@@ -68,6 +68,10 @@ PERMISSION_BASELINE_CHECKED = False
 
 REQUIRED_DIRECTORY_ROLES = {
     "Global Reader",
+}
+
+REQUIRED_SUBSCRIPTION_ROLES = {
+    "Reader",
     "Security Reader",
 }
 
@@ -1377,6 +1381,21 @@ def get_subscription_role_assignments(subscription_id):
     )
 
 
+def get_subscription_role_names_for_principal_ids(subscription_id, principal_ids):
+    assignments, assignment_error = get_subscription_role_assignments(subscription_id)
+    if assignment_error:
+        return set(), [assignment_error]
+
+    role_names = {
+        assignment.get("roleDefinitionName")
+        for assignment in assignments or []
+        if assignment.get("principalId") in principal_ids
+        and assignment.get("roleDefinitionName")
+    }
+
+    return role_names, []
+
+
 def get_custom_role_definitions_for_assignments(role_assignments):
     role_definition_ids = {
         assignment.get("roleDefinitionId")
@@ -1509,6 +1528,18 @@ def print_permission_baseline_warning(report):
             print(f"      - {error}")
         print("")
 
+    if report["missing_subscription_roles"]:
+        print("    Missing or unverifiable Azure subscription roles:")
+        for role in report["missing_subscription_roles"]:
+            print(f"      - {role}")
+        print("")
+
+    if report["subscription_role_errors"]:
+        print("    Azure subscription role check errors:")
+        for error in report["subscription_role_errors"]:
+            print(f"      - {error}")
+        print("")
+
     custom_role_report = report["custom_role_report"]
     if not custom_role_report["present_custom_roles"]:
         print("    No assigned custom Azure RBAC role was found for this principal at the selected subscription scope.")
@@ -1583,6 +1614,8 @@ def ensure_required_permission_baseline():
             },
             "missing_directory_roles": sorted(REQUIRED_DIRECTORY_ROLES),
             "directory_role_errors": [principal_error],
+            "missing_subscription_roles": sorted(REQUIRED_SUBSCRIPTION_ROLES),
+            "subscription_role_errors": [principal_error],
             "custom_role_report": {
                 "present_custom_roles": [],
                 "missing_actions": sorted(REQUIRED_CUSTOM_ROLE_ACTIONS),
@@ -1606,6 +1639,12 @@ def ensure_required_permission_baseline():
     directory_role_names, directory_role_errors = get_directory_role_names_for_principal_ids(principal_ids)
     missing_directory_roles = sorted(REQUIRED_DIRECTORY_ROLES - directory_role_names)
 
+    subscription_role_names, subscription_role_errors = get_subscription_role_names_for_principal_ids(
+        principal["subscription_id"],
+        principal_ids,
+    )
+    missing_subscription_roles = sorted(REQUIRED_SUBSCRIPTION_ROLES - subscription_role_names)
+
     custom_role_report = check_custom_role_permissions(
         principal["subscription_id"],
         principal_ids,
@@ -1614,6 +1653,8 @@ def ensure_required_permission_baseline():
     has_permission_problem = (
         missing_directory_roles
         or directory_role_errors
+        or missing_subscription_roles
+        or subscription_role_errors
         or custom_role_report["missing_actions"]
         or custom_role_report["missing_data_actions"]
         or custom_role_report["errors"]
@@ -1624,6 +1665,8 @@ def ensure_required_permission_baseline():
         "principal": principal,
         "missing_directory_roles": missing_directory_roles,
         "directory_role_errors": directory_role_errors,
+        "missing_subscription_roles": missing_subscription_roles,
+        "subscription_role_errors": subscription_role_errors,
         "custom_role_report": custom_role_report,
         "group_membership_error": group_membership_error,
     }

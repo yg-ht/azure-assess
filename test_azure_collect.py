@@ -199,6 +199,43 @@ class CollectDataWithParamsTests(unittest.TestCase):
         self.assertEqual(len(saved_payloads[0][0]), 2)
 
 
+class PermissionBaselineTests(unittest.TestCase):
+    def test_subscription_role_names_include_direct_and_group_assignments(self):
+        assignments = [
+            {"principalId": "principal-1", "roleDefinitionName": "Reader"},
+            {"principalId": "group-1", "roleDefinitionName": "Security Reader"},
+            {"principalId": "other-principal", "roleDefinitionName": "Owner"},
+            {"principalId": "group-2"},
+        ]
+
+        with mock.patch.object(
+            azure_collect,
+            "get_subscription_role_assignments",
+            return_value=(assignments, None),
+        ):
+            role_names, errors = azure_collect.get_subscription_role_names_for_principal_ids(
+                "subscription-1",
+                {"principal-1", "group-1"},
+            )
+
+        self.assertEqual(role_names, {"Reader", "Security Reader"})
+        self.assertEqual(errors, [])
+
+    def test_subscription_role_names_returns_assignment_errors(self):
+        with mock.patch.object(
+            azure_collect,
+            "get_subscription_role_assignments",
+            return_value=(None, "assignment failed"),
+        ):
+            role_names, errors = azure_collect.get_subscription_role_names_for_principal_ids(
+                "subscription-1",
+                {"principal-1"},
+            )
+
+        self.assertEqual(role_names, set())
+        self.assertEqual(errors, ["assignment failed"])
+
+
 class AzureCliExtensionInstallTests(unittest.TestCase):
     def setUp(self):
         azure_collect.DEBUG = False
