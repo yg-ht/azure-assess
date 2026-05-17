@@ -60,9 +60,13 @@ import sys
 import base64
 import fnmatch
 import urllib.parse
+from copy import deepcopy
 
 AUTH_CONFIG = {}
 DEBUG = False
+
+PRINCIPAL_RESOLUTION_CACHE = {}
+SOURCE_RECORD_CACHE = {}
 
 PERMISSION_BASELINE_CHECKED = False
 
@@ -1896,6 +1900,78 @@ def attach_collection_context(data, endpoint_name, param_set):
         return enrich(data)
     return data
 
+def source_filename_prefix(source):
+    """Return the filename prefix used for a parameter source dataset."""
+    return source.lower().replace(" ", "_").replace("(", "").replace(")", "")
+
+
+def source_file_belongs_to_current_run(filename):
+    """Return True when a generated JSON file belongs to this execution."""
+    return filename.endswith(f"_{START_TIMESTAMP}.json")
+
+
+def list_source_files_for_run(source, current_run_only=True):
+    """List JSON files that can be used as parameter sources.
+
+    In normal full collection mode, current_run_only should be True so that
+    stale files from previous executions are not re-used accidentally.
+
+    In parameter-only replay mode, current_run_only can be False to preserve
+    the existing ability to use previously collected source files.
+    """
+    filename_prefix = source_filename_prefix(source)
+    matching_files = []
+
+    for filename in os.listdir(OUTPUT_DIR):
+        if not filename.startswith(filename_prefix):
+            continue
+        if not filename.endswith(".json"):
+            continue
+        if current_run_only and not source_file_belongs_to_current_run(filename):
+            continue
+
+        matching_files.append(filename)
+
+    return sorted(matching_files)
+
+
+def load_source_records(source, current_run_only=True):
+    """Load and cache source records for a parameter source dataset."""
+    cache_key = (
+        str(OUTPUT_DIR.resolve()),
+        source,
+        START_TIMESTAMP if current_run_only else "all-runs",
+    )
+
+    if cache_key in SOURCE_RECORD_CACHE:
+        if DEBUG:
+            print(f"[DEBUG] Source record cache hit for {source}: {len(SOURCE_RECORD_CACHE[cache_key])} records")
+        return SOURCE_RECORD_CACHE[cache_key]
+
+    records = []
+    files = list_source_files_for_run(source, current_run_only=current_run_only)
+
+    if DEBUG:
+        run_scope = "current run only" if current_run_only else "all matching runs"
+        print(f"[DEBUG] Loading source '{source}' from {len(files)} file(s), scope: {run_scope}")
+
+    for filename in files:
+        filepath = OUTPUT_DIR / filename
+
+        if DEBUG:
+            print(f"[DEBUG] Loading source file: {filepath}")
+
+        try:
+            with open(filepath) as f:
+                data = json.load(f)
+
+            records.extend(iter_source_records(data))
+
+        except Exception as e:
+            print(f"[!] Failed to parse {filename}: {e}")
+
+    SOURCE_RECORD_CACHE[cache_key] = records
+    return records
 
 def iter_source_records(data):
     """Yield dict records from supported JSON payload shapes."""
@@ -1930,26 +2006,51 @@ def resolve_param_value(item, param):
 
 
 def resolve_principal(object_id):
-    """Resolve an Azure AD object ID to a readable name/type with status classification."""
+    """Resolve an Azure AD object ID to a readable name/type with status classification.
+
+    Results are cached for the lifetime of the process. This avoids repeated
+    az ad user/group/sp lookups for principals that appear in many role
+    assignments.
+    """
+    if not object_id:
+        return {
+            "type": "Unknown",
+            "objectId": object_id,
+            "name": None,
+            "status": "missing"
+        }
+
+    cache_key = str(object_id)
+
+    if cache_key in PRINCIPAL_RESOLUTION_CACHE:
+        if DEBUG:
+            print(f"[DEBUG] Principal cache hit: {cache_key}")
+        return deepcopy(PRINCIPAL_RESOLUTION_CACHE[cache_key])
+
+    if DEBUG:
+        print(f"[DEBUG] Principal cache miss: {cache_key}")
+
     for entity_type, cmd in {
-        "User": f"az ad user show --id {object_id}",
-        "Group": f"az ad group show --group {object_id}",
-        "ServicePrincipal": f"az ad sp show --id {object_id}"
+        "User": f"az ad user show --id {shell_quote(object_id)}",
+        "Group": f"az ad group show --group {shell_quote(object_id)}",
+        "ServicePrincipal": f"az ad sp show --id {shell_quote(object_id)}"
     }.items():
         result = run_and_parse(cmd, entity_type, object_id)
         if result and result["status"] != "unknown":
             print(f"[~] {entity_type} {object_id} → status: {result['status']}")
-            return result
+            PRINCIPAL_RESOLUTION_CACHE[cache_key] = deepcopy(result)
+            return deepcopy(result)
 
-    # Unknown fallback
-    print(f"[~] Unresolved object ID {object_id} → status: unknown")
-    return {
+    result = {
         "type": "Unknown",
         "objectId": object_id,
         "name": None,
         "status": "unknown"
     }
 
+    print(f"[~] Unresolved object ID {object_id} → status: unknown")
+    PRINCIPAL_RESOLUTION_CACHE[cache_key] = deepcopy(result)
+    return deepcopy(result)
 
 def resolve_role_assignments(assignments, role_definitions):
     """
@@ -1989,7 +2090,7 @@ def resolve_role_assignments(assignments, role_definitions):
     return enriched
 
 
-def collect_data_with_params(param_endpoints):
+def collect_data_with_params(param_endpoints, current_run_only=True):
     global DEBUG
     """
     Run parameterized commands from AZURE_CLI_ENDPOINTS and store JSON data.
@@ -2015,29 +2116,19 @@ def collect_data_with_params(param_endpoints):
 
         source_records = {}
 
-        for param, source in required_param_sources.items():
-            filename_prefix = source.lower().replace(" ", "_").replace("(", "").replace(")", "")
+        sources_needed = sorted(set(required_param_sources.values()))
+
+        for source in sources_needed:
+            source_records[source] = load_source_records(
+                source,
+                current_run_only=current_run_only,
+            )
 
             if DEBUG:
-                print(f"[DEBUG] Looking for param '{param}' in files prefixed with: {filename_prefix}")
-
-            source_records.setdefault(source, [])
-
-            for file in os.listdir(OUTPUT_DIR):
-                if not file.startswith(filename_prefix) or not file.endswith(".json"):
-                    continue
-
-                filepath = Path(OUTPUT_DIR) / file
-                if DEBUG:
-                    print(f"[DEBUG] Scanning file for parameter '{param}': {filepath}")
-
-                try:
-                    with open(filepath) as f:
-                        data = json.load(f)
-                    for item in iter_source_records(data):
-                        source_records[source].append(item)
-                except Exception as e:
-                    print(f"[!] Failed to parse {file}: {e}")
+                print(
+                    f"[DEBUG] Source '{source}' provided "
+                    f"{len(source_records[source])} record(s)"
+                )
 
         if DEBUG:
             print(f"[DEBUG] Collected source records: "
@@ -2285,8 +2376,16 @@ if __name__ == "__main__":
     ensure_az_login()
     if not args.paramendpointsonly:
         collect_data(filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS))
-    collect_data_with_params(filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS_PARAMS))
 
+    current_run_only = not args.paramendpointsonly
+
+    if args.paramendpointsonly:
+        print("[~] Parameter-only mode enabled: allowing existing source files from previous runs.")
+
+    collect_data_with_params(
+        filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS_PARAMS),
+        current_run_only=current_run_only,
+    )
 
     if not args.donotenrich and not args.endpoint:
         # Special handling for role assignments
