@@ -243,7 +243,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Metric-based alert rules", "cli_command": "az monitor metrics alert list", "needs_pagination": False},
     {"name": "Activity Log Alert rules", "cli_command": "az monitor activity-log alert list", "needs_pagination": False},
     {"name": "Scheduled Queries", "cli_command": "az monitor scheduled-query list", "needs_pagination": False},
-    {"name": "Search Services", "cli_command": "az search service list", "needs_pagination": False},
     {"name": "Application Gateway WAF Policies", "cli_command": "az network application-gateway waf-policy list", "needs_pagination": False},
     {"name": "Network Watchers", "cli_command": "az network watcher list", "needs_pagination": False},
     {"name": "MySQL Servers", "cli_command": "az mysql flexible-server list", "needs_pagination": False},
@@ -709,6 +708,12 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Machine Learning Workspace Details",
         "cli_command": "az ml workspace show --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_ml_workspace_list", "resourceGroup": "az_ml_workspace_list"},
+    },
+    {
+        "name": "Search Services",
+        "cli_command": "az search service list --resource-group {name}",
+        "required_params": {"name": "az_group_list"},
+        "output_prefix": "az_search_service_list",
     },
     {
         "name": "Search Service Details",
