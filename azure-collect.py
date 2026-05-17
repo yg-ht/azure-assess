@@ -169,12 +169,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Data Factory Instances", "cli_command": "az datafactory list", "needs_pagination": False},
     {"name": "Defender Settings", "cli_command": "az security pricing list", "needs_pagination": False},
     {"name": "Defender Auto Provisioning Settings", "cli_command": "az security auto-provisioning-setting list", "needs_pagination": False},
-    {
-        "name": "Defender Assessments",
-        "cli_command": "az rest --method get --url \"/subscriptions/{subscriptionId}/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
-        "needs_pagination": False,
-        "extract_value": True,
-    },
     {"name": "Defender JIT Policies", "cli_command": "az security jit-policy list", "needs_pagination": False},
     {"name": "Defender General Settings", "cli_command": "az security setting list", "needs_pagination": False},
     {"name": "Defender Workspace Settings", "cli_command": "az security workspace-setting list", "needs_pagination": False},
@@ -840,6 +834,12 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Subscription Diagnostic Settings",
         "cli_command": "az monitor diagnostic-settings subscription list --subscription {id}",
         "required_params": {"id": "az_account_list"},
+    },
+    {
+        "name": "Defender Assessments",
+        "cli_command": "az rest --method get --url \"/subscriptions/{subscriptionId}/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
+        "needs_pagination": False,
+        "extract_value": True,
     },
 ]
 
