@@ -224,7 +224,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Resources", "cli_command": "az resource list", "needs_pagination": True},
     {"name": "Role Assignments", "cli_command": "az role assignment list", "needs_pagination": True},
     {"name": "Role Definitions", "cli_command": "az role definition list", "needs_pagination": False},
-    {"name": "Route Tables", "cli_command": "az network route-table list", "needs_pagination": False},
     {"name": "Security Alerts", "cli_command": "az security alert list", "needs_pagination": True},
     {"name": "Service Bus", "cli_command": "az servicebus namespace list", "needs_pagination": False},
     {"name": "SQL Servers", "cli_command": "az sql server list", "needs_pagination": False},
@@ -666,6 +665,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "NIC Effective NSG",
         "cli_command": "az network nic list-effective-nsg --ids {id}",
         "required_params": {"id": "az_network_nic_list"},
+    },
+    {
+        "name": "Route Tables",
+        "cli_command": "az network route-table list --resource-group {name}",
+        "required_params": {"name": "az_group_list"},
     },
     {
         "name": "NIC Effective Route Table",
