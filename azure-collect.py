@@ -406,9 +406,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
     },
     {
-        "name": "Storage Queue Service Properties",
-        "cli_command": "az storage account queue-service-properties show --account-name {name} --resource-group {resourceGroup}",
-        "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
+        "name": "Storage Queue CORS Rules",
+        "cli_command": "az storage cors list --services q --account-name {name} --auth-mode login",
+        "required_params": {"name": "az_storage_account_list"},
     },
     {
         "name": "Storage File Service Properties",
