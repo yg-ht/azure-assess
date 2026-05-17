@@ -248,7 +248,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "MySQL Servers", "cli_command": "az mysql flexible-server list", "needs_pagination": False},
     {"name": "Security Contacts", "cli_command": "az security contact list", "needs_pagination": False},
     {"name": "SignalR Services", "cli_command": "az signalr list", "needs_pagination": False},
-    {"name": "Managed Disks", "cli_command": "az disk list", "needs_pagination": False},
     {"name": "Snapshots", "cli_command": "az snapshot list", "needs_pagination": False},
     {"name": "Graph Conditional Access Policies", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies", "needs_pagination": False},
     {"name": "Graph Named Locations", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations", "needs_pagination": False},
@@ -809,6 +808,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Backup Policies",
         "cli_command": "az backup policy list --vault-name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_backup_vault_list", "resourceGroup": "az_backup_vault_list"},
+    },
+    {
+        "name": "Managed Disks",
+        "cli_command": "az disk list --resource-group {resourceGroup}",
+        "required_params": {"name": "az_group_list"},
     },
     {
         "name": "Managed Disk Details",
