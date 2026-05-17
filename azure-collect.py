@@ -307,7 +307,7 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Policy Assignment Details",
-        "cli_command": "az policy assignment show --id {id}",
+        "cli_command": "az rest --method get --url \"{id}?api-version=2025-11-01\"",
         "required_params": {"id": "az_policy_assignment_list"}
     },
     {
