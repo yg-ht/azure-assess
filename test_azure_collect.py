@@ -200,6 +200,55 @@ class CollectDataWithParamsTests(unittest.TestCase):
 
 
 class PermissionBaselineTests(unittest.TestCase):
+    def test_directory_role_names_include_direct_and_group_assignments(self):
+        assignments = [
+            {
+                "principalId": "principal-1",
+                "roleDefinition": {"displayName": "Global Reader"},
+            },
+            {
+                "principalId": "group-1",
+                "roleDefinition": {"displayName": "Security Reader"},
+            },
+            {
+                "principalId": "other-principal",
+                "roleDefinition": {"displayName": "Global Administrator"},
+            },
+            {
+                "principalId": "group-2",
+                "roleDefinition": {},
+            },
+        ]
+        graph_urls = []
+
+        def fake_graph_collection_values(url):
+            graph_urls.append(url)
+            return assignments, None
+
+        with mock.patch.object(azure_collect, "graph_collection_values", side_effect=fake_graph_collection_values):
+            role_names, errors = azure_collect.get_directory_role_names_for_principal_ids(
+                {"principal-1", "group-1"},
+            )
+
+        self.assertEqual(role_names, {"Global Reader", "Security Reader"})
+        self.assertEqual(errors, [])
+        self.assertEqual(len(graph_urls), 1)
+        self.assertIn("roleManagement/directory/roleAssignments", graph_urls[0])
+        self.assertNotIn("%24filter", graph_urls[0])
+
+    def test_directory_role_names_returns_graph_errors(self):
+        with mock.patch.object(
+            azure_collect,
+            "graph_collection_values",
+            return_value=([], "graph failed"),
+        ):
+            role_names, errors = azure_collect.get_directory_role_names_for_principal_ids(
+                {"principal-1"},
+            )
+
+        self.assertEqual(role_names, set())
+        self.assertEqual(errors, ["graph failed"])
+
     def test_subscription_role_names_include_direct_and_group_assignments(self):
         assignments = [
             {"principalId": "principal-1", "roleDefinitionName": "Reader"},

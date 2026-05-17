@@ -1335,29 +1335,26 @@ def get_transitive_group_ids(principal_object_id):
 
 def get_directory_role_names_for_principal_ids(principal_ids):
     role_names = set()
-    errors = []
+    query = urllib.parse.urlencode({
+        "$expand": "roleDefinition($select=id,displayName)",
+        "$select": "id,principalId,roleDefinitionId",
+    })
+    url = f"https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?{query}"
 
-    for principal_id in sorted(principal_ids):
-        filter_value = f"principalId eq '{principal_id}'"
-        query = urllib.parse.urlencode({
-            "$filter": filter_value,
-            "$expand": "roleDefinition($select=id,displayName)",
-            "$select": "id,principalId,roleDefinitionId",
-        })
-        url = f"https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments?{query}"
+    assignments, error = graph_collection_values(url)
+    if error:
+        return role_names, [error]
 
-        assignments, error = graph_collection_values(url)
-        if error:
-            errors.append(f"{principal_id}: {error}")
+    for assignment in assignments:
+        if assignment.get("principalId") not in principal_ids:
             continue
 
-        for assignment in assignments:
-            role_definition = assignment.get("roleDefinition") or {}
-            display_name = role_definition.get("displayName")
-            if display_name:
-                role_names.add(display_name)
+        role_definition = assignment.get("roleDefinition") or {}
+        display_name = role_definition.get("displayName")
+        if display_name:
+            role_names.add(display_name)
 
-    return role_names, errors
+    return role_names, []
 
 
 def permission_pattern_covers(required_permission, granted_patterns, denied_patterns=None):
