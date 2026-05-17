@@ -44,26 +44,28 @@
 # Notes:           See the README.md for configuration options and examples.
 # ---------------------------------------------------------------------------
 
-import json
-import re
-import subprocess
 import argparse
+import base64
+import fnmatch
+import json
 import os
+import re
 import shlex
+import subprocess
+import sys
+import resource
+import urllib.parse
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime
 from itertools import product
 from pathlib import Path
 from time import sleep
 from tqdm import tqdm
-import sys
-import base64
-import fnmatch
-import urllib.parse
-from copy import deepcopy
 
 AUTH_CONFIG = {}
 DEBUG = False
+MAX_DEBUG_STDOUT_CHARS = 8000
 
 PRINCIPAL_RESOLUTION_CACHE = {}
 SOURCE_RECORD_CACHE = {}
@@ -983,12 +985,24 @@ def run_and_parse(cmd, entity_type, object_id):
         "details": stdout.strip()
     }
 
+def debug_memory(label):
+    if not DEBUG:
+        return
+
+    usage_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+
+    # Linux reports ru_maxrss in KiB. macOS reports bytes.
+    if usage_kb > 10_000_000:
+        usage_mb = usage_kb / (1024 * 1024)
+    else:
+        usage_mb = usage_kb / 1024
+
+    print(f"[DEBUG] Memory after {label}: maxrss={usage_mb:.1f} MiB")
 
 def get_argument_or_env(argument_value, env_name):
     if argument_value:
         return argument_value
     return os.getenv(env_name)
-
 
 def build_auth_config(args):
     return {
@@ -1023,14 +1037,23 @@ def run_az_cli_process(cmd):
         text=True
     )
     stdout_lines = []
+    debug_chars_printed = 0
+    debug_truncated = False
 
     # Read both stdout and stderr in real time
     while True:
         stdout_line = process.stdout.readline()
         if stdout_line:
-            if DEBUG:
-                print(stdout_line, end='')
             stdout_lines.append(stdout_line)
+
+            if DEBUG:
+                remaining = MAX_DEBUG_STDOUT_CHARS - debug_chars_printed
+                if remaining > 0:
+                    print(stdout_line[:remaining], end='')
+                    debug_chars_printed += min(len(stdout_line), remaining)
+                elif not debug_truncated:
+                    print("\n[DEBUG] stdout preview truncated")
+                    debug_truncated = True
         if not stdout_line and process.poll() is not None:
             break
     process.wait()
@@ -1137,41 +1160,58 @@ def install_missing_extension_and_retry(cmd, result):
     print(f"[*] Retrying command after ensuring Azure CLI extension '{extension_name}' is installed.")
     return run_az_cli_process(cmd)
 
-
 def filter_az_cli_warning_output(output):
+    output = output or ""
+    output_lower = output.lower()
+
     matched_sigs = [
         sig
         for sig in AZURE_CLI_OUTPUT_WARNING_SIGNATURES
-        if sig in (output or "").lower()
+        if sig in output_lower
     ]
+
     if not matched_sigs:
         return output, matched_sigs
 
-    filtered_output = "\n".join(
-        line for line in output.splitlines()
-        if not any(sig in line.lower() for sig in matched_sigs)
-    )
-    return filtered_output, matched_sigs
+    filtered_lines = []
+    for line in output.splitlines():
+        line_lower = line.lower()
+        if not any(sig in line_lower for sig in matched_sigs):
+            filtered_lines.append(line)
 
+    return "\n".join(filtered_lines), matched_sigs
 
 def parse_json_from_az_output(output):
+    """Parse JSON from Azure CLI output without making avoidable large copies.
+
+    Fast path:
+      Azure CLI normally returns output beginning with '[' or '{'. In that case,
+      parse it directly.
+
+    Fallback path:
+      Some commands or extensions may print warning text before the JSON. For
+      those cases, scan for the first JSON-looking character and attempt a raw
+      decode from there.
+    """
     stripped_output = (output or "").strip()
     if not stripped_output:
         return None
 
-    candidates = [stripped_output]
-    lines = stripped_output.splitlines()
-    for index, line in enumerate(lines):
-        if line.lstrip().startswith(("{", "[")):
-            candidate = "\n".join(lines[index:]).strip()
-            if candidate not in candidates:
-                candidates.append(candidate)
+    decoder = json.JSONDecoder()
 
-    for candidate in candidates:
-        if not candidate.startswith(("{", "[")):
-            continue
+    if stripped_output[0] in ("{", "["):
         try:
-            return json.loads(candidate)
+            return json.loads(stripped_output)
+        except json.JSONDecodeError:
+            pass
+
+    for index, char in enumerate(stripped_output):
+        if char not in ("{", "["):
+            continue
+
+        try:
+            value, _ = decoder.raw_decode(stripped_output[index:])
+            return value
         except json.JSONDecodeError:
             continue
 
@@ -1784,6 +1824,7 @@ def run_az_cli(cmd):
     try:
         result = run_az_cli_process(cmd)
         if DEBUG:
+            debug_memory(f"process completed: {cmd}")
             print(f"Return code: {result['returncode']}")
 
         if result["returncode"] != 0:
@@ -1816,7 +1857,11 @@ def run_az_cli(cmd):
                 must_exit = True
 
         else:
+            if DEBUG:
+                debug_memory(f"before warning filter: {cmd}")
             result["stdout"], matched_sigs = filter_az_cli_warning_output(result["stdout"])
+            if DEBUG:
+                debug_memory(f"after warning filter: {cmd}")
             if matched_sigs:
                 if DEBUG:
                     print(f"[DEBUG] Found warning message signature(s): {matched_sigs}, attempting to filter")
@@ -1825,7 +1870,11 @@ def run_az_cli(cmd):
 
             if result["stdout"].strip():
                 try:
+                    if DEBUG:
+                        debug_memory(f"before JSON parse: {cmd}")
                     result["json"] = parse_json_from_az_output(result["stdout"])
+                    if DEBUG:
+                        debug_memory(f"after JSON parse: {cmd}")
                 except Exception as e:
                     print(f"JSON parsing error: {e}")
                     if not any(sig in result["stdout"].lower() for sig in AZURE_CLI_OUTPUT_WARNING_SIGNATURES):
@@ -2324,7 +2373,11 @@ def collect_data(endpoints):
                 print(f"[~] {name} returned {count}")
 
             filename = command_filename_prefix(cmd) + f"_{START_TIMESTAMP}.json"
+            if DEBUG:
+                debug_memory(f"before save_json: {filename}")
             save_json(data, filename)
+            if DEBUG:
+                debug_memory(f"after save_json: {filename}")
 
         except Exception as e:
             print(f"[!] Failed to collect {name}: {e}")
