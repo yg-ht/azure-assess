@@ -422,7 +422,7 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Storage Containers",
-        "cli_command": "az storage container list --account-name {name} --auth-mode login",
+        "cli_command": "az storage container list --account-name {name} --auth-mode login --query '[].{{container_name:name, storage_account_name:`{name}`, metadata:metadata, properties:properties}}'",
         "required_params": {"name": "az_storage_account_list"},
     },
     {
@@ -444,6 +444,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Storage Private Endpoint Connections",
         "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.Storage/storageAccounts",
         "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
+    },
+    {
+        "name": "Storage Blobs",
+        "cli_command": "az storage blob list --account-name {storage_account_name} --container-name {container_name}",
+        "required_params": {"storage_account_name": "az_storage_container_list", "container_name": "az_storage_container_list"},
     },
     {
         "name": "Application Gateway Details",
