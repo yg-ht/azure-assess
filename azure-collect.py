@@ -231,7 +231,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "VM Scale Sets", "cli_command": "az vmss list", "needs_pagination": False},
     {"name": "Web Apps", "cli_command": "az webapp list", "needs_pagination": False},
     {"name": "Data Lake Store Accounts", "cli_command": "az dls account list", "needs_pagination": False},
-    {"name": "Kubernetes Environments", "cli_command": "az appservice kube list", "needs_pagination": False},
+    {"name": "Kubernetes Environments", "cli_command": "az resource list --resource-type Microsoft.Web/kubeEnvironments", "needs_pagination": False},
     {"name": "Management Groups", "cli_command": "az account management-group list", "needs_pagination": False},
     {"name": "Workspaces", "cli_command": "az monitor account list", "needs_pagination": False},
     {"name": "Action Groups", "cli_command": "az monitor action-group list", "needs_pagination": False},
@@ -322,8 +322,8 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Kubernetes Environment Details",
-        "cli_command": "az appservice kube show --name {name} --resource-group {resourceGroup}",
-        "required_params": {"name": "az_appservice_kube_list", "resourceGroup": "az_appservice_kube_list"}
+        "cli_command": "az resource show --ids {id} --api-version 2024-11-01 --include-response-body true",
+        "required_params": {"id": "az_resource_list_--resource-type_microsoft.web_kubeenvironments"}
     },
     {
         "name": "VM Details",

@@ -136,6 +136,37 @@ class ApplicationInsightsEndpointTests(unittest.TestCase):
         )
 
 
+class KubernetesEnvironmentsEndpointTests(unittest.TestCase):
+    def test_kubernetes_environments_collection_uses_generic_resource_endpoint(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS
+            if endpoint["name"] == "Kubernetes Environments"
+        )
+
+        self.assertEqual(
+            endpoint["cli_command"],
+            "az resource list --resource-type Microsoft.Web/kubeEnvironments",
+        )
+        self.assertNotIn("az appservice kube list", endpoint["cli_command"])
+
+    def test_kubernetes_environment_details_uses_collected_resource_id(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Kubernetes Environment Details"
+        )
+
+        self.assertEqual(
+            endpoint["cli_command"],
+            "az resource show --ids {id} --api-version 2024-11-01 --include-response-body true",
+        )
+        self.assertEqual(
+            endpoint["required_params"],
+            {"id": "az_resource_list_--resource-type_microsoft.web_kubeenvironments"},
+        )
+
+
 class CollectDataWithParamsTests(unittest.TestCase):
     def test_parameterised_follow_on_queries_use_collection_context_for_multiple_records(self):
         endpoint = {
