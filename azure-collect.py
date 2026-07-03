@@ -242,6 +242,51 @@ def is_builtin_role_definition(role_definition):
     return str(role_definition.get("roleType") or "").lower() == "builtinrole"
 
 
+def role_definition_guid(role_definition_id):
+    """Return the stable role definition GUID from any Azure role definition ID form."""
+    value = str(role_definition_id or "").strip()
+    if not value:
+        return None
+    parts = value.rstrip("/").split("/")
+    return parts[-1].lower()
+
+
+def canonical_builtin_role_definition_id(role_definition_id):
+    """Return a subscription-neutral ID for Microsoft-managed built-in roles."""
+    guid = role_definition_guid(role_definition_id)
+    if not guid:
+        return role_definition_id
+    return f"/providers/Microsoft.Authorization/roleDefinitions/{guid}"
+
+
+def normalize_builtin_role_definition(role_definition):
+    """Remove tenant-specific subscription paths from a built-in role definition."""
+    normalized = deepcopy(role_definition)
+    if normalized.get("id"):
+        normalized["id"] = canonical_builtin_role_definition_id(normalized["id"])
+    return normalized
+
+
+def normalize_builtin_role_definitions(role_definitions):
+    """Return built-in role definitions in the subscription-neutral cache shape."""
+    return [normalize_builtin_role_definition(role) for role in role_definitions]
+
+
+def strings_containing_subscription_path(value):
+    """Yield strings that still contain customer-scoped Azure resource paths."""
+    if isinstance(value, str):
+        if value.lower().startswith("/subscriptions/"):
+            yield value
+        return
+    if isinstance(value, dict):
+        for child in value.values():
+            yield from strings_containing_subscription_path(child)
+        return
+    if isinstance(value, list):
+        for child in value:
+            yield from strings_containing_subscription_path(child)
+
+
 def validate_builtin_role_definitions(role_definitions):
     """Ensure the managed-role cache is not contaminated by custom roles."""
     if not isinstance(role_definitions, list):
@@ -256,9 +301,17 @@ def validate_builtin_role_definitions(role_definitions):
         sample = ", ".join(str(item) for item in invalid[:5])
         raise ValueError(f"Managed role definition cache contains non-built-in roles: {sample}")
 
+    subscription_scoped_values = []
+    for role in role_definitions:
+        if isinstance(role, dict):
+            subscription_scoped_values.extend(strings_containing_subscription_path(role))
+    if subscription_scoped_values:
+        sample = ", ".join(str(item) for item in subscription_scoped_values[:3])
+        raise ValueError(f"Managed role definition cache contains subscription-scoped values: {sample}")
+
 
 def load_managed_role_definitions_cache(path=None):
-    """Load cached Microsoft-managed role definitions, if a cache has been generated."""
+    """Load cached Microsoft-managed role definitions, normalising legacy cache IDs."""
     cache_path = managed_role_cache_path(path)
     if not cache_path.exists():
         return None
@@ -271,20 +324,27 @@ def load_managed_role_definitions_cache(path=None):
     else:
         role_definitions = payload
 
+    # Older cache files stored built-in role IDs under the subscription used to
+    # collect them. Normalise before validation so offline runs can keep using
+    # those caches without leaking customer-specific identifiers downstream.
+    role_definitions = normalize_builtin_role_definitions(role_definitions)
     validate_builtin_role_definitions(role_definitions)
     return role_definitions
 
 
 def write_managed_role_definitions_cache(role_definitions, path=None, az_version=None):
-    """Atomically write validated Microsoft-managed role definitions to the cache path."""
+    """Atomically write validated, subscription-neutral managed role definitions."""
+    role_definitions = normalize_builtin_role_definitions(role_definitions)
     validate_builtin_role_definitions(role_definitions)
     cache_path = managed_role_cache_path(path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     payload = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "generatedAtUtc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "collectionCommand": "az role definition list --query \"[?roleType=='BuiltInRole']\" --output json",
+        "roleDefinitionIdFormat": "/providers/Microsoft.Authorization/roleDefinitions/{roleGuid}",
+        "subscriptionIdentifiers": "removed",
         "azureCliVersion": az_version,
         "recordCount": len(role_definitions),
         "roleDefinitions": role_definitions,
@@ -311,6 +371,7 @@ def collect_managed_role_definitions_cache(path=None):
         print(f"[ERROR] Failed to collect managed role definitions: {error}")
         exit(1)
 
+    role_definitions = normalize_builtin_role_definitions(role_definitions)
     validate_builtin_role_definitions(role_definitions)
 
     az_version, version_error = run_json_command("az version --output json")
@@ -1113,7 +1174,7 @@ def parse_arguments():
         action="store_true",
         help=(
             "Collect only Microsoft-managed built-in Azure RBAC role definitions "
-            "into the dedicated cache path, then exit."
+            "into the dedicated cache path, sanitise subscription-specific IDs, then exit."
         )
     )
     parser.add_argument(
@@ -2446,10 +2507,13 @@ def resolve_role_assignments(assignments, role_definitions):
       - Resolving the principal (user, group, or service principal)
       - Mapping the roleDefinitionId to a role definition and extracting the permission set.
     """
-    # Build a dictionary to map role definition IDs (in lower case) to their details.
+    # Built-in role definitions in the shared cache are subscription-neutral.
+    # Match by the final role GUID so live assignment IDs still resolve.
     role_def_map = {}
     for role_def in role_definitions:
-        role_def_map[role_def["id"].lower()] = role_def
+        role_guid = role_definition_guid(role_def.get("id"))
+        if role_guid:
+            role_def_map[role_guid] = role_def
 
     enriched = []
     print(f"[*] Resolving {len(assignments)} role assignments and mapping permissions...\n")
@@ -2461,7 +2525,7 @@ def resolve_role_assignments(assignments, role_definitions):
         ra["resolvedPrincipal"] = principal_details
 
         # Map the role assignment to its corresponding role definition.
-        role_def_id = ra.get("roleDefinitionId", "").lower()
+        role_def_id = role_definition_guid(ra.get("roleDefinitionId"))
         role_def = role_def_map.get(role_def_id)
         if role_def:
             # Add human-readable role name and permission details.

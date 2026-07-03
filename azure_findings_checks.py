@@ -48,6 +48,14 @@ from azure_findings_shared import (
     version_is_older,
 )
 
+def role_definition_guid(role_definition_id):
+    """Return the stable role definition GUID from any Azure role definition ID form."""
+    value = str(role_definition_id or "").strip()
+    if not value:
+        return None
+    return value.rstrip("/").split("/")[-1].lower()
+
+
 def find_public_blob_access(storage_accounts):
     evidence = []
     for account in storage_accounts:
@@ -87,7 +95,10 @@ def find_custom_subscription_owner_roles(role_definitions, role_assignments):
             or "owner" in str(role.get("roleName") or role.get("name") or "").lower()
         )
         if owner_like:
-            risky_roles[str(role.get("id")).lower()] = {
+            role_guid = role_definition_guid(role.get("id"))
+            if not role_guid:
+                continue
+            risky_roles[role_guid] = {
                 "id": role.get("id"),
                 "name": role.get("roleName") or role.get("name"),
                 "assignableScopes": subscription_scopes,
@@ -96,7 +107,7 @@ def find_custom_subscription_owner_roles(role_definitions, role_assignments):
             }
 
     for assignment in role_assignments:
-        role_id = str(assignment.get("roleDefinitionId") or "").lower()
+        role_id = role_definition_guid(assignment.get("roleDefinitionId"))
         if role_id in risky_roles and str(assignment.get("scope") or "").lower().startswith("/subscriptions/"):
             risky_roles[role_id]["assignments"].append(
                 {
@@ -321,11 +332,13 @@ def find_resource_lock_admin_role_gap(role_definitions, role_assignments):
     for role in role_definitions:
         actions = {action.lower() for action in flatten_permission_actions(role)}
         if "microsoft.authorization/locks/*" in actions or "microsoft.authorization/*" in actions or "*" in actions:
-            role_map[str(role.get("id") or "").lower()] = role
+            role_guid = role_definition_guid(role.get("id"))
+            if role_guid:
+                role_map[role_guid] = role
 
     evidence = []
     for assignment in role_assignments:
-        role = role_map.get(str(assignment.get("roleDefinitionId") or "").lower())
+        role = role_map.get(role_definition_guid(assignment.get("roleDefinitionId")))
         if not role:
             continue
         evidence.append(

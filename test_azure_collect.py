@@ -311,6 +311,107 @@ class ManagedRoleDefinitionCacheTests(unittest.TestCase):
             [{"name": "reader", "roleType": "BuiltInRole"}]
         )
 
+    def test_builtin_role_cache_rejects_subscription_scoped_values(self):
+        with self.assertRaises(ValueError):
+            azure_collect.validate_builtin_role_definitions(
+                [
+                    {
+                        "id": "/subscriptions/sub-one/providers/Microsoft.Authorization/roleDefinitions/role-guid",
+                        "name": "role-guid",
+                        "roleType": "BuiltInRole",
+                    }
+                ]
+            )
+
+    def test_builtin_role_cache_normalises_subscription_scoped_ids(self):
+        role = {
+            "id": "/subscriptions/sub-one/providers/Microsoft.Authorization/roleDefinitions/role-guid",
+            "name": "role-guid",
+            "roleType": "BuiltInRole",
+        }
+
+        self.assertEqual(
+            azure_collect.normalize_builtin_role_definition(role)["id"],
+            "/providers/Microsoft.Authorization/roleDefinitions/role-guid",
+        )
+
+    def test_builtin_role_cache_load_normalises_legacy_subscription_scoped_ids(self):
+        payload = {
+            "schemaVersion": 1,
+            "roleDefinitions": [
+                {
+                    "id": "/subscriptions/sub-one/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+                    "name": "reader-guid",
+                    "roleType": "BuiltInRole",
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "cache.json"
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            roles = azure_collect.load_managed_role_definitions_cache(cache_path)
+
+        self.assertEqual(
+            roles[0]["id"],
+            "/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+        )
+
+    def test_builtin_role_cache_load_accepts_subscription_neutral_schema_v2(self):
+        payload = {
+            "schemaVersion": 2,
+            "roleDefinitionIdFormat": "/providers/Microsoft.Authorization/roleDefinitions/{roleGuid}",
+            "subscriptionIdentifiers": "removed",
+            "roleDefinitions": [
+                {
+                    "id": "/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+                    "name": "reader-guid",
+                    "roleType": "BuiltInRole",
+                }
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "cache.json"
+            cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            roles = azure_collect.load_managed_role_definitions_cache(cache_path)
+
+        self.assertEqual(
+            roles[0]["id"],
+            "/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+        )
+
+    def test_builtin_role_cache_write_sanitises_subscription_scoped_ids(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cache_path = Path(temp_dir) / "cache.json"
+
+            azure_collect.write_managed_role_definitions_cache(
+                [
+                    {
+                        "id": "/subscriptions/sub-one/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+                        "name": "reader-guid",
+                        "roleType": "BuiltInRole",
+                    }
+                ],
+                path=cache_path,
+                az_version={"azure-cli": "test"},
+            )
+
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["schemaVersion"], 2)
+        self.assertEqual(
+            payload["roleDefinitionIdFormat"],
+            "/providers/Microsoft.Authorization/roleDefinitions/{roleGuid}",
+        )
+        self.assertEqual(payload["subscriptionIdentifiers"], "removed")
+        self.assertEqual(
+            payload["roleDefinitions"][0]["id"],
+            "/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+        )
+
     def test_collect_managed_role_definitions_cache_writes_validated_payload(self):
         commands = []
         written = {}
@@ -319,7 +420,13 @@ class ManagedRoleDefinitionCacheTests(unittest.TestCase):
             commands.append(command)
             if command.startswith("az version"):
                 return {"azure-cli": "test"}, None
-            return [{"name": "reader", "roleType": "BuiltInRole"}], None
+            return [
+                {
+                    "id": "/subscriptions/sub-one/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+                    "name": "reader-guid",
+                    "roleType": "BuiltInRole",
+                }
+            ], None
 
         def fake_write(role_definitions, path=None, az_version=None):
             written["role_definitions"] = role_definitions
@@ -334,7 +441,16 @@ class ManagedRoleDefinitionCacheTests(unittest.TestCase):
             commands[0],
             "az role definition list --query \"[?roleType=='BuiltInRole']\" --output json",
         )
-        self.assertEqual(written["role_definitions"], [{"name": "reader", "roleType": "BuiltInRole"}])
+        self.assertEqual(
+            written["role_definitions"],
+            [
+                {
+                    "id": "/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+                    "name": "reader-guid",
+                    "roleType": "BuiltInRole",
+                }
+            ],
+        )
         self.assertEqual(written["path"], "cache.json")
 
     def test_merge_role_definitions_combines_cached_builtin_and_live_custom_roles(self):
@@ -372,6 +488,49 @@ class ManagedRoleDefinitionCacheTests(unittest.TestCase):
             ],
         )
         self.assertEqual(saved_payloads[0][1], "az_role_definition_list_20260402-000000.json")
+
+    def test_role_assignment_enrichment_matches_subscription_neutral_builtin_role_ids(self):
+        role_assignments = [
+            {
+                "principalId": "principal-one",
+                "roleDefinitionId": "/subscriptions/sub-one/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+            }
+        ]
+        role_definitions = [
+            {
+                "id": "/providers/Microsoft.Authorization/roleDefinitions/reader-guid",
+                "name": "reader-guid",
+                "roleName": "Reader",
+                "permissions": [{"actions": ["Microsoft.Resources/subscriptions/read"]}],
+            }
+        ]
+
+        with mock.patch.object(azure_collect, "resolve_principal", return_value={"name": "User One"}):
+            enriched = azure_collect.resolve_role_assignments(role_assignments, role_definitions)
+
+        self.assertEqual(enriched[0]["roleDefinitionName"], "Reader")
+        self.assertEqual(enriched[0]["permissionSet"], role_definitions[0]["permissions"])
+
+    def test_lock_admin_finding_matches_subscription_neutral_builtin_role_ids(self):
+        role_definitions = [
+            {
+                "id": "/providers/Microsoft.Authorization/roleDefinitions/lock-admin-guid",
+                "roleName": "Lock Administrator",
+                "permissions": [{"actions": ["Microsoft.Authorization/locks/*"]}],
+            }
+        ]
+        role_assignments = [
+            {
+                "scope": "/subscriptions/sub-one",
+                "principalId": "principal-one",
+                "roleDefinitionId": "/subscriptions/sub-one/providers/Microsoft.Authorization/roleDefinitions/lock-admin-guid",
+            }
+        ]
+
+        finding = azure_findings.find_resource_lock_admin_role_gap(role_definitions, role_assignments)
+
+        self.assertEqual(finding["status"], "found")
+        self.assertEqual(finding["evidence"][0]["roleDefinitionName"], "Lock Administrator")
 
 
 class RbacReuseTests(unittest.TestCase):

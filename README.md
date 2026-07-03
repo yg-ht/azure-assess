@@ -96,7 +96,7 @@ Parameters:
 - `-p`, `--paramendpointsonly`: collect only parameter-driven datasets
 - `--max-workers`: maximum concurrent Azure CLI collection workers. Default: `4`; use `1` for serial execution
 - `--timing-summary`, `--no-timing-summary`: enable or disable the final Azure CLI timing summary. Enabled by default
-- `--collect-managed-role-definitions-cache`: collect only Microsoft-managed built-in Azure RBAC role definitions into the cache and exit
+- `--collect-managed-role-definitions-cache`: collect only Microsoft-managed built-in Azure RBAC role definitions into the cache, remove subscription-specific role definition IDs, and exit
 - `--managed-role-definitions-cache-path`: path for the managed role definition cache. Default: `reference/azure_builtin_role_definitions.json`
 - `--auth-method`: authentication mode for Azure CLI. Supported values: `existing`, `device-code`, `browser`, `service-principal`, `managed-identity`. Default: `existing`
 - `--tenant-id`: Azure tenant ID for login and/or context selection. Defaults to `AZURE_TENANT_ID`
