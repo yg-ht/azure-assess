@@ -559,6 +559,98 @@ class CollectDataWithParamsTests(unittest.TestCase):
         azure_collect.SOURCE_RECORD_CACHE.clear()
         azure_collect.SOURCE_FILE_INDEX_CACHE.clear()
 
+    def test_apim_details_only_uses_apim_service_source_records(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "API Management Service Details"
+        )
+        commands_run = []
+        saved_payloads = []
+
+        def fake_run_az_cli(cmd):
+            commands_run.append(cmd)
+            return {"json": {"command": cmd}, "success": True, "stdout": "{}"}
+
+        def fake_save_json(data, filename, append=False):
+            saved_payloads.append((data, filename, append))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            source_file = output_dir / "az_apim_list_20260402-000000.json"
+            source_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": "wrong-name",
+                            "resourceGroup": "wrong-rg",
+                            "type": "Microsoft.Web/sites",
+                        },
+                        {
+                            "name": "apim-one",
+                            "resourceGroup": "apim-rg",
+                            "type": "Microsoft.ApiManagement/service",
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
+                with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
+                    azure_collect.collect_data_with_params([endpoint])
+
+        self.assertEqual(
+            commands_run,
+            ["az apim show --name apim-one --resource-group apim-rg"],
+        )
+        self.assertEqual(len(saved_payloads), 1)
+
+    def test_app_service_environment_details_can_resolve_name_from_resource_id(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "App Service Environment Details"
+        )
+        commands_run = []
+        saved_payloads = []
+
+        def fake_run_az_cli(cmd):
+            commands_run.append(cmd)
+            return {"json": {"command": cmd}, "success": True, "stdout": "{}"}
+
+        def fake_save_json(data, filename, append=False):
+            saved_payloads.append((data, filename, append))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            source_file = output_dir / "az_appservice_ase_list_20260402-000000.json"
+            source_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "id": (
+                                "/subscriptions/sub-one/resourceGroups/ase-rg/providers/"
+                                "Microsoft.Web/hostingEnvironments/ase-one"
+                            ),
+                            "type": "Microsoft.Web/hostingEnvironments",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
+                with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
+                    azure_collect.collect_data_with_params([endpoint])
+
+        self.assertEqual(commands_run, ["az appservice ase show --name ase-one"])
+        self.assertEqual(len(saved_payloads), 1)
+
     def test_parameterised_follow_on_queries_use_collection_context_for_multiple_records(self):
         endpoint = {
             "name": "VM NIC details",

@@ -507,12 +507,14 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     {
         "name": "App Service Environment Details",
         "cli_command": "az appservice ase show --name {name}",
-        "required_params": {"name": "az_appservice_ase_list"}
+        "required_params": {"name": "az_appservice_ase_list"},
+        "required_source_types": {"az_appservice_ase_list": {"Microsoft.Web/hostingEnvironments"}},
     },
     {
         "name": "App Service Environment VIPs",
         "cli_command": "az appservice ase list-addresses --name {name}",
-        "required_params": {"name": "az_appservice_ase_list"}
+        "required_params": {"name": "az_appservice_ase_list"},
+        "required_source_types": {"az_appservice_ase_list": {"Microsoft.Web/hostingEnvironments"}},
     },
     {
         "name": "App Service Plan Details",
@@ -522,12 +524,14 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     {
         "name": "API Management Service Details",
         "cli_command": "az apim show --name {name} --resource-group {resourceGroup}",
-        "required_params": {"name": "az_apim_list", "resourceGroup": "az_apim_list"}
+        "required_params": {"name": "az_apim_list", "resourceGroup": "az_apim_list"},
+        "required_source_types": {"az_apim_list": {"Microsoft.ApiManagement/service"}},
     },
     {
         "name": "App Service Plans in ASE",
         "cli_command": "az appservice ase list-plans --name {name}",
-        "required_params": {"name": "az_appservice_ase_list"}
+        "required_params": {"name": "az_appservice_ase_list"},
+        "required_source_types": {"az_appservice_ase_list": {"Microsoft.Web/hostingEnvironments"}},
     },
     {
         "name": "Azure Metrics Namespaces",
@@ -2442,11 +2446,76 @@ def iter_source_records(data):
     yield data
 
 
+def resource_type_from_id(resource_id):
+    """Extract the Azure resource type from a resource ID when `type` is absent."""
+    if not resource_id or not isinstance(resource_id, str):
+        return None
+
+    parts = [part for part in resource_id.strip("/").split("/") if part]
+    try:
+        provider_index = next(
+            index
+            for index, part in enumerate(parts)
+            if part.lower() == "providers"
+        )
+    except StopIteration:
+        return None
+
+    provider_parts = parts[provider_index + 1:]
+    if len(provider_parts) < 2:
+        return None
+
+    namespace = provider_parts[0]
+    type_parts = provider_parts[1::2]
+    if not type_parts:
+        return None
+    return "/".join([namespace] + type_parts)
+
+
+def resource_name_from_id(resource_id):
+    """Extract the final Azure resource name segment from a resource ID."""
+    if not resource_id or not isinstance(resource_id, str):
+        return None
+
+    parts = [part for part in resource_id.strip("/").split("/") if part]
+    if not parts:
+        return None
+    return parts[-1]
+
+
+def record_resource_type(item):
+    """Return a lower-case resource type for source-record compatibility checks."""
+    resource_type = item.get("type") or resource_type_from_id(item.get("id"))
+    if not resource_type or isinstance(resource_type, (dict, list)):
+        return None
+    resource_type = str(resource_type).strip()
+    return resource_type.lower() or None
+
+
+def filter_source_records_for_endpoint(endpoint, source, records):
+    """Filter parameter-source records to the Azure resource types an endpoint accepts."""
+    required_source_types = endpoint.get("required_source_types", {})
+    allowed_types = required_source_types.get(source)
+    if not allowed_types:
+        return records
+
+    allowed_types = {resource_type.lower() for resource_type in allowed_types}
+    filtered_records = []
+    for item in records:
+        # Generic fields such as `name` are only safe when the source record is
+        # known to describe the resource type that the follow-on command targets.
+        if record_resource_type(item) in allowed_types:
+            filtered_records.append(item)
+    return filtered_records
+
+
 def resolve_param_value(item, param):
     """Resolve a parameter from a record or its collection context."""
     value = item.get(param)
     if value is None:
         value = item.get("_collectionContext", {}).get("parameters", {}).get(param)
+    if value is None and param == "name":
+        value = resource_name_from_id(item.get("id"))
     if value is None or isinstance(value, (dict, list)):
         return None
     value = str(value).strip()
@@ -2639,9 +2708,13 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
         sources_needed = sorted(set(required_param_sources.values()))
 
         for source in sources_needed:
-            source_records[source] = load_source_records(
+            source_records[source] = filter_source_records_for_endpoint(
+                endpoint,
                 source,
-                current_run_only=current_run_only,
+                load_source_records(
+                    source,
+                    current_run_only=current_run_only,
+                ),
             )
 
             if DEBUG:
