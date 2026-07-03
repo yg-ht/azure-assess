@@ -167,6 +167,28 @@ class KubernetesEnvironmentsEndpointTests(unittest.TestCase):
         )
 
 
+class AppConfigurationEndpointTests(unittest.TestCase):
+    def test_app_configuration_revision_collection_uses_supported_command_group(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "App Configuration KeyValue Revisions"
+        )
+
+        self.assertEqual(
+            endpoint["cli_command"],
+            "az appconfig revision list --name {name} --all",
+        )
+
+    def test_app_configuration_revision_collection_does_not_use_legacy_kv_subcommand(self):
+        commands = [
+            endpoint["cli_command"]
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+        ]
+
+        self.assertNotIn("az appconfig kv revision list --name {name} --all", commands)
+
+
 class CollectDataWithParamsTests(unittest.TestCase):
     def test_parameterised_follow_on_queries_use_collection_context_for_multiple_records(self):
         endpoint = {
