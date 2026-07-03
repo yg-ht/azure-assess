@@ -961,8 +961,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "SQL Server Threat Policy",
-        "cli_command": "az sql server threat-policy show --name {name} --resource-group {resourceGroup}",
-        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+        "cli_command": "az rest --method get --url \"{id}/securityAlertPolicies/Default?api-version=2023-08-01\"",
+        "required_params": {"id": "az_sql_server_list"},
+        "output_prefix": "az_sql_server_threat-policy_show",
     },
     {
         "name": "SQL Server TDE Protector",
@@ -981,8 +982,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "SQL Database Threat Policy",
-        "cli_command": "az sql db threat-policy show --server {serverName} --name {name} --resource-group {resourceGroup}",
-        "required_params": {"serverName": "az_sql_db_list", "name": "az_sql_db_list", "resourceGroup": "az_sql_db_list"},
+        "cli_command": "az rest --method get --url \"{id}/securityAlertPolicies/default?api-version=2023-08-01\"",
+        "required_params": {"id": "az_sql_db_list"},
+        "output_prefix": "az_sql_db_threat-policy_show",
     },
     {
         "name": "SQL Server Vulnerability Assessment",
