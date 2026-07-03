@@ -238,7 +238,7 @@ class DependencyEndpointTests(unittest.TestCase):
             if endpoint["name"] == "Managed Disks"
         )
 
-        self.assertEqual(endpoint["cli_command"], "az disk list --resource-group {name}")
+        self.assertEqual(endpoint["cli_command"], "az disk list --resource-group \"{name}\"")
         self.assertEqual(endpoint["required_params"], {"name": "az_group_list"})
 
     def test_function_and_web_auth_settings_have_distinct_output_prefixes(self):
@@ -475,7 +475,7 @@ class CollectDataWithParamsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
             source_file = output_dir / "az_group_list_20260402-000000.json"
-            source_file.write_text(json.dumps([{"name": "rg-one"}]), encoding="utf-8")
+            source_file.write_text(json.dumps([{"name": "rg(test)"}]), encoding="utf-8")
 
             azure_collect.OUTPUT_DIR = output_dir
 
@@ -483,7 +483,7 @@ class CollectDataWithParamsTests(unittest.TestCase):
                 with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
                     azure_collect.collect_data_with_params([endpoint])
 
-        self.assertEqual(commands_run, ["az disk list --resource-group rg-one"])
+        self.assertEqual(commands_run, ["az disk list --resource-group \"rg(test)\""])
         self.assertEqual(len(saved_payloads), 1)
         self.assertEqual(saved_payloads[0][0][0]["name"], "disk-one")
 

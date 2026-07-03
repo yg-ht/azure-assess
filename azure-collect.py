@@ -1001,7 +1001,7 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Managed Disks",
-        "cli_command": "az disk list --resource-group {name}",
+        "cli_command": "az disk list --resource-group \"{name}\"",
         "required_params": {"name": "az_group_list"},
     },
     {
