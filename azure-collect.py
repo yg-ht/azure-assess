@@ -522,7 +522,7 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "App Configuration KeyValue Revisions",
-        "cli_command": "az appconfig kv revision list --name {name} --all",
+        "cli_command": "az appconfig revision list --name {name} --all",
         "required_params": {"name": "az_appconfig_list"},
     },
     {
