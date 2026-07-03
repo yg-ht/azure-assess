@@ -28,6 +28,10 @@
 #   -L, --listparamendpoints      List only API endpoints that require parameters
 #   -n, --donotenrich             Disable enrichment — perform enumeration only
 #   -p, --paramendpointsonly      Collect only from endpoints that require parameters (no effect on enrichment)
+#   --max-workers N              Maximum concurrent Azure CLI collection workers [default: 4]
+#   --no-timing-summary          Disable the final Azure CLI timing summary
+#   --collect-managed-role-definitions-cache
+#                                Collect only Microsoft-managed role definitions into the cache and exit
 #
 # Requirements:    Install the libraries from the requirements file (e.g. pipenv install -r requirements.txt)
 #                  Python 3.8+ (tested with Python 3.11)
@@ -54,23 +58,34 @@ import shlex
 import subprocess
 import sys
 import resource
+import tempfile
+import threading
 import urllib.parse
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime
 from itertools import product
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 from tqdm import tqdm
 
 AUTH_CONFIG = {}
 DEBUG = False
 MAX_DEBUG_STDOUT_CHARS = 8000
+DEFAULT_MAX_WORKERS = 4
+DEFAULT_MANAGED_ROLE_DEFINITIONS_CACHE_PATH = Path("reference/azure_builtin_role_definitions.json")
 
 PRINCIPAL_RESOLUTION_CACHE = {}
 SOURCE_RECORD_CACHE = {}
+SOURCE_FILE_INDEX_CACHE = {}
+SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE = {}
+TIMING_RECORDS = []
 
 PERMISSION_BASELINE_CHECKED = False
+SOURCE_FILE_INDEX_LOCK = threading.Lock()
+TIMING_RECORDS_LOCK = threading.Lock()
+AZURE_CLI_EXTENSION_LOCK = threading.Lock()
 
 REQUIRED_DIRECTORY_ROLES = {
     "Global Reader",
@@ -142,6 +157,170 @@ def command_filename_prefix(command):
     return "_".join(part for part in "".join(safe_chars).split("_") if part)
 
 
+def endpoint_output_prefix(endpoint):
+    """Return the dataset prefix for an endpoint, allowing explicit overrides."""
+    return endpoint.get("output_prefix") or command_filename_prefix(endpoint["cli_command"])
+
+
+def bounded_worker_count(value):
+    """Normalise a user-supplied worker count to a safe positive integer."""
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_WORKERS
+    return max(1, count)
+
+
+def record_timing(endpoint_name, category, command, duration, returncode=None, result_count=None, retry_count=0):
+    """Record non-sensitive command timing metadata for the final summary."""
+    with TIMING_RECORDS_LOCK:
+        TIMING_RECORDS.append(
+            {
+                "endpoint": endpoint_name or "unknown",
+                "category": category or "command",
+                "command": command,
+                "duration": duration,
+                "returncode": returncode,
+                "result_count": result_count,
+                "retry_count": retry_count,
+            }
+        )
+
+
+def result_item_count(data):
+    """Return a human-scale count for a command JSON payload."""
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        return len(data.keys())
+    return 0
+
+
+def timed_run_az_cli(cmd, endpoint_name=None, category="collection"):
+    """Run an Azure CLI command and capture timing metadata."""
+    started = monotonic()
+    result = run_az_cli(cmd)
+    duration = monotonic() - started
+    record_timing(
+        endpoint_name,
+        category,
+        cmd,
+        duration,
+        returncode=result.get("returncode"),
+        result_count=result_item_count(result.get("json")),
+    )
+    return result
+
+
+def print_timing_summary(limit=15):
+    """Print the slowest commands without exposing command output."""
+    if not TIMING_RECORDS:
+        return
+
+    total_duration = sum(item["duration"] for item in TIMING_RECORDS)
+    print("\n[*] Azure CLI timing summary")
+    print(f"    Commands timed: {len(TIMING_RECORDS)}")
+    print(f"    Aggregate command time: {total_duration:.1f}s")
+
+    slowest = sorted(TIMING_RECORDS, key=lambda item: item["duration"], reverse=True)[:limit]
+    print("    Slowest commands:")
+    for item in slowest:
+        result_count = item["result_count"]
+        count_text = "unknown" if result_count is None else str(result_count)
+        print(
+            f"      {item['duration']:.1f}s rc={item['returncode']} "
+            f"count={count_text} [{item['category']}] {item['endpoint']}"
+        )
+
+
+def managed_role_cache_path(path=None):
+    """Return the configured cache path for Microsoft-managed role definitions."""
+    return Path(path or DEFAULT_MANAGED_ROLE_DEFINITIONS_CACHE_PATH)
+
+
+def is_builtin_role_definition(role_definition):
+    return str(role_definition.get("roleType") or "").lower() == "builtinrole"
+
+
+def validate_builtin_role_definitions(role_definitions):
+    """Ensure the managed-role cache is not contaminated by custom roles."""
+    if not isinstance(role_definitions, list):
+        raise ValueError("Managed role definition cache payload must be a list.")
+
+    invalid = [
+        role.get("name") or role.get("id") or "<unknown>"
+        for role in role_definitions
+        if not isinstance(role, dict) or not is_builtin_role_definition(role)
+    ]
+    if invalid:
+        sample = ", ".join(str(item) for item in invalid[:5])
+        raise ValueError(f"Managed role definition cache contains non-built-in roles: {sample}")
+
+
+def load_managed_role_definitions_cache(path=None):
+    """Load cached Microsoft-managed role definitions, if a cache has been generated."""
+    cache_path = managed_role_cache_path(path)
+    if not cache_path.exists():
+        return None
+
+    with open(cache_path, encoding="utf-8") as f:
+        payload = json.load(f)
+
+    if isinstance(payload, dict):
+        role_definitions = payload.get("roleDefinitions")
+    else:
+        role_definitions = payload
+
+    validate_builtin_role_definitions(role_definitions)
+    return role_definitions
+
+
+def write_managed_role_definitions_cache(role_definitions, path=None, az_version=None):
+    """Atomically write validated Microsoft-managed role definitions to the cache path."""
+    validate_builtin_role_definitions(role_definitions)
+    cache_path = managed_role_cache_path(path)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "schemaVersion": 1,
+        "generatedAtUtc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "collectionCommand": "az role definition list --query \"[?roleType=='BuiltInRole']\" --output json",
+        "azureCliVersion": az_version,
+        "recordCount": len(role_definitions),
+        "roleDefinitions": role_definitions,
+    }
+
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(cache_path.parent),
+        delete=False,
+    ) as temp_file:
+        json.dump(payload, temp_file, indent=2)
+        temp_name = temp_file.name
+
+    os.replace(temp_name, cache_path)
+    print(f"[+] Saved managed role definition cache: {cache_path}")
+
+
+def collect_managed_role_definitions_cache(path=None):
+    """Collect only Microsoft-managed role definitions and write the dedicated cache."""
+    command = "az role definition list --query \"[?roleType=='BuiltInRole']\" --output json"
+    role_definitions, error = run_json_command(command)
+    if error:
+        print(f"[ERROR] Failed to collect managed role definitions: {error}")
+        exit(1)
+
+    validate_builtin_role_definitions(role_definitions)
+
+    az_version, version_error = run_json_command("az version --output json")
+    if version_error:
+        az_version = {"error": version_error}
+
+    write_managed_role_definitions_cache(role_definitions, path=path, az_version=az_version)
+    print(f"[✓] Cached {len(role_definitions)} managed role definitions.")
+
+
 AZURE_CLI_ENDPOINTS = [
     {"name": "API Management Services", "cli_command": "az apim list", "needs_pagination": False},
     {"name": "App Configuration Stores", "cli_command": "az appconfig list", "needs_pagination": False},
@@ -197,6 +376,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Monitor Activity Logs", "cli_command": "az monitor activity-log list", "needs_pagination": True},
     {"name": "NAT Gateways", "cli_command": "az network nat gateway list", "needs_pagination": False},
     {"name": "Network Interfaces", "cli_command": "az network nic list", "needs_pagination": False},
+    {"name": "Virtual Networks", "cli_command": "az network vnet list", "needs_pagination": False},
     {"name": "NSGs", "cli_command": "az network nsg list", "needs_pagination": False},
     {"name": "Peering Services", "cli_command": "az network cross-connection list", "needs_pagination": False},
     {"name": "Policy Assignments", "cli_command": "az policy assignment list", "needs_pagination": True},
@@ -216,7 +396,12 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Resource Groups", "cli_command": "az group list", "needs_pagination": False},
     {"name": "Resources", "cli_command": "az resource list", "needs_pagination": True},
     {"name": "Role Assignments", "cli_command": "az role assignment list", "needs_pagination": True},
-    {"name": "Role Definitions", "cli_command": "az role definition list", "needs_pagination": False},
+    {
+        "name": "Role Definitions",
+        "cli_command": "az role definition list --custom-role-only true",
+        "needs_pagination": False,
+        "output_prefix": "az_role_definition_custom_list",
+    },
     {"name": "Security Alerts", "cli_command": "az security alert list", "needs_pagination": True},
     {"name": "Service Bus", "cli_command": "az servicebus namespace list", "needs_pagination": False},
     {"name": "SQL Servers", "cli_command": "az sql server list", "needs_pagination": False},
@@ -290,11 +475,6 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "required_params": {"id": "az_resource_list"}
     },
     {
-        "name": "Virtual Networks",
-        "cli_command": "az network vnet list",
-        "required_params": {"resourceGroup": "az_network_vnet_list"}
-    },
-    {
         "name": "Azure Network Resources",
         "cli_command": "az network list-service-tags --location {name}",
         "required_params": {"name": "az_account_list-locations"}
@@ -358,6 +538,7 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Function App Auth Settings",
         "cli_command": "az webapp auth show --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+        "output_prefix": "az_functionapp_auth_show",
     },
     {
         "name": "Function App AppSettings",
@@ -821,7 +1002,7 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     {
         "name": "Managed Disks",
         "cli_command": "az disk list --resource-group {resourceGroup}",
-        "required_params": {"name": "az_group_list"},
+        "required_params": {"resourceGroup": "az_group_list"},
     },
     {
         "name": "Managed Disk Details",
@@ -856,7 +1037,7 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     {
         "name": "Defender Assessments",
         "cli_command": "az rest --method get --url \"/subscriptions/{subscriptionId}/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
-        "needs_pagination": False,
+        "required_params": {"subscriptionId": "az_account_list"},
         "extract_value": True,
     },
 ]
@@ -900,6 +1081,42 @@ def parse_arguments():
         "-p", "--paramendpointsonly",
         action="store_true",
         help="Restricts collection to just datasets that require parameters, does not affect enrichment"
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=DEFAULT_MAX_WORKERS,
+        help="Maximum concurrent Azure CLI collection workers. Use 1 for serial execution. Default: 4."
+    )
+    parser.add_argument(
+        "--timing-summary",
+        dest="timing_summary",
+        action="store_true",
+        default=True,
+        help="Print a timing summary for Azure CLI collection commands. Enabled by default."
+    )
+    parser.add_argument(
+        "--no-timing-summary",
+        dest="timing_summary",
+        action="store_false",
+        help="Disable the Azure CLI timing summary."
+    )
+    parser.add_argument(
+        "--collect-managed-role-definitions-cache",
+        action="store_true",
+        help=(
+            "Collect only Microsoft-managed built-in Azure RBAC role definitions "
+            "into the dedicated cache path, then exit."
+        )
+    )
+    parser.add_argument(
+        "--managed-role-definitions-cache-path",
+        type=str,
+        default=str(DEFAULT_MANAGED_ROLE_DEFINITIONS_CACHE_PATH),
+        help=(
+            "Path for the Microsoft-managed role definition cache. "
+            f"Default: {DEFAULT_MANAGED_ROLE_DEFINITIONS_CACHE_PATH}"
+        )
     )
     parser.add_argument(
         "--auth-method",
@@ -1139,36 +1356,37 @@ def resolve_missing_extension_name(cmd, output):
 
 
 def ensure_az_extension_installed(extension_name):
-    if extension_name in AZURE_CLI_EXTENSION_CACHE:
-        return True
+    with AZURE_CLI_EXTENSION_LOCK:
+        if extension_name in AZURE_CLI_EXTENSION_CACHE:
+            return True
 
-    extension_arg = shell_quote(extension_name)
-    show_result = run_az_command(
-        f"az extension show --name {extension_arg} --output json",
-        capture_output=True,
-    )
-    if show_result.returncode == 0:
-        AZURE_CLI_EXTENSION_CACHE.add(extension_name)
-        return True
+        extension_arg = shell_quote(extension_name)
+        show_result = run_az_command(
+            f"az extension show --name {extension_arg} --output json",
+            capture_output=True,
+        )
+        if show_result.returncode == 0:
+            AZURE_CLI_EXTENSION_CACHE.add(extension_name)
+            return True
 
-    print(f"[*] Installing missing Azure CLI extension: {extension_name}")
-    add_result = run_az_command(
-        f"az extension add --name {extension_arg} --yes",
-        capture_output=True,
-    )
-    if add_result.returncode == 0:
-        AZURE_CLI_EXTENSION_CACHE.add(extension_name)
-        return True
+        print(f"[*] Installing missing Azure CLI extension: {extension_name}")
+        add_result = run_az_command(
+            f"az extension add --name {extension_arg} --yes",
+            capture_output=True,
+        )
+        if add_result.returncode == 0:
+            AZURE_CLI_EXTENSION_CACHE.add(extension_name)
+            return True
 
-    print(f"[!] Failed to install Azure CLI extension: {extension_name}")
-    install_output = "\n".join(
-        stream.strip()
-        for stream in (add_result.stdout or "", add_result.stderr or "")
-        if stream and stream.strip()
-    )
-    if install_output:
-        print(install_output)
-    return False
+        print(f"[!] Failed to install Azure CLI extension: {extension_name}")
+        install_output = "\n".join(
+            stream.strip()
+            for stream in (add_result.stdout or "", add_result.stderr or "")
+            if stream and stream.strip()
+        )
+        if install_output:
+            print(install_output)
+        return False
 
 
 def install_missing_extension_and_retry(cmd, result):
@@ -1435,13 +1653,19 @@ def permission_pattern_covers(required_permission, granted_patterns, denied_patt
 
 
 def get_subscription_role_assignments(subscription_id):
+    if subscription_id in SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE:
+        return deepcopy(SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE[subscription_id]), None
+
     scope = f"/subscriptions/{subscription_id}"
-    return run_json_command(
+    assignments, error = run_json_command(
         "az role assignment list "
         f"--scope {shell_quote(scope)} "
         "--include-inherited "
         "--output json"
     )
+    if not error:
+        SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE[subscription_id] = deepcopy(assignments)
+    return assignments, error
 
 
 def get_subscription_role_names_for_principal_ids(subscription_id, principal_ids):
@@ -1807,7 +2031,7 @@ def authenticate_with_selected_method(auth_config):
     set_az_account_context(subscription_id)
 
 
-def ensure_az_login(force_reauth=False):
+def ensure_az_login(force_reauth=False, skip_permission_baseline=False):
     global AUTH_CONFIG
 
     auth_method = AUTH_CONFIG.get("auth_method", "existing")
@@ -1816,7 +2040,8 @@ def ensure_az_login(force_reauth=False):
     if validate_auth_session(subscription_id) and not force_reauth:
         print("[✓] Azure CLI is authenticated.")
         set_az_account_context(subscription_id)
-        ensure_required_permission_baseline()
+        if not skip_permission_baseline:
+            ensure_required_permission_baseline()
         return
 
     if auth_method == "existing":
@@ -1832,7 +2057,8 @@ def ensure_az_login(force_reauth=False):
         exit(1)
 
     print("[✓] Azure CLI authentication is ready.")
-    ensure_required_permission_baseline()
+    if not skip_permission_baseline:
+        ensure_required_permission_baseline()
 
 
 def run_az_cli(cmd):
@@ -1949,6 +2175,8 @@ def save_json(data, filename, append=False):
     with open(path, mode) as f:
         json.dump(data, f, indent=2)
     print(f"[+] Saved: {path}")
+    with SOURCE_FILE_INDEX_LOCK:
+        SOURCE_FILE_INDEX_CACHE.clear()
 
 
 def attach_collection_context(data, endpoint_name, param_set):
@@ -1976,9 +2204,65 @@ def source_filename_prefix(source):
     return source.lower().replace(" ", "_").replace("(", "").replace(")", "")
 
 
+def known_endpoint_output_prefixes():
+    """Return explicit dataset prefixes generated by configured endpoints."""
+    return {
+        endpoint_output_prefix(endpoint)
+        for endpoint in AZURE_CLI_ENDPOINTS + AZURE_CLI_ENDPOINTS_PARAMS
+    }
+
+
+def source_filename_matches(filename, source, current_run_only=True):
+    """Return True when a generated JSON file exactly belongs to a source prefix."""
+    if not filename.endswith(".json"):
+        return False
+
+    prefix = source_filename_prefix(source)
+    exact_source = prefix in known_endpoint_output_prefixes()
+    if current_run_only:
+        if not source_file_belongs_to_current_run(filename):
+            return False
+        if exact_source:
+            return filename == f"{prefix}_{START_TIMESTAMP}.json"
+        return filename.startswith(f"{prefix}_")
+
+    if exact_source:
+        generated_pattern = re.compile(rf"^{re.escape(prefix)}_\d{{8}}-\d{{6}}\.json$")
+    else:
+        generated_pattern = re.compile(rf"^{re.escape(prefix)}_.*_\d{{8}}-\d{{6}}\.json$")
+    return bool(generated_pattern.match(filename))
+
+
 def source_file_belongs_to_current_run(filename):
     """Return True when a generated JSON file belongs to this execution."""
     return filename.endswith(f"_{START_TIMESTAMP}.json")
+
+
+def source_file_index(current_run_only=True):
+    """Return cached JSON filenames available for parameter sources."""
+    cache_key = (
+        str(OUTPUT_DIR.resolve()),
+        START_TIMESTAMP if current_run_only else "all-runs",
+    )
+    with SOURCE_FILE_INDEX_LOCK:
+        if cache_key in SOURCE_FILE_INDEX_CACHE:
+            return SOURCE_FILE_INDEX_CACHE[cache_key]
+
+        try:
+            filenames = sorted(
+                filename
+                for filename in os.listdir(OUTPUT_DIR)
+                if filename.endswith(".json")
+                and (
+                    not current_run_only
+                    or source_file_belongs_to_current_run(filename)
+                )
+            )
+        except FileNotFoundError:
+            filenames = []
+
+        SOURCE_FILE_INDEX_CACHE[cache_key] = filenames
+        return filenames
 
 
 def list_source_files_for_run(source, current_run_only=True):
@@ -1990,20 +2274,11 @@ def list_source_files_for_run(source, current_run_only=True):
     In parameter-only replay mode, current_run_only can be False to preserve
     the existing ability to use previously collected source files.
     """
-    filename_prefix = source_filename_prefix(source)
-    matching_files = []
-
-    for filename in os.listdir(OUTPUT_DIR):
-        if not filename.startswith(filename_prefix):
-            continue
-        if not filename.endswith(".json"):
-            continue
-        if current_run_only and not source_file_belongs_to_current_run(filename):
-            continue
-
-        matching_files.append(filename)
-
-    return sorted(matching_files)
+    return [
+        filename
+        for filename in source_file_index(current_run_only=current_run_only)
+        if source_filename_matches(filename, source, current_run_only=current_run_only)
+    ]
 
 
 def load_source_records(source, current_run_only=True):
@@ -2043,6 +2318,40 @@ def load_source_records(source, current_run_only=True):
 
     SOURCE_RECORD_CACHE[cache_key] = records
     return records
+
+
+def load_current_dataset(prefix):
+    """Load records for a generated dataset from the current run."""
+    return load_source_records(prefix, current_run_only=True)
+
+
+def merge_role_definition_dataset(cache_path=None):
+    """Create the compatibility role-definition dataset from cached built-ins and live custom roles."""
+    custom_roles = load_current_dataset("az_role_definition_custom_list")
+    try:
+        builtin_roles = load_managed_role_definitions_cache(cache_path)
+    except Exception as exc:
+        print(f"[!] Managed role definition cache is unusable: {exc}")
+        builtin_roles = None
+
+    if builtin_roles is None:
+        print("[~] Managed role definition cache not found; collecting full role definition list live.")
+        result = timed_run_az_cli(
+            "az role definition list",
+            endpoint_name="Role Definitions",
+            category="role-definition-fallback",
+        )
+        role_definitions = result.get("json") or []
+    else:
+        role_definitions = list(builtin_roles) + list(custom_roles)
+
+    if not role_definitions:
+        print("[!] No role definitions available for merged role definition dataset.")
+        return []
+
+    save_json(role_definitions, f"az_role_definition_list_{START_TIMESTAMP}.json")
+    return role_definitions
+
 
 def iter_source_records(data):
     """Yield dict records from supported JSON payload shapes."""
@@ -2161,7 +2470,76 @@ def resolve_role_assignments(assignments, role_definitions):
     return enriched
 
 
-def collect_data_with_params(param_endpoints, current_run_only=True):
+def run_tasks(tasks, worker_count):
+    """Run callables serially or with a bounded worker pool."""
+    if worker_count <= 1 or len(tasks) <= 1:
+        return [task() for task in tasks]
+
+    results = []
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        future_to_index = {
+            executor.submit(task): index
+            for index, task in enumerate(tasks)
+        }
+        ordered_results = [None] * len(tasks)
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            ordered_results[index] = future.result()
+        results.extend(ordered_results)
+    return results
+
+
+def collect_parameter_set(endpoint, param_set):
+    """Run one parameterised endpoint command for one aligned parameter set."""
+    name = endpoint["name"]
+    cli_template = endpoint["cli_command"]
+
+    try:
+        cli_command = cli_template.format(**param_set)
+    except KeyError as e:
+        print(f"[!] Skipping {name}: Missing placeholder for {str(e)}")
+        return []
+
+    if DEBUG:
+        print(f"[DEBUG] Running command: {cli_command}")
+
+    print(f"[*] Fetching: {name} with parameters: {param_set} ...")
+    try:
+        result = timed_run_az_cli(cli_command, endpoint_name=name, category="parameterised")
+        data = result.get("json", [])
+
+        if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
+            data = data["value"]
+
+        if not data:
+            print(f"[!] No data returned for: {name} with {param_set}")
+            return []
+
+        data = attach_collection_context(data, name, param_set)
+
+        if name == "VM NIC IDs" and isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                # Preserve the originating VM context so follow-up NIC detail
+                # queries can be driven from a single source dataset.
+                item.setdefault("vm_name", param_set.get("name"))
+                item.setdefault("resourceGroup", param_set.get("resourceGroup"))
+
+        if isinstance(data, list):
+            return data
+
+        if name == "VM NIC IDs" and isinstance(data, dict):
+            data.setdefault("vm_name", param_set.get("name"))
+            data.setdefault("resourceGroup", param_set.get("resourceGroup"))
+        return [data]
+
+    except Exception as e:
+        print(f"[!] Data collect with params failed for {name} with {param_set}: {e}")
+        return []
+
+
+def collect_data_with_params(param_endpoints, current_run_only=True, max_workers=1):
     global DEBUG
     """
     Run parameterized commands from AZURE_CLI_ENDPOINTS and store JSON data.
@@ -2277,54 +2655,16 @@ def collect_data_with_params(param_endpoints, current_run_only=True):
             print(f"[DEBUG] Hybrid-aligned param combinations: {param_combinations}")
             print(f"[DEBUG] Generated {len(param_combinations)} parameter combinations for {name}")
 
+        tasks = [
+            (lambda param_set=param_set, endpoint=endpoint: collect_parameter_set(endpoint, param_set))
+            for param_set in param_combinations
+        ]
         all_results = []
-
-        for param_set in param_combinations:
-            try:
-                cli_command = cli_template.format(**param_set)
-            except KeyError as e:
-                print(f"[!] Skipping {name}: Missing placeholder for {str(e)}")
-                continue
-
-            if DEBUG:
-                print(f"[DEBUG] Running command: {cli_command}")
-
-            print(f"[*] Fetching: {name} with parameters: {param_set} ...")
-            try:
-                result = run_az_cli(cli_command)
-                data = result.get("json", [])
-
-                if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
-                    data = data["value"]
-
-                if not data:
-                    print(f"[!] No data returned for: {name} with {param_set}")
-                    continue
-
-                data = attach_collection_context(data, name, param_set)
-
-                if name == "VM NIC IDs" and isinstance(data, list):
-                    for item in data:
-                        if not isinstance(item, dict):
-                            continue
-                        # Preserve the originating VM context so follow-up NIC detail
-                        # queries can be driven from a single source dataset.
-                        item.setdefault("vm_name", param_set.get("name"))
-                        item.setdefault("resourceGroup", param_set.get("resourceGroup"))
-
-                if isinstance(data, list):
-                    all_results.extend(data)
-                else:
-                    if name == "VM NIC IDs" and isinstance(data, dict):
-                        data.setdefault("vm_name", param_set.get("name"))
-                        data.setdefault("resourceGroup", param_set.get("resourceGroup"))
-                    all_results.append(data)
-
-            except Exception as e:
-                print(f"[!] Data collect with params failed for {name} with {param_set}: {e}")
+        for result_group in run_tasks(tasks, bounded_worker_count(max_workers)):
+            all_results.extend(result_group or [])
 
         if all_results:
-            filename = command_filename_prefix(cli_template) + f"_{START_TIMESTAMP}.json"
+            filename = endpoint_output_prefix(endpoint) + f"_{START_TIMESTAMP}.json"
             if DEBUG:
                 print(f"[DEBUG] Writing {len(all_results)} results to {filename}")
             save_json(all_results, filename)
@@ -2359,50 +2699,55 @@ def list_all_enabled_cli_endpoints(param_endpoints=False):
     exit(0)
 
 
-def collect_data(endpoints):
+def collect_endpoint(endpoint):
+    """Collect and save one non-parameterised endpoint."""
+    name = endpoint["name"]
+    cmd = endpoint["cli_command"]
+
+    print(f"[*] Fetching: {name} ...")
+    try:
+        result = timed_run_az_cli(cmd, endpoint_name=name, category="base")
+        data = result.get("json", [])
+
+        if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
+            data = data["value"]
+
+        count = result_item_count(data)
+
+        if DEBUG:
+            print(f"[DEBUG] Returned data is type: {type(data)}")
+
+        if count == 0:
+            print(f"[!] No data returned for: {name}")
+            return None
+
+        print(f"[~] {name} returned {count}")
+
+        filename = endpoint_output_prefix(endpoint) + f"_{START_TIMESTAMP}.json"
+        if DEBUG:
+            debug_memory(f"before save_json: {filename}")
+        save_json(data, filename)
+        if DEBUG:
+            debug_memory(f"after save_json: {filename}")
+        return data
+
+    except Exception as e:
+        print(f"[!] Failed to collect {name}: {e}")
+        return None
+
+
+def collect_data(endpoints, max_workers=1):
     global START_TIMESTAMP
 
     # ensure the script doesn't hang waiting for user input about installing extensions
-    run_az_cli("az config set extension.use_dynamic_install=yes_without_prompt")
-    run_az_cli("az config set extension.dynamic_install_allow_preview=true")
+    timed_run_az_cli("az config set extension.use_dynamic_install=yes_without_prompt", endpoint_name="Azure CLI config", category="setup")
+    timed_run_az_cli("az config set extension.dynamic_install_allow_preview=true", endpoint_name="Azure CLI config", category="setup")
 
-    for endpoint in endpoints:
-        name = endpoint["name"]
-        cmd = endpoint["cli_command"]
-
-        print(f"[*] Fetching: {name} ...")
-        try:
-            result = run_az_cli(cmd)
-            data = result.get("json", [])
-
-            if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
-                data = data["value"]
-
-            if isinstance(data, list):
-                count = len(data)
-            elif isinstance(data, dict):
-                count = len(data.keys())
-            else:
-                count = 0
-
-            if DEBUG:
-                print(f"[DEBUG] Returned data is type: {type(data)}")
-
-            if count == 0:
-                print(f"[!] No data returned for: {name}")
-                continue
-            else:
-                print(f"[~] {name} returned {count}")
-
-            filename = command_filename_prefix(cmd) + f"_{START_TIMESTAMP}.json"
-            if DEBUG:
-                debug_memory(f"before save_json: {filename}")
-            save_json(data, filename)
-            if DEBUG:
-                debug_memory(f"after save_json: {filename}")
-
-        except Exception as e:
-            print(f"[!] Failed to collect {name}: {e}")
+    tasks = [
+        (lambda endpoint=endpoint: collect_endpoint(endpoint))
+        for endpoint in endpoints
+    ]
+    run_tasks(tasks, bounded_worker_count(max_workers))
 
 
 def filter_endpoints(keyword=None, endpoints=None):
@@ -2435,6 +2780,7 @@ if __name__ == "__main__":
     START_TIMESTAMP = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     args = parse_arguments()
     AUTH_CONFIG = build_auth_config(args)
+    max_workers = bounded_worker_count(args.max_workers)
 
     if args.debug == True:
         DEBUG = True
@@ -2448,9 +2794,19 @@ if __name__ == "__main__":
     global OUTPUT_DIR
     OUTPUT_DIR = Path(args.output_dir)
 
+    if args.collect_managed_role_definitions_cache:
+        ensure_az_login(skip_permission_baseline=True)
+        collect_managed_role_definitions_cache(args.managed_role_definitions_cache_path)
+        if args.timing_summary:
+            print_timing_summary()
+        exit(0)
+
     ensure_az_login()
+
     if not args.paramendpointsonly:
-        collect_data(filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS))
+        collect_data(filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS), max_workers=max_workers)
+        if not args.endpoint or "role definition" in str(args.endpoint).lower():
+            merge_role_definition_dataset(args.managed_role_definitions_cache_path)
 
     current_run_only = not args.paramendpointsonly
 
@@ -2460,14 +2816,29 @@ if __name__ == "__main__":
     collect_data_with_params(
         filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS_PARAMS),
         current_run_only=current_run_only,
+        max_workers=max_workers,
     )
 
     if not args.donotenrich and not args.endpoint:
         # Special handling for role assignments
         try:
             print(f"[+] Enriching roles with assignments and permissions...")
-            assignment_result = run_az_cli("az role assignment list").get("json", [])
-            role_def_result = run_az_cli("az role definition list").get("json", [])
+            assignment_result = load_current_dataset("az_role_assignment_list")
+            if not assignment_result:
+                assignment_result = timed_run_az_cli(
+                    "az role assignment list",
+                    endpoint_name="Role Assignments",
+                    category="enrichment-fallback",
+                ).get("json", [])
+
+            role_def_result = load_current_dataset("az_role_definition_list")
+            if not role_def_result:
+                role_def_result = timed_run_az_cli(
+                    "az role definition list",
+                    endpoint_name="Role Definitions",
+                    category="enrichment-fallback",
+                ).get("json", [])
+
             if assignment_result and role_def_result:
                 enriched_data = resolve_role_assignments(assignment_result, role_def_result)
                 save_json(enriched_data, f"role_enriched_{START_TIMESTAMP}.json")
@@ -2476,5 +2847,8 @@ if __name__ == "__main__":
                 print(f"No assignments or role definitions found - cannot enrich")
         except Exception as e:
             print(f"[!] Failed to enrich data: {e}")
+
+    if args.timing_summary:
+        print_timing_summary()
 
     print("[✓] Azure audit data collection complete.")

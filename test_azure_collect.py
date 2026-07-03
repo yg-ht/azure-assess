@@ -41,13 +41,14 @@ class DefenderAssessmentsEndpointTests(unittest.TestCase):
     def test_defender_assessments_use_arm_rest_endpoint(self):
         endpoint = next(
             endpoint
-            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
             if endpoint["name"] == "Defender Assessments"
         )
 
         self.assertIn("az rest --method get", endpoint["cli_command"])
         self.assertIn("Microsoft.Security/assessments?api-version=2020-01-01", endpoint["cli_command"])
         self.assertNotIn("az security assessment list", endpoint["cli_command"])
+        self.assertEqual(endpoint["required_params"], {"subscriptionId": "az_account_list"})
         self.assertTrue(endpoint["extract_value"])
 
     def test_defender_assessments_extracts_value_and_uses_safe_filename(self):
@@ -189,6 +190,204 @@ class AppConfigurationEndpointTests(unittest.TestCase):
         self.assertNotIn("az appconfig kv revision list --name {name} --all", commands)
 
 
+class PerformanceOptionTests(unittest.TestCase):
+    def test_max_workers_defaults_to_four(self):
+        with mock.patch.object(azure_collect.sys, "argv", ["azure-collect.py"]):
+            args = azure_collect.parse_arguments()
+
+        self.assertEqual(args.max_workers, 4)
+
+    def test_bounded_worker_count_allows_serial_opt_out(self):
+        self.assertEqual(azure_collect.bounded_worker_count(1), 1)
+        self.assertEqual(azure_collect.bounded_worker_count(0), 1)
+        self.assertEqual(azure_collect.bounded_worker_count("8"), 8)
+
+    def test_run_tasks_preserves_result_order_with_workers(self):
+        results = azure_collect.run_tasks(
+            [
+                lambda: "first",
+                lambda: "second",
+                lambda: "third",
+            ],
+            worker_count=2,
+        )
+
+        self.assertEqual(results, ["first", "second", "third"])
+
+
+class DependencyEndpointTests(unittest.TestCase):
+    def test_virtual_networks_are_collected_as_base_source(self):
+        base_endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS
+            if endpoint["name"] == "Virtual Networks"
+        )
+        self.assertEqual(base_endpoint["cli_command"], "az network vnet list")
+
+        param_names = {
+            endpoint["name"]
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+        }
+        self.assertNotIn("Virtual Networks", param_names)
+
+    def test_managed_disks_use_resource_group_parameter(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Managed Disks"
+        )
+
+        self.assertEqual(endpoint["required_params"], {"resourceGroup": "az_group_list"})
+
+    def test_function_and_web_auth_settings_have_distinct_output_prefixes(self):
+        function_endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Function App Auth Settings"
+        )
+        web_endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Web App Auth Settings"
+        )
+
+        self.assertNotEqual(
+            azure_collect.endpoint_output_prefix(function_endpoint),
+            azure_collect.endpoint_output_prefix(web_endpoint),
+        )
+
+    def test_role_definition_custom_output_does_not_match_merged_prefix(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS
+            if endpoint["name"] == "Role Definitions"
+        )
+
+        self.assertEqual(endpoint["cli_command"], "az role definition list --custom-role-only true")
+        self.assertEqual(azure_collect.endpoint_output_prefix(endpoint), "az_role_definition_custom_list")
+        self.assertNotIn("az_role_definition_list", azure_collect.endpoint_output_prefix(endpoint))
+
+    def test_exact_source_prefix_does_not_match_more_specific_resource_list(self):
+        azure_collect.START_TIMESTAMP = "20260402-000000"
+
+        self.assertTrue(
+            azure_collect.source_filename_matches(
+                "az_resource_list_20260402-000000.json",
+                "az_resource_list",
+            )
+        )
+        self.assertFalse(
+            azure_collect.source_filename_matches(
+                "az_resource_list_--resource-type_microsoft.web_kubeenvironments_20260402-000000.json",
+                "az_resource_list",
+            )
+        )
+
+    def test_abbreviated_source_prefix_matches_command_with_arguments(self):
+        azure_collect.START_TIMESTAMP = "20260402-000000"
+
+        self.assertTrue(
+            azure_collect.source_filename_matches(
+                "az_storage_container_list_--account-name_name_--auth-mode_login_20260402-000000.json",
+                "az_storage_container_list",
+            )
+        )
+
+
+class ManagedRoleDefinitionCacheTests(unittest.TestCase):
+    def test_builtin_role_cache_rejects_custom_roles(self):
+        with self.assertRaises(ValueError):
+            azure_collect.validate_builtin_role_definitions(
+                [{"name": "custom-role", "roleType": "CustomRole"}]
+            )
+
+    def test_builtin_role_cache_accepts_builtin_roles(self):
+        azure_collect.validate_builtin_role_definitions(
+            [{"name": "reader", "roleType": "BuiltInRole"}]
+        )
+
+    def test_collect_managed_role_definitions_cache_writes_validated_payload(self):
+        commands = []
+        written = {}
+
+        def fake_run_json_command(command):
+            commands.append(command)
+            if command.startswith("az version"):
+                return {"azure-cli": "test"}, None
+            return [{"name": "reader", "roleType": "BuiltInRole"}], None
+
+        def fake_write(role_definitions, path=None, az_version=None):
+            written["role_definitions"] = role_definitions
+            written["path"] = path
+            written["az_version"] = az_version
+
+        with mock.patch.object(azure_collect, "run_json_command", side_effect=fake_run_json_command):
+            with mock.patch.object(azure_collect, "write_managed_role_definitions_cache", side_effect=fake_write):
+                azure_collect.collect_managed_role_definitions_cache("cache.json")
+
+        self.assertEqual(
+            commands[0],
+            "az role definition list --query \"[?roleType=='BuiltInRole']\" --output json",
+        )
+        self.assertEqual(written["role_definitions"], [{"name": "reader", "roleType": "BuiltInRole"}])
+        self.assertEqual(written["path"], "cache.json")
+
+    def test_merge_role_definitions_combines_cached_builtin_and_live_custom_roles(self):
+        saved_payloads = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            custom_role_file = output_dir / "az_role_definition_custom_list_20260402-000000.json"
+            custom_role_file.write_text(
+                json.dumps([{"name": "custom", "roleType": "CustomRole"}]),
+                encoding="utf-8",
+            )
+
+            azure_collect.OUTPUT_DIR = output_dir
+            azure_collect.START_TIMESTAMP = "20260402-000000"
+            azure_collect.SOURCE_RECORD_CACHE.clear()
+            azure_collect.SOURCE_FILE_INDEX_CACHE.clear()
+
+            def fake_save_json(data, filename, append=False):
+                saved_payloads.append((data, filename, append))
+
+            with mock.patch.object(
+                azure_collect,
+                "load_managed_role_definitions_cache",
+                return_value=[{"name": "reader", "roleType": "BuiltInRole"}],
+            ):
+                with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
+                    merged = azure_collect.merge_role_definition_dataset("cache.json")
+
+        self.assertEqual(
+            merged,
+            [
+                {"name": "reader", "roleType": "BuiltInRole"},
+                {"name": "custom", "roleType": "CustomRole"},
+            ],
+        )
+        self.assertEqual(saved_payloads[0][1], "az_role_definition_list_20260402-000000.json")
+
+
+class RbacReuseTests(unittest.TestCase):
+    def test_subscription_role_assignments_are_cached(self):
+        azure_collect.SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE.clear()
+        calls = []
+
+        def fake_run_json_command(command):
+            calls.append(command)
+            return [{"roleDefinitionName": "Reader", "principalId": "principal"}], None
+
+        with mock.patch.object(azure_collect, "run_json_command", side_effect=fake_run_json_command):
+            first, first_error = azure_collect.get_subscription_role_assignments("sub-1")
+            second, second_error = azure_collect.get_subscription_role_assignments("sub-1")
+
+        self.assertIsNone(first_error)
+        self.assertIsNone(second_error)
+        self.assertEqual(first, second)
+        self.assertEqual(len(calls), 1)
+
+
 class CollectDataWithParamsTests(unittest.TestCase):
     def test_parameterised_follow_on_queries_use_collection_context_for_multiple_records(self):
         endpoint = {
@@ -230,12 +429,14 @@ class CollectDataWithParamsTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir)
-            source_file = output_dir / "az_vm_nic_list_fixture.json"
+            source_file = output_dir / "az_vm_nic_list_20260402-000000.json"
             source_file.write_text(json.dumps(source_records), encoding="utf-8")
 
             azure_collect.OUTPUT_DIR = output_dir
             azure_collect.START_TIMESTAMP = "20260402-000000"
             azure_collect.DEBUG = False
+            azure_collect.SOURCE_RECORD_CACHE.clear()
+            azure_collect.SOURCE_FILE_INDEX_CACHE.clear()
 
             with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
                 with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):

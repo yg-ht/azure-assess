@@ -94,6 +94,10 @@ Parameters:
 - `-L`, `--listparamendpoints`: list all parameterised endpoints and exit
 - `-n`, `--donotenrich`: disable enrichment steps and perform enumeration only
 - `-p`, `--paramendpointsonly`: collect only parameter-driven datasets
+- `--max-workers`: maximum concurrent Azure CLI collection workers. Default: `4`; use `1` for serial execution
+- `--timing-summary`, `--no-timing-summary`: enable or disable the final Azure CLI timing summary. Enabled by default
+- `--collect-managed-role-definitions-cache`: collect only Microsoft-managed built-in Azure RBAC role definitions into the cache and exit
+- `--managed-role-definitions-cache-path`: path for the managed role definition cache. Default: `reference/azure_builtin_role_definitions.json`
 - `--auth-method`: authentication mode for Azure CLI. Supported values: `existing`, `device-code`, `browser`, `service-principal`, `managed-identity`. Default: `existing`
 - `--tenant-id`: Azure tenant ID for login and/or context selection. Defaults to `AZURE_TENANT_ID`
 - `--subscription-id`: Azure subscription ID to select after authentication. Defaults to `AZURE_SUBSCRIPTION_ID`
@@ -111,6 +115,8 @@ Notes:
 - Authentication validation checks both the current Azure account context and token acquisition for Azure Resource Manager and Microsoft Graph before collection starts.
 - `--subscription-id` applies the Azure CLI account context after authentication and can also be supplied through `AZURE_SUBSCRIPTION_ID`.
 - Output files are timestamped in their filenames, which is used by the dashboard to track dataset history.
+- Normal collection combines live custom Azure RBAC role definitions with the managed role definition cache when it exists. If the cache has not been generated, the collector falls back to a live full role definition collection.
+- Managed role definition cache generation skips customer-facing collection and permission baseline checks so the cache is not mixed with customer custom roles or audit output.
 
 Authentication examples:
 
