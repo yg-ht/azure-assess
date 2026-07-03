@@ -1001,8 +1001,8 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Managed Disks",
-        "cli_command": "az disk list --resource-group {resourceGroup}",
-        "required_params": {"resourceGroup": "az_group_list"},
+        "cli_command": "az disk list --resource-group {name}",
+        "required_params": {"name": "az_group_list"},
     },
     {
         "name": "Managed Disk Details",
@@ -1036,8 +1036,8 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Defender Assessments",
-        "cli_command": "az rest --method get --url \"/subscriptions/{subscriptionId}/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
-        "required_params": {"subscriptionId": "az_account_list"},
+        "cli_command": "az rest --method get --url \"/subscriptions/{id}/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
+        "required_params": {"id": "az_account_list"},
         "extract_value": True,
     },
 ]

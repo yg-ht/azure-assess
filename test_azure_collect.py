@@ -46,15 +46,16 @@ class DefenderAssessmentsEndpointTests(unittest.TestCase):
         )
 
         self.assertIn("az rest --method get", endpoint["cli_command"])
+        self.assertIn("/subscriptions/{id}/providers/", endpoint["cli_command"])
         self.assertIn("Microsoft.Security/assessments?api-version=2020-01-01", endpoint["cli_command"])
         self.assertNotIn("az security assessment list", endpoint["cli_command"])
-        self.assertEqual(endpoint["required_params"], {"subscriptionId": "az_account_list"})
+        self.assertEqual(endpoint["required_params"], {"id": "az_account_list"})
         self.assertTrue(endpoint["extract_value"])
 
     def test_defender_assessments_extracts_value_and_uses_safe_filename(self):
         endpoint = {
             "name": "Defender Assessments",
-            "cli_command": "az rest --method get --url \"/subscriptions/{subscriptionId}/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
+            "cli_command": "az rest --method get --url \"/subscriptions/{id}/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
             "needs_pagination": False,
             "extract_value": True,
         }
@@ -87,7 +88,7 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
     def test_defender_assessment_records_include_rest_dataset_prefix(self):
         assessment = {"name": "assessment"}
         catalog = {
-            "az_rest_--method_get_--url_subscriptions_subscriptionid_providers_microsoft.security_assessments_api-version_2020-01-01_20260402-000000.json": {
+            "az_rest_--method_get_--url_subscriptions_id_providers_microsoft.security_assessments_api-version_2020-01-01_20260402-000000.json": {
                 "data": [assessment],
                 "path": Path("defender-assessments.json"),
             }
@@ -230,14 +231,15 @@ class DependencyEndpointTests(unittest.TestCase):
         }
         self.assertNotIn("Virtual Networks", param_names)
 
-    def test_managed_disks_use_resource_group_parameter(self):
+    def test_managed_disks_use_resource_group_name_parameter(self):
         endpoint = next(
             endpoint
             for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
             if endpoint["name"] == "Managed Disks"
         )
 
-        self.assertEqual(endpoint["required_params"], {"resourceGroup": "az_group_list"})
+        self.assertEqual(endpoint["cli_command"], "az disk list --resource-group {name}")
+        self.assertEqual(endpoint["required_params"], {"name": "az_group_list"})
 
     def test_function_and_web_auth_settings_have_distinct_output_prefixes(self):
         function_endpoint = next(
@@ -389,6 +391,12 @@ class RbacReuseTests(unittest.TestCase):
 
 
 class CollectDataWithParamsTests(unittest.TestCase):
+    def setUp(self):
+        azure_collect.START_TIMESTAMP = "20260402-000000"
+        azure_collect.DEBUG = False
+        azure_collect.SOURCE_RECORD_CACHE.clear()
+        azure_collect.SOURCE_FILE_INDEX_CACHE.clear()
+
     def test_parameterised_follow_on_queries_use_collection_context_for_multiple_records(self):
         endpoint = {
             "name": "VM NIC details",
@@ -433,10 +441,6 @@ class CollectDataWithParamsTests(unittest.TestCase):
             source_file.write_text(json.dumps(source_records), encoding="utf-8")
 
             azure_collect.OUTPUT_DIR = output_dir
-            azure_collect.START_TIMESTAMP = "20260402-000000"
-            azure_collect.DEBUG = False
-            azure_collect.SOURCE_RECORD_CACHE.clear()
-            azure_collect.SOURCE_FILE_INDEX_CACHE.clear()
 
             with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
                 with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
@@ -451,6 +455,78 @@ class CollectDataWithParamsTests(unittest.TestCase):
         )
         self.assertEqual(len(saved_payloads), 1)
         self.assertEqual(len(saved_payloads[0][0]), 2)
+
+    def test_managed_disks_resolve_resource_group_from_group_name(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Managed Disks"
+        )
+        commands_run = []
+        saved_payloads = []
+
+        def fake_run_az_cli(cmd):
+            commands_run.append(cmd)
+            return {"json": [{"name": "disk-one"}], "success": True, "stdout": "[]"}
+
+        def fake_save_json(data, filename, append=False):
+            saved_payloads.append((data, filename, append))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            source_file = output_dir / "az_group_list_20260402-000000.json"
+            source_file.write_text(json.dumps([{"name": "rg-one"}]), encoding="utf-8")
+
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
+                with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
+                    azure_collect.collect_data_with_params([endpoint])
+
+        self.assertEqual(commands_run, ["az disk list --resource-group rg-one"])
+        self.assertEqual(len(saved_payloads), 1)
+        self.assertEqual(saved_payloads[0][0][0]["name"], "disk-one")
+
+    def test_defender_assessments_resolve_subscription_from_account_id(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Defender Assessments"
+        )
+        commands_run = []
+        saved_payloads = []
+
+        def fake_run_az_cli(cmd):
+            commands_run.append(cmd)
+            return {
+                "json": {"value": [{"name": "assessment-one"}]},
+                "success": True,
+                "stdout": "{}",
+            }
+
+        def fake_save_json(data, filename, append=False):
+            saved_payloads.append((data, filename, append))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            source_file = output_dir / "az_account_list_20260402-000000.json"
+            source_file.write_text(json.dumps([{"id": "sub-one"}]), encoding="utf-8")
+
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
+                with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
+                    azure_collect.collect_data_with_params([endpoint])
+
+        self.assertEqual(
+            commands_run,
+            [
+                "az rest --method get --url "
+                "\"/subscriptions/sub-one/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
+            ],
+        )
+        self.assertEqual(len(saved_payloads), 1)
+        self.assertEqual(saved_payloads[0][0][0]["name"], "assessment-one")
 
 
 class PermissionBaselineTests(unittest.TestCase):
