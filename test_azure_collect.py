@@ -217,19 +217,22 @@ class PerformanceOptionTests(unittest.TestCase):
 
 
 class DependencyEndpointTests(unittest.TestCase):
-    def test_virtual_networks_are_collected_as_base_source(self):
-        base_endpoint = next(
-            endpoint
+    def test_virtual_networks_are_collected_per_resource_group(self):
+        base_names = {
+            endpoint["name"]
             for endpoint in azure_collect.AZURE_CLI_ENDPOINTS
+        }
+        self.assertNotIn("Virtual Networks", base_names)
+
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
             if endpoint["name"] == "Virtual Networks"
         )
-        self.assertEqual(base_endpoint["cli_command"], "az network vnet list")
 
-        param_names = {
-            endpoint["name"]
-            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
-        }
-        self.assertNotIn("Virtual Networks", param_names)
+        self.assertEqual(endpoint["cli_command"], "az network vnet list --resource-group \"{name}\"")
+        self.assertEqual(endpoint["required_params"], {"name": "az_group_list"})
+        self.assertEqual(azure_collect.endpoint_output_prefix(endpoint), "az_network_vnet_list")
 
     def test_managed_disks_use_resource_group_name_parameter(self):
         endpoint = next(

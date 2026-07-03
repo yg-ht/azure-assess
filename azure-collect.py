@@ -376,7 +376,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Monitor Activity Logs", "cli_command": "az monitor activity-log list", "needs_pagination": True},
     {"name": "NAT Gateways", "cli_command": "az network nat gateway list", "needs_pagination": False},
     {"name": "Network Interfaces", "cli_command": "az network nic list", "needs_pagination": False},
-    {"name": "Virtual Networks", "cli_command": "az network vnet list", "needs_pagination": False},
     {"name": "NSGs", "cli_command": "az network nsg list", "needs_pagination": False},
     {"name": "Peering Services", "cli_command": "az network cross-connection list", "needs_pagination": False},
     {"name": "Policy Assignments", "cli_command": "az policy assignment list", "needs_pagination": True},
@@ -478,6 +477,12 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Azure Network Resources",
         "cli_command": "az network list-service-tags --location {name}",
         "required_params": {"name": "az_account_list-locations"}
+    },
+    {
+        "name": "Virtual Networks",
+        "cli_command": "az network vnet list --resource-group \"{name}\"",
+        "required_params": {"name": "az_group_list"},
+        "output_prefix": "az_network_vnet_list",
     },
     {
         "name": "Azure Subnet Resources",
