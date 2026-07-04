@@ -203,6 +203,15 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertNotIn(">https://portal.azure.com", linked_html)
         self.assertIn('href="https://portal.azure.com/#view/HubsExtension/ResourceMenuBlade', linked_html)
 
+    def test_linkify_rendered_urls_uses_short_label_for_viewer_links(self):
+        html = "/query/az_resource_list_20260705-000000.json?query=storage-one"
+
+        linked_html = azure_present.linkify_rendered_urls(html)
+
+        self.assertIn(">Open in Data Viewer</a>", linked_html)
+        self.assertNotIn(">/query/", linked_html)
+        self.assertIn('href="/query/az_resource_list_20260705-000000.json?query=storage-one"', linked_html)
+
     def test_dataset_groups_default_does_not_load_record_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
