@@ -20,6 +20,7 @@ from azure_findings_shared import (
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
 NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
+DEFAULT_INPUT_DIR = "azure-collect"
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Search collected Azure JSON for known-bad findings")
@@ -27,8 +28,11 @@ def parse_arguments():
         "-i",
         "--input-dir",
         type=str,
-        default="azure-collect",
-        help="Directory containing JSON produced by azure-collect.py",
+        default=None,
+        help=(
+            "Directory containing JSON produced by azure-collect.py "
+            f"(default: script directory/{DEFAULT_INPUT_DIR})"
+        ),
     )
     parser.add_argument(
         "-o",
@@ -51,9 +55,21 @@ def parse_arguments():
     return parser.parse_args()
 
 
+def default_input_dir():
+    """Return the default collection directory relative to this script."""
+    return Path(__file__).resolve().parent / DEFAULT_INPUT_DIR
+
+
+def resolve_input_dir(input_dir):
+    """Resolve the input directory without depending on the launcher cwd."""
+    if input_dir is None:
+        return default_input_dir()
+    return Path(input_dir).expanduser()
+
+
 def resolve_output_path(input_dir, output_file, default_filename):
     if output_file:
-        return Path(output_file)
+        return Path(output_file).expanduser()
     return Path(input_dir) / default_filename
 
 
@@ -2837,11 +2853,12 @@ def print_summary(findings):
 
 def main():
     args = parse_arguments()
-    catalog = load_catalog(args.input_dir)
+    input_dir = resolve_input_dir(args.input_dir)
+    catalog = load_catalog(input_dir)
     findings = evaluate_findings(catalog)
-    output = sarif_output(args.input_dir, catalog, findings)
+    output = sarif_output(input_dir, catalog, findings)
     flat_output = {
-        "input_dir": str(Path(args.input_dir)),
+        "input_dir": str(input_dir),
         "files_loaded": sorted(catalog.keys()),
         "rows": flat_rows(findings),
     }
@@ -2849,10 +2866,10 @@ def main():
     print_summary(findings)
 
     if not args.no_save:
-        output_path = resolve_output_path(args.input_dir, args.output_file, "azure-findings.json")
+        output_path = resolve_output_path(input_dir, args.output_file, "azure-findings.json")
         with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(output, handle, indent=2)
-        flat_output_path = resolve_output_path(args.input_dir, args.flat_output_file, "azure-findings-flat.json")
+        flat_output_path = resolve_output_path(input_dir, args.flat_output_file, "azure-findings-flat.json")
         with open(flat_output_path, "w", encoding="utf-8") as handle:
             json.dump(flat_output, handle, indent=2)
         print(f"\nSaved findings JSON to: {output_path}")

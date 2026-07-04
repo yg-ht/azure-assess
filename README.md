@@ -156,7 +156,7 @@ pipenv run python azure-findings.py -i ~/azure-collect-data
 
 Parameters:
 
-- `-i`, `--input-dir`: directory containing JSON produced by `azure-collect.py`. Default: `azure-collect`
+- `-i`, `--input-dir`: directory containing JSON produced by `azure-collect.py`. Default: `azure-collect` next to `azure-findings.py`
 - `-o`, `--output-file`: path for the SARIF 2.1.0 findings output. Default: `<input-dir>/azure-findings.json`
 - `--no-save`: do not write findings JSON files; print summary output only
 - `--flat-output-file`: path for the flattened findings output used by `azure-present.py`. Default: `<input-dir>/azure-findings-flat.json`

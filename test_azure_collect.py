@@ -108,6 +108,26 @@ class SqlServerVulnerabilityAssessmentEndpointTests(unittest.TestCase):
 
 
 class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
+    def test_default_findings_input_dir_is_script_relative(self):
+        expected = FINDINGS_MODULE_PATH.parent / "azure-collect"
+
+        self.assertEqual(azure_findings.resolve_input_dir(None), expected)
+
+    def test_explicit_findings_input_dir_is_preserved(self):
+        self.assertEqual(
+            azure_findings.resolve_input_dir("relative-data"),
+            Path("relative-data"),
+        )
+
+    def test_default_findings_output_paths_follow_resolved_input_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "collected"
+
+            self.assertEqual(
+                azure_findings.resolve_output_path(input_dir, None, "azure-findings-flat.json"),
+                input_dir / "azure-findings-flat.json",
+            )
+
     def test_defender_assessment_records_include_rest_dataset_prefix(self):
         assessment = {"name": "assessment"}
         catalog = {
