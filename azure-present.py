@@ -1183,7 +1183,11 @@ def linkify_rendered_urls(html):
 
     def replace_anchor(match):
         url = match.group("url")
-        return f'<a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a>'
+        label = "Open in Azure Portal" if "portal.azure.com" in url else url
+        return (
+            f'<a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">'
+            f'{escape(label)}</a>'
+        )
 
     updated = html
     for pattern in patterns:

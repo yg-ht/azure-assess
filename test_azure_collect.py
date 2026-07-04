@@ -108,6 +108,16 @@ class SqlServerVulnerabilityAssessmentEndpointTests(unittest.TestCase):
 
 
 class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
+    def test_resource_portal_link_uses_resource_menu_id_parameter(self):
+        resource_id = (
+            "/subscriptions/sub-one/resourceGroups/rg-one/"
+            "providers/Microsoft.Storage/storageAccounts/storage-one"
+        )
+        link = azure_findings.resource_portal_link(resource_id)
+
+        self.assertIn("/overview/id/%2Fsubscriptions%2Fsub-one", link)
+        self.assertNotIn("/overview/resourceId/", link)
+
     def test_default_findings_input_dir_is_script_relative(self):
         expected = FINDINGS_MODULE_PATH.parent / "azure-collect"
 
@@ -181,6 +191,18 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
 
 
 class AzurePresentDatasetIndexTests(unittest.TestCase):
+    def test_linkify_rendered_urls_uses_short_label_for_azure_portal_links(self):
+        html = (
+            "https://portal.azure.com/#view/HubsExtension/ResourceMenuBlade"
+            "/~/overview/id/%2Fsubscriptions%2Fsub-one"
+        )
+
+        linked_html = azure_present.linkify_rendered_urls(html)
+
+        self.assertIn(">Open in Azure Portal</a>", linked_html)
+        self.assertNotIn(">https://portal.azure.com", linked_html)
+        self.assertIn('href="https://portal.azure.com/#view/HubsExtension/ResourceMenuBlade', linked_html)
+
     def test_dataset_groups_default_does_not_load_record_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)

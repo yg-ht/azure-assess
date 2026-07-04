@@ -183,7 +183,7 @@ def dataset_paths_any(catalog, *fragment_sets):
 def resource_portal_link(resource_id):
     if not resource_id:
         return None
-    return f"https://portal.azure.com/#view/HubsExtension/ResourceMenuBlade/~/overview/resourceId/{quote(str(resource_id), safe='')}"
+    return f"https://portal.azure.com/#view/HubsExtension/ResourceMenuBlade/~/overview/id/{quote(str(resource_id), safe='')}"
 
 
 def subscription_portal_link(subscription_id):
