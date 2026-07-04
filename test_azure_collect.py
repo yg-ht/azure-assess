@@ -84,6 +84,24 @@ class DefenderAssessmentsEndpointTests(unittest.TestCase):
         self.assertIn("microsoft.security_assessments", saved_payloads[0][1])
 
 
+class SqlServerVulnerabilityAssessmentEndpointTests(unittest.TestCase):
+    def test_sql_server_vulnerability_assessment_uses_arm_rest_endpoint(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "SQL Server Vulnerability Assessment"
+        )
+
+        self.assertIn("az rest --method get", endpoint["cli_command"])
+        self.assertIn("{id}/vulnerabilityAssessments/default?api-version=2023-08-01", endpoint["cli_command"])
+        self.assertNotIn("az sql server vuln-assessment show", endpoint["cli_command"])
+        self.assertEqual(endpoint["required_params"], {"id": "az_sql_server_list"})
+        self.assertEqual(
+            azure_collect.endpoint_output_prefix(endpoint),
+            "az_sql_server_vuln-assessment_show",
+        )
+
+
 class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
     def test_defender_assessment_records_include_rest_dataset_prefix(self):
         assessment = {"name": "assessment"}
@@ -873,6 +891,7 @@ class AzureCliExtensionInstallTests(unittest.TestCase):
     def setUp(self):
         azure_collect.DEBUG = False
         azure_collect.AZURE_CLI_EXTENSION_CACHE.clear()
+        azure_collect.COLLECTION_ERRORS.clear()
 
     @staticmethod
     def completed_process(returncode=0, stdout="", stderr=""):
@@ -933,6 +952,119 @@ class AzureCliExtensionInstallTests(unittest.TestCase):
         self.assertIsNone(
             azure_collect.resolve_missing_extension_name("az iot hub show", output)
         )
+
+    def test_advisory_extension_install_text_is_not_treated_as_requirement(self):
+        output = (
+            "WARNING: The 'cdn' and 'afd' command groups have moved to the 'cdn' CLI extension. "
+            "Install the latest version with: az extension add --name cdn.\n"
+            "ERROR: 'vuln-assessment' is misspelled or not recognized by the system."
+        )
+
+        self.assertIsNone(
+            azure_collect.resolve_missing_extension_name(
+                "az sql server vuln-assessment show --server sql-one --resource-group rg-one",
+                output,
+            )
+        )
+
+
+class AzureCliCollectionErrorTests(unittest.TestCase):
+    def setUp(self):
+        azure_collect.DEBUG = False
+        azure_collect.COLLECTION_ERRORS.clear()
+        azure_collect.START_TIMESTAMP = "20260402-000000"
+
+    def tearDown(self):
+        azure_collect.COLLECTION_ERRORS.clear()
+
+    def test_malformed_cli_command_records_error_without_system_exit(self):
+        output = "ERROR: 'vuln-assessment' is misspelled or not recognized by the system."
+
+        with mock.patch.object(
+            azure_collect.subprocess,
+            "Popen",
+            return_value=FakeAzProcess(2, output),
+        ):
+            result = azure_collect.run_az_cli(
+                "az sql server vuln-assessment show",
+                endpoint_name="SQL Server Vulnerability Assessment",
+                category="parameterised",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["returncode"], 2)
+        self.assertEqual(len(azure_collect.COLLECTION_ERRORS), 1)
+        self.assertEqual(
+            azure_collect.COLLECTION_ERRORS[0]["message"],
+            "Unrecognised or malformed CLI command",
+        )
+        self.assertEqual(
+            azure_collect.COLLECTION_ERRORS[0]["endpoint"],
+            "SQL Server Vulnerability Assessment",
+        )
+
+    def test_base_collection_continues_and_accumulates_multiple_command_errors(self):
+        endpoints = [
+            {"name": "Broken One", "cli_command": "az broken one"},
+            {"name": "Broken Two", "cli_command": "az broken two"},
+        ]
+
+        def fake_run_az_cli(cmd, endpoint_name=None, category=None):
+            if cmd.startswith("az config set "):
+                return {"success": True, "returncode": 0, "stdout": "{}", "json": {}}
+
+            endpoint_name = endpoint_name or getattr(azure_collect.AZURE_CLI_CONTEXT, "endpoint_name", None)
+            category = category or getattr(azure_collect.AZURE_CLI_CONTEXT, "category", "collection")
+            result = {
+                "success": False,
+                "returncode": 2,
+                "stdout": f"ERROR: {cmd} failed",
+                "json": None,
+            }
+            azure_collect.record_collection_error(
+                cmd,
+                "Unrecognised or malformed CLI command",
+                result,
+                endpoint_name=endpoint_name,
+                category=category,
+            )
+            return result
+
+        with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
+            with mock.patch.object(azure_collect, "save_json") as save_mock:
+                azure_collect.collect_data(endpoints, max_workers=1)
+
+        self.assertEqual(len(azure_collect.COLLECTION_ERRORS), 2)
+        self.assertEqual(
+            [error["endpoint"] for error in azure_collect.COLLECTION_ERRORS],
+            ["Broken One", "Broken Two"],
+        )
+        save_mock.assert_not_called()
+
+    def test_collection_error_summary_prints_all_errors(self):
+        azure_collect.record_collection_error(
+            "az broken one",
+            "first failure",
+            {"returncode": 2, "stdout": "first details"},
+            endpoint_name="Broken One",
+            category="base",
+        )
+        azure_collect.record_collection_error(
+            "az broken two",
+            "second failure",
+            {"returncode": 3, "stdout": "second details"},
+            endpoint_name="Broken Two",
+            category="parameterised",
+        )
+
+        with mock.patch("builtins.print") as print_mock:
+            azure_collect.print_collection_error_summary()
+
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        self.assertIn("2 command error(s)", printed)
+        self.assertIn("Broken One", printed)
+        self.assertIn("Broken Two", printed)
+        self.assertIn("second failure", printed)
 
 
 if __name__ == "__main__":

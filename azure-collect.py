@@ -81,11 +81,14 @@ SOURCE_RECORD_CACHE = {}
 SOURCE_FILE_INDEX_CACHE = {}
 SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE = {}
 TIMING_RECORDS = []
+COLLECTION_ERRORS = []
 
 PERMISSION_BASELINE_CHECKED = False
 SOURCE_FILE_INDEX_LOCK = threading.Lock()
 TIMING_RECORDS_LOCK = threading.Lock()
 AZURE_CLI_EXTENSION_LOCK = threading.Lock()
+COLLECTION_ERRORS_LOCK = threading.Lock()
+AZURE_CLI_CONTEXT = threading.local()
 
 REQUIRED_DIRECTORY_ROLES = {
     "Global Reader",
@@ -187,6 +190,53 @@ def record_timing(endpoint_name, category, command, duration, returncode=None, r
         )
 
 
+def record_collection_error(command, message, result=None, endpoint_name=None, category="collection"):
+    """Record a command failure so collection can continue and report all failures together."""
+    result = result or {}
+    stdout = result.get("stdout") or ""
+    stderr = result.get("stderr") or ""
+    process_output = "\n".join(
+        stream.strip()
+        for stream in (stdout, stderr)
+        if stream and stream.strip()
+    )
+    with COLLECTION_ERRORS_LOCK:
+        COLLECTION_ERRORS.append(
+            {
+                "endpoint": endpoint_name or "unknown",
+                "category": category or "collection",
+                "command": command,
+                "message": message,
+                "returncode": result.get("returncode"),
+                "process_output": process_output,
+            }
+        )
+
+
+def print_collection_error_summary():
+    """Print all collection command failures seen during this run."""
+    with COLLECTION_ERRORS_LOCK:
+        errors = list(COLLECTION_ERRORS)
+
+    if not errors:
+        return
+
+    print("\n\n")
+    print("===========================================")
+    print(f"[ERROR] Azure CLI collection completed with {len(errors)} command error(s).")
+    print("The script continued after each endpoint failure so all observed errors are listed below.")
+    for index, error in enumerate(errors, start=1):
+        print("-------------------------------------------")
+        print(f"[{index}] Endpoint: {error['endpoint']}")
+        print(f"    Category: {error['category']}")
+        print(f"    Command: {error['command']}")
+        print(f"    Application message: {error['message']}")
+        print(f"    Return code: {error['returncode']}")
+        if error["process_output"]:
+            print(f"    Process details: {error['process_output']}")
+    print("===========================================")
+
+
 def result_item_count(data):
     """Return a human-scale count for a command JSON payload."""
     if isinstance(data, list):
@@ -199,7 +249,15 @@ def result_item_count(data):
 def timed_run_az_cli(cmd, endpoint_name=None, category="collection"):
     """Run an Azure CLI command and capture timing metadata."""
     started = monotonic()
-    result = run_az_cli(cmd)
+    previous_endpoint = getattr(AZURE_CLI_CONTEXT, "endpoint_name", None)
+    previous_category = getattr(AZURE_CLI_CONTEXT, "category", None)
+    AZURE_CLI_CONTEXT.endpoint_name = endpoint_name
+    AZURE_CLI_CONTEXT.category = category
+    try:
+        result = run_az_cli(cmd)
+    finally:
+        AZURE_CLI_CONTEXT.endpoint_name = previous_endpoint
+        AZURE_CLI_CONTEXT.category = previous_category
     duration = monotonic() - started
     record_timing(
         endpoint_name,
@@ -1058,8 +1116,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "SQL Server Vulnerability Assessment",
-        "cli_command": "az sql server vuln-assessment show --server {name} --resource-group {resourceGroup}",
-        "required_params": {"name": "az_sql_server_list", "resourceGroup": "az_sql_server_list"},
+        "cli_command": "az rest --method get --url \"{id}/vulnerabilityAssessments/default?api-version=2023-08-01\"",
+        "required_params": {"id": "az_sql_server_list"},
+        "output_prefix": "az_sql_server_vuln-assessment_show",
     },
     {
         "name": "Backup Items",
@@ -1381,8 +1440,14 @@ def run_az_cli_process(cmd):
 
 
 def extract_required_extension_name(output):
+    output = output or ""
+    requirement_lines = [
+        line
+        for line in output.splitlines()
+        if "requires" in line.lower() or "required" in line.lower() or "from the following extension" in line.lower()
+    ]
     for pattern in AZURE_CLI_EXTENSION_NAME_PATTERNS:
-        match = pattern.search(output or "")
+        match = pattern.search("\n".join(requirement_lines))
         if match:
             return match.group(1).strip("'\".,")
     return None
@@ -2133,12 +2198,15 @@ def ensure_az_login(force_reauth=False, skip_permission_baseline=False):
         ensure_required_permission_baseline()
 
 
-def run_az_cli(cmd):
+def run_az_cli(cmd, endpoint_name=None, category=None):
     """Run an Azure CLI command and return structured output with stderr and parsed JSON."""
     if '--output json' not in cmd:
         cmd = cmd + ' --output json'
+    endpoint_name = endpoint_name if endpoint_name is not None else getattr(AZURE_CLI_CONTEXT, "endpoint_name", None)
+    category = category if category is not None else getattr(AZURE_CLI_CONTEXT, "category", "collection")
+    if category is None:
+        category = "collection"
     global DEBUG
-    must_exit = False
     error_message = None
     result = None
     try:
@@ -2158,9 +2226,8 @@ def run_az_cli(cmd):
                 result = run_az_cli_process(cmd)
                 if not result["success"]:
                     error_message = "Authentication refresh failed to restore Azure CLI access."
-                    must_exit = True
 
-        if result["returncode"] != 0 and not must_exit:
+        if result["returncode"] != 0 and not error_message:
             retry_result = install_missing_extension_and_retry(cmd, result)
             if retry_result:
                 result = retry_result
@@ -2174,7 +2241,6 @@ def run_az_cli(cmd):
             ]
             if any(sig in result["stdout"].lower() for sig in error_cli_signatures):
                 error_message = "Unrecognised or malformed CLI command"
-                must_exit = True
 
         else:
             if DEBUG:
@@ -2204,22 +2270,10 @@ def run_az_cli(cmd):
                     error_message = "Something has gone wrong - data returned but not JSON"
 
         if error_message:
-            if must_exit:
-                prefix = "[ERROR]"
-            else:
-                prefix = "[WARNING]"
-            print("\n\n")
-            print("===========================================")
-            print(f"{prefix} Issue running command: {cmd}")
-            print(f"Application message: {error_message}")
-            if result["stdout"]:
-                print(f"    Process details: {str(result['stdout'])}")
-            if must_exit:
-                print("!!!FATAL!!! Exiting...")
-            print("===========================================")
-            if must_exit:
-                exit(1)
-            else:
+            record_collection_error(cmd, error_message, result, endpoint_name=endpoint_name, category=category)
+            context = endpoint_name or cmd
+            print(f"[!] Recorded command error for {context}: {error_message}")
+            if not result or not result.get("returncode"):
                 sleep(1)
 
         # return result - with or without nested JSON object
@@ -2994,5 +3048,9 @@ if __name__ == "__main__":
 
     if args.timing_summary:
         print_timing_summary()
+
+    print_collection_error_summary()
+    if COLLECTION_ERRORS:
+        exit(1)
 
     print("[✓] Azure audit data collection complete.")
