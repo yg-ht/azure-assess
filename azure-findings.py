@@ -68,9 +68,13 @@ def resolve_input_dir(input_dir):
 
 
 def resolve_output_path(input_dir, output_file, default_filename):
+    base_input_dir = Path(input_dir)
     if output_file:
-        return Path(output_file).expanduser()
-    return Path(input_dir) / default_filename
+        output_path = Path(output_file).expanduser()
+        if output_path.is_absolute():
+            return output_path
+        return base_input_dir / output_path
+    return base_input_dir / default_filename
 
 
 def strip_timestamp(path):

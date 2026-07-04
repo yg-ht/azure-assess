@@ -128,6 +128,23 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
                 input_dir / "azure-findings-flat.json",
             )
 
+    def test_relative_findings_output_paths_follow_resolved_input_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_dir = Path(tmpdir) / "collected"
+
+            self.assertEqual(
+                azure_findings.resolve_output_path(input_dir, "custom-flat.json", "azure-findings-flat.json"),
+                input_dir / "custom-flat.json",
+            )
+
+    def test_absolute_findings_output_paths_are_preserved(self):
+        absolute_path = Path("/tmp/custom-flat.json")
+
+        self.assertEqual(
+            azure_findings.resolve_output_path(Path("collected"), str(absolute_path), "azure-findings-flat.json"),
+            absolute_path,
+        )
+
     def test_defender_assessment_records_include_rest_dataset_prefix(self):
         assessment = {"name": "assessment"}
         catalog = {
