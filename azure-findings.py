@@ -64,7 +64,10 @@ def resolve_input_dir(input_dir):
     """Resolve the input directory without depending on the launcher cwd."""
     if input_dir is None:
         return default_input_dir()
-    return Path(input_dir).expanduser()
+    input_path = Path(input_dir).expanduser()
+    if input_path.is_absolute():
+        return input_path
+    return Path(__file__).resolve().parent / input_path
 
 
 def resolve_output_path(input_dir, output_file, default_filename):

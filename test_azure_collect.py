@@ -113,10 +113,18 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
 
         self.assertEqual(azure_findings.resolve_input_dir(None), expected)
 
-    def test_explicit_findings_input_dir_is_preserved(self):
+    def test_relative_findings_input_dir_is_script_relative(self):
         self.assertEqual(
             azure_findings.resolve_input_dir("relative-data"),
-            Path("relative-data"),
+            FINDINGS_MODULE_PATH.parent / "relative-data",
+        )
+
+    def test_absolute_findings_input_dir_is_preserved(self):
+        absolute_path = Path("/tmp/relative-data")
+
+        self.assertEqual(
+            azure_findings.resolve_input_dir(str(absolute_path)),
+            absolute_path,
         )
 
     def test_default_findings_output_paths_follow_resolved_input_dir(self):
