@@ -16,6 +16,11 @@ FINDINGS_SPEC = importlib.util.spec_from_file_location("azure_findings", FINDING
 azure_findings = importlib.util.module_from_spec(FINDINGS_SPEC)
 FINDINGS_SPEC.loader.exec_module(azure_findings)
 
+PRESENT_MODULE_PATH = Path(__file__).with_name("azure-present.py")
+PRESENT_SPEC = importlib.util.spec_from_file_location("azure_present", PRESENT_MODULE_PATH)
+azure_present = importlib.util.module_from_spec(PRESENT_SPEC)
+PRESENT_SPEC.loader.exec_module(azure_present)
+
 
 class FakeAzProcess:
     def __init__(self, returncode, output):
@@ -128,6 +133,150 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
             ),
             [Path("defender-assessments.json")],
         )
+
+
+class AzurePresentDatasetIndexTests(unittest.TestCase):
+    def test_dataset_groups_default_does_not_load_record_counts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            latest_path = data_dir / "az_resource_list_20260402-000000.json"
+            latest_path.write_text(json.dumps([{"name": "one"}, {"name": "two"}]), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                with mock.patch.object(azure_present, "load_json_file") as loader:
+                    groups = azure_present.dataset_groups()
+
+            self.assertEqual(len(groups), 1)
+            self.assertEqual(groups[0]["filename"], latest_path.name)
+            self.assertEqual(groups[0]["record_count"], "Loading...")
+            loader.assert_not_called()
+
+    def test_dataset_groups_only_loads_latest_file_for_record_counts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            old_path = data_dir / "az_resource_list_20260401-000000.json"
+            latest_path = data_dir / "az_resource_list_20260402-000000.json"
+            old_path.write_text(json.dumps([{"name": "old"}]), encoding="utf-8")
+            latest_path.write_text(json.dumps([{"name": "one"}, {"name": "two"}]), encoding="utf-8")
+
+            loaded_paths = []
+            original_loader = azure_present.load_json_file
+
+            def tracking_loader(path):
+                loaded_paths.append(Path(path).name)
+                return original_loader(path)
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                with mock.patch.object(azure_present, "load_json_file", side_effect=tracking_loader):
+                    groups = azure_present.dataset_groups(load_record_counts=True)
+
+            self.assertEqual(len(groups), 1)
+            self.assertEqual(groups[0]["filename"], latest_path.name)
+            self.assertEqual(groups[0]["record_count"], 2)
+            self.assertEqual(loaded_paths, [latest_path.name])
+
+    def test_dataset_counts_endpoint_returns_counts_for_valid_dataset_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset_path = data_dir / "az_resource_list_20260402-000000.json"
+            dataset_path.write_text(json.dumps([{"name": "one"}, {"name": "two"}]), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                response = client.get(f"/dataset-counts?filename={dataset_path.name}")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json(), {"counts": {dataset_path.name: 2}, "errors": {}})
+
+    def test_dataset_counts_endpoint_rejects_unknown_and_unsafe_filenames(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset_path = data_dir / "az_resource_list_20260402-000000.json"
+            dataset_path.write_text(json.dumps([{"name": "one"}]), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                response = client.get(
+                    "/dataset-counts",
+                    query_string=[
+                        ("filename", dataset_path.name),
+                        ("filename", "../secrets.json"),
+                        ("filename", "azure-findings-flat.json"),
+                    ],
+                )
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["counts"], {dataset_path.name: 1})
+            self.assertEqual(
+                response.get_json()["errors"],
+                {
+                    "../secrets.json": "Unknown dataset file",
+                    "azure-findings-flat.json": "Unknown dataset file",
+                },
+            )
+
+    def test_datasets_route_renders_async_record_count_placeholders(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset_path = data_dir / "az_resource_list_20260402-000000.json"
+            dataset_path.write_text(json.dumps([{"name": "one"}]), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                with mock.patch.object(azure_present, "load_json_file") as loader:
+                    client = azure_present.app.test_client()
+                    response = client.get("/datasets")
+
+            body = response.get_data(as_text=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(f'data-record-count-filename="{dataset_path.name}"', body)
+            self.assertIn("Loading...", body)
+            loader.assert_not_called()
+
+    def test_dashboard_renders_async_object_count_placeholder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset_path = data_dir / "az_resource_list_20260402-000000.json"
+            dataset_path.write_text(json.dumps([{"name": "one"}]), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                with mock.patch.object(azure_present, "load_json_file") as loader:
+                    client = azure_present.app.test_client()
+                    response = client.get("/")
+
+            body = response.get_data(as_text=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(f'data-summary-count-filenames="{dataset_path.name}"', body)
+            self.assertIn("Objects In Subscription", body)
+            self.assertIn("Loading...", body)
+            loader.assert_not_called()
+
+    def test_dataset_group_lookup_does_not_load_json_payloads(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            latest_path = data_dir / "az_resource_list_20260402-000000.json"
+            latest_path.write_text("{malformed json", encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                with mock.patch.object(azure_present, "load_json_file") as loader:
+                    group = azure_present.dataset_group_by_filename(latest_path.name)
+
+            self.assertIsNotNone(group)
+            self.assertEqual(group["filename"], latest_path.name)
+            loader.assert_not_called()
+
+    def test_findings_route_reports_missing_flat_file_for_selected_input_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                response = client.get("/findings")
+
+            body = response.get_data(as_text=True)
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Findings data has not been generated", body)
+            self.assertIn(str(data_dir / "azure-findings-flat.json"), body)
+            self.assertIn(f"python azure-findings.py -i {data_dir}", body)
 
 
 class ApplicationInsightsEndpointTests(unittest.TestCase):

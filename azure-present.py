@@ -38,7 +38,8 @@ import json
 import re
 from collections import OrderedDict
 from datetime import datetime
-from flask import Flask, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request
+from html import escape
 from json2html import json2html
 from pathlib import Path
 
@@ -252,7 +253,10 @@ HTML_TEMPLATE = """
             <div class="card h-100 bg-transparent border-secondary">
               <div class="card-body">
                 <h3 class="h6 text-uppercase text-secondary">{{ card.label }}</h3>
-                <div class="fs-3 fw-bold">{{ card.value }}</div>
+                <div class="fs-3 fw-bold"
+                     {% if card.count_filenames %}
+                     data-summary-count-filenames="{{ card.count_filenames|join(',') }}"
+                     {% endif %}>{{ card.value }}</div>
                 {% if card.detail %}
                 <div class="small text-secondary">{{ card.detail }}</div>
                 {% endif %}
@@ -306,7 +310,7 @@ HTML_TEMPLATE = """
                 {{ tab.version_label }}
                 {% endif %}
               </td>
-              <td>{{ tab.record_count }}</td>
+              <td data-record-count-filename="{{ tab.filename }}">{{ tab.record_count }}</td>
               <td><a href="/query/{{ tab.filename }}" class="btn btn-primary btn-sm">View Data</a></td>
             </tr>
             {% endfor %}
@@ -414,6 +418,76 @@ HTML_TEMPLATE = """
           window.location.href = this.value;
         });
       });
+
+      (function() {
+        const datasetCountCells = Array.from(document.querySelectorAll('[data-record-count-filename]'));
+        const summaryCountValues = Array.from(document.querySelectorAll('[data-summary-count-filenames]'));
+        const filenames = new Set();
+
+        datasetCountCells.forEach(function(cell) {
+          if (cell.dataset.recordCountFilename) {
+            filenames.add(cell.dataset.recordCountFilename);
+          }
+        });
+
+        summaryCountValues.forEach(function(value) {
+          (value.dataset.summaryCountFilenames || '').split(',').forEach(function(filename) {
+            if (filename) filenames.add(filename);
+          });
+        });
+
+        if (filenames.size === 0) return;
+
+        const params = new URLSearchParams();
+        filenames.forEach(function(filename) {
+          params.append('filename', filename);
+        });
+
+        fetch('/dataset-counts?' + params.toString(), {
+          headers: {
+            'Accept': 'application/json'
+          }
+        })
+          .then(function(response) {
+            if (!response.ok) {
+              throw new Error('Count request failed');
+            }
+            return response.json();
+          })
+          .then(function(payload) {
+            const counts = payload.counts || {};
+            datasetCountCells.forEach(function(cell) {
+              const filename = cell.dataset.recordCountFilename;
+              cell.textContent = Object.prototype.hasOwnProperty.call(counts, filename)
+                ? counts[filename]
+                : 'Unavailable';
+            });
+
+            summaryCountValues.forEach(function(value) {
+              const cardFilenames = (value.dataset.summaryCountFilenames || '').split(',').filter(Boolean);
+              let total = 0;
+              let complete = true;
+
+              cardFilenames.forEach(function(filename) {
+                if (Object.prototype.hasOwnProperty.call(counts, filename)) {
+                  total += counts[filename];
+                } else {
+                  complete = false;
+                }
+              });
+
+              value.textContent = complete ? total : 'Unavailable';
+            });
+          })
+          .catch(function() {
+            datasetCountCells.forEach(function(cell) {
+              cell.textContent = 'Unavailable';
+            });
+            summaryCountValues.forEach(function(value) {
+              value.textContent = 'Unavailable';
+            });
+          });
+      })();
     </script>
     {% endif %}
 
@@ -754,25 +828,34 @@ def dataset_sort_key(path):
 
 
 def build_dataset_version(path, data):
-    if isinstance(data, list):
-        record_count = len(data)
-    elif isinstance(data, dict):
-        record_count = len(data.keys())
-    else:
-        record_count = 0
     return {
         "filename": path.name,
-        "record_count": record_count,
+        "record_count": record_count_for_data(data) if data is not None else None,
         "label": format_dataset_version_label(path),
         "timestamp": extract_dataset_timestamp(path.name),
     }
+
+
+def record_count_for_data(data):
+    if isinstance(data, list):
+        return len(data)
+    if isinstance(data, dict):
+        return len(data.keys())
+    return 0
+
+
+def record_count_for_file(path):
+    data = load_json_file(path)
+    if data is None:
+        return None
+    return record_count_for_data(data)
 
 
 def standard_data_files():
     return [path for path in sorted(DATA_DIR.glob("*.json")) if path.name not in FINDINGS_FILENAMES]
 
 
-def dataset_groups():
+def dataset_groups(load_record_counts=False):
     groups = OrderedDict()
     for path in standard_data_files():
         key = dataset_key_for_filename(path.name)
@@ -781,20 +864,17 @@ def dataset_groups():
     grouped_tabs = []
     for key, paths in groups.items():
         sorted_paths = sorted(paths, key=dataset_sort_key, reverse=True)
-        versions = []
-        for path in sorted_paths:
-            data = load_json_file(path)
-            if data is None:
-                continue
-            versions.append(build_dataset_version(path, data))
+        versions = [build_dataset_version(path, None) for path in sorted_paths]
         if not versions:
             continue
         latest = versions[0]
+        latest_record_count = record_count_for_file(sorted_paths[0]) if load_record_counts else None
+        latest["record_count"] = latest_record_count
         grouped_tabs.append({
             "dataset_key": key,
             "name": display_name_for_dataset(latest["filename"]),
             "filename": latest["filename"],
-            "record_count": latest["record_count"],
+            "record_count": latest_record_count if latest_record_count is not None else "Loading...",
             "version_label": latest["label"],
             "versions": versions,
         })
@@ -803,7 +883,7 @@ def dataset_groups():
 
 def dataset_group_by_filename(filename):
     key = dataset_key_for_filename(filename)
-    for group in dataset_groups():
+    for group in dataset_groups(load_record_counts=False):
         if group["dataset_key"] == key:
             return group
     return None
@@ -812,8 +892,18 @@ def dataset_group_by_filename(filename):
 def latest_resource_object_count(tabs):
     for tab in tabs:
         if tab["dataset_key"] == "az_resource_list":
-            return tab["record_count"], "From latest Azure Resource List dataset"
-    return sum(tab["record_count"] for tab in tabs), "Fallback: sum of latest dataset record counts"
+            return (
+                "Loading...",
+                "From latest Azure Resource List dataset",
+                [tab["filename"]],
+            )
+    if not tabs:
+        return 0, "No collected datasets found", []
+    return (
+        "Loading...",
+        "Fallback: sum of latest dataset record counts",
+        [tab["filename"] for tab in tabs],
+    )
 
 
 def findings_summary():
@@ -844,8 +934,8 @@ def findings_summary():
     return counts
 
 
-def build_dashboard_summary_cards(tabs):
-    object_count, object_detail = latest_resource_object_count(tabs)
+def build_dashboard_summary_cards(tabs, findings=None):
+    object_count, object_detail, object_count_filenames = latest_resource_object_count(tabs)
     total_versions = sum(len(tab["versions"]) for tab in tabs)
     historical_versions = sum(max(len(tab["versions"]) - 1, 0) for tab in tabs)
     latest_collection = None
@@ -855,7 +945,12 @@ def build_dashboard_summary_cards(tabs):
             latest_collection = timestamp
 
     cards = [
-        {"label": "Objects In Subscription", "value": object_count, "detail": object_detail},
+        {
+            "label": "Objects In Subscription",
+            "value": object_count,
+            "detail": object_detail,
+            "count_filenames": object_count_filenames,
+        },
         {"label": "Dataset Types Collected", "value": len(tabs), "detail": "Logical dataset families on the dashboard"},
         {"label": "Stored Dataset Snapshots", "value": total_versions, "detail": f"{historical_versions} older versions available"},
         {
@@ -865,7 +960,6 @@ def build_dashboard_summary_cards(tabs):
         },
     ]
 
-    findings = findings_summary()
     if findings is not None:
         cards.extend([
             {"label": "Finding Checks Executed", "value": findings["executed"], "detail": "Rows in azure-findings-flat.json"},
@@ -879,6 +973,43 @@ def build_dashboard_summary_cards(tabs):
 
 def findings_flat_path():
     return DATA_DIR / FINDINGS_FLAT_FILENAME
+
+
+def missing_findings_message(filepath):
+    data_dir = escape(str(DATA_DIR), quote=True)
+    expected_path = escape(str(filepath), quote=True)
+    return (
+        f"<p>Findings data has not been generated for input directory "
+        f"<code>{data_dir}</code>.</p>"
+        f"<p>Expected file: <code>{expected_path}</code></p>"
+        f"<p>Run <code>python azure-findings.py -i {data_dir}</code> and reload this page.</p>"
+    )
+
+
+def standard_data_file_map():
+    return {path.name: path for path in standard_data_files()}
+
+
+def dataset_count_payload(filenames):
+    valid_files = standard_data_file_map()
+    counts = {}
+    errors = {}
+
+    for filename in filenames:
+        if filename in counts or filename in errors:
+            continue
+        path = valid_files.get(filename)
+        if path is None:
+            errors[filename] = "Unknown dataset file"
+            continue
+
+        record_count = record_count_for_file(path)
+        if record_count is None:
+            errors[filename] = "Could not load dataset file"
+            continue
+        counts[filename] = record_count
+
+    return {"counts": counts, "errors": errors}
 
 
 def canonical_finding_status(value):
@@ -1075,7 +1206,7 @@ def dashboard():
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
-        summary_cards=build_dashboard_summary_cards(tabs),
+        summary_cards=build_dashboard_summary_cards(tabs, findings),
         dashboard=True,
         findings_chart_data=findings_chart_data,
         dataset_index=False,
@@ -1097,14 +1228,23 @@ def datasets():
     )
 
 
+@app.route('/dataset-counts')
+def dataset_counts():
+    if not DATA_DIR.exists():
+        return jsonify({"counts": {}, "errors": {"input_dir": "Data directory not found"}}), 404
+    return jsonify(dataset_count_payload(request.args.getlist("filename")))
+
+
 @app.route('/findings', methods=['GET', 'POST'])
 def findings():
     query_param = (request.form.get('query') or request.args.get('query') or "").lower()
     status_filter = normalize_findings_status_filter(request.form.get('status') or request.args.get('status'))
     filepath = findings_flat_path()
+    if not filepath.exists():
+        return missing_findings_message(filepath)
     data = load_json_file(filepath)
     if data is None:
-        return f"<p>Error loading data from {FINDINGS_FLAT_FILENAME}.</p>"
+        return f"<p>Error loading data from <code>{filepath}</code>.</p>"
 
     if isinstance(data, dict) and "rows" in data:
         data = data["rows"]
