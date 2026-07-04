@@ -108,15 +108,19 @@ class SqlServerVulnerabilityAssessmentEndpointTests(unittest.TestCase):
 
 
 class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
-    def test_resource_portal_link_uses_resource_menu_id_parameter(self):
+    def test_resource_portal_link_uses_resource_route(self):
         resource_id = (
             "/subscriptions/sub-one/resourceGroups/rg-one/"
             "providers/Microsoft.Storage/storageAccounts/storage-one"
         )
         link = azure_findings.resource_portal_link(resource_id)
 
-        self.assertIn("/overview/id/%2Fsubscriptions%2Fsub-one", link)
-        self.assertNotIn("/overview/resourceId/", link)
+        self.assertEqual(
+            link,
+            "https://portal.azure.com/#resource/subscriptions/sub-one/resourceGroups/rg-one/"
+            "providers/Microsoft.Storage/storageAccounts/storage-one/overview",
+        )
+        self.assertNotIn("ResourceMenuBlade", link)
 
     def test_default_findings_input_dir_is_script_relative(self):
         expected = FINDINGS_MODULE_PATH.parent / "azure-collect"
@@ -191,26 +195,30 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
 
 
 class AzurePresentDatasetIndexTests(unittest.TestCase):
-    def test_linkify_rendered_urls_uses_short_label_for_azure_portal_links(self):
+    def test_linkify_rendered_urls_labels_azure_portal_links_by_resource(self):
         html = (
-            "https://portal.azure.com/#view/HubsExtension/ResourceMenuBlade"
-            "/~/overview/id/%2Fsubscriptions%2Fsub-one"
+            "https://portal.azure.com/#resource/subscriptions/sub-one/resourceGroups/rg-one/"
+            "providers/Microsoft.Storage/storageAccounts/storage-one/overview"
         )
 
         linked_html = azure_present.linkify_rendered_urls(html)
 
-        self.assertIn(">Open in Azure Portal</a>", linked_html)
+        self.assertIn(">storageAccounts/storage-one</a>", linked_html)
         self.assertNotIn(">https://portal.azure.com", linked_html)
-        self.assertIn('href="https://portal.azure.com/#view/HubsExtension/ResourceMenuBlade', linked_html)
+        self.assertIn('href="https://portal.azure.com/#resource/subscriptions/sub-one', linked_html)
 
-    def test_linkify_rendered_urls_uses_short_label_for_viewer_links(self):
-        html = "/query/az_resource_list_20260705-000000.json?query=storage-one"
+    def test_linkify_rendered_urls_labels_viewer_links_by_dataset_and_query(self):
+        html = (
+            "/query/az_resource_list_20260705-000000.json?"
+            "query=%2Fsubscriptions%2Fsub-one%2FresourceGroups%2Frg-one%2Fproviders"
+            "%2FMicrosoft.Storage%2FstorageAccounts%2Fstorage-one"
+        )
 
         linked_html = azure_present.linkify_rendered_urls(html)
 
-        self.assertIn(">Open in Data Viewer</a>", linked_html)
+        self.assertIn(">Az Resource List: storageAccounts/storage-one</a>", linked_html)
         self.assertNotIn(">/query/", linked_html)
-        self.assertIn('href="/query/az_resource_list_20260705-000000.json?query=storage-one"', linked_html)
+        self.assertIn('href="/query/az_resource_list_20260705-000000.json?', linked_html)
 
     def test_dataset_groups_default_does_not_load_record_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:

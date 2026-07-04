@@ -42,6 +42,7 @@ from flask import Flask, jsonify, render_template_string, request
 from html import escape
 from json2html import json2html
 from pathlib import Path
+from urllib.parse import unquote, urlparse, parse_qs
 
 app = Flask(__name__)
 DATA_DIR = Path("azure-collect")
@@ -1175,6 +1176,57 @@ def generate_html_table(original_data):
         return "<p>Error displaying data.</p>"
 
 
+def resource_label_from_id(resource_id):
+    parts = [part for part in str(resource_id or "").strip("/").split("/") if part]
+    if not parts:
+        return None
+
+    if len(parts) >= 2 and parts[-2].lower() != "providers":
+        return f"{parts[-2]}/{parts[-1]}"
+    return parts[-1]
+
+
+def portal_link_label(url):
+    parsed = urlparse(url)
+    fragment = parsed.fragment or ""
+    resource_marker = "resource/"
+    if resource_marker in fragment:
+        resource_path = fragment.split(resource_marker, 1)[1]
+        if resource_path.endswith("/overview"):
+            resource_path = resource_path[:-len("/overview")]
+        label = resource_label_from_id(unquote(resource_path))
+        if label:
+            return label
+
+    id_marker = "/id/"
+    if id_marker in fragment:
+        resource_path = fragment.split(id_marker, 1)[1]
+        label = resource_label_from_id(unquote(resource_path))
+        if label:
+            return label
+
+    return "Azure Portal"
+
+
+def viewer_link_label(url):
+    parsed = urlparse(url)
+    filename = Path(unquote(parsed.path).removeprefix("/query/")).stem
+    dataset = dataset_key_for_filename(filename).replace("_", " ").strip().title()
+    query = parse_qs(parsed.query).get("query", [""])[0]
+    query_label = resource_label_from_id(query) or query
+    if query_label:
+        return f"{dataset}: {query_label}"
+    return dataset or "Data Viewer"
+
+
+def label_for_url(url):
+    if "portal.azure.com" in url:
+        return portal_link_label(url)
+    if url.startswith("/query/"):
+        return viewer_link_label(url)
+    return url
+
+
 def linkify_rendered_urls(html):
     patterns = [
         re.compile(r'(?P<url>https?://[^\s<]+)'),
@@ -1183,12 +1235,7 @@ def linkify_rendered_urls(html):
 
     def replace_anchor(match):
         url = match.group("url")
-        if "portal.azure.com" in url:
-            label = "Open in Azure Portal"
-        elif url.startswith("/query/"):
-            label = "Open in Data Viewer"
-        else:
-            label = url
+        label = label_for_url(url)
         return (
             f'<a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">'
             f'{escape(label)}</a>'
