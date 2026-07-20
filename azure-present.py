@@ -179,6 +179,14 @@ HTML_TEMPLATE = """
       .local-collapse-icon {
         color: #0dcaf0;
       }
+      /* Keep large findings link lists compact until the user needs them. */
+      .findings-links-disclosure summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .findings-links-disclosure[open] summary {
+        margin-bottom: 8px;
+      }
       /* Scrollable container for the table with fixed height */
       .table-container {
         position: relative;
@@ -1246,6 +1254,39 @@ def linkify_rendered_urls(html):
         updated = pattern.sub(replace_anchor, updated)
     return updated
 
+
+FINDINGS_LINK_COLLAPSE_THRESHOLD = 10
+FINDINGS_LINK_LIST_PATTERN = re.compile(r"<td>(?P<list><ul>.*?</ul>)</td>", re.DOTALL)
+ANCHOR_HREF_PATTERN = re.compile(r'<a\s+href="(?P<href>[^"]+)"')
+
+
+def collapse_findings_link_cells(
+    html: str,
+    threshold: int = FINDINGS_LINK_COLLAPSE_THRESHOLD,
+) -> str:
+    """Collapse long Azure Portal and data-viewer link lists in findings cells."""
+    def replace_link_list(match):
+        list_html = match.group("list")
+        hrefs = ANCHOR_HREF_PATTERN.findall(list_html)
+
+        # Leave short lists and unrelated list cells exactly as json2html rendered them.
+        if len(hrefs) <= threshold:
+            return match.group(0)
+        if not all(
+            href.startswith("/query/") or href.startswith("https://portal.azure.com/")
+            for href in hrefs
+        ):
+            return match.group(0)
+
+        return (
+            '<td><details class="findings-links-disclosure">'
+            f'<summary>{len(hrefs)} links</summary>{list_html}'
+            '</details></td>'
+        )
+
+    return FINDINGS_LINK_LIST_PATTERN.sub(replace_link_list, html)
+
+
 @app.route('/')
 def dashboard():
     if not DATA_DIR.exists():
@@ -1322,7 +1363,7 @@ def findings():
     else:
         filtered_data = data
 
-    table = generate_html_table(filtered_data)
+    table = collapse_findings_link_cells(generate_html_table(filtered_data))
     tabs = [{
         "name": "Findings",
         "filename": FINDINGS_FLAT_FILENAME,

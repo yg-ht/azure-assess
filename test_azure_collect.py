@@ -220,6 +220,78 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertNotIn(">/query/", linked_html)
         self.assertIn('href="/query/az_resource_list_20260705-000000.json?', linked_html)
 
+    def test_findings_link_cell_with_ten_links_remains_expanded(self):
+        links = [
+            f"/query/file-{index}.json?query=resource-{index}"
+            for index in range(10)
+        ]
+        html = azure_present.generate_html_table([{"viewer_links": links}])
+
+        collapsed_html = azure_present.collapse_findings_link_cells(html)
+
+        self.assertEqual(collapsed_html, html)
+        self.assertNotIn("<details", collapsed_html)
+
+    def test_findings_link_cell_with_eleven_links_is_collapsed(self):
+        links = [
+            f"/query/file-{index}.json?query=resource-{index}"
+            for index in range(11)
+        ]
+        html = azure_present.generate_html_table([{"viewer_links": links}])
+
+        collapsed_html = azure_present.collapse_findings_link_cells(html)
+
+        self.assertIn('<details class="findings-links-disclosure">', collapsed_html)
+        self.assertIn("<summary>11 links</summary>", collapsed_html)
+        disclosure_html = collapsed_html.split('<details class="findings-links-disclosure">', 1)[1]
+        disclosure_html = disclosure_html.split("</details>", 1)[0]
+        self.assertEqual(disclosure_html.count("<a "), 11)
+
+    def test_findings_link_cell_does_not_collapse_unrelated_links(self):
+        links = "".join(
+            f'<li><a href="https://example.com/{index}">Link {index}</a></li>'
+            for index in range(11)
+        )
+        html = f"<table><tbody><tr><td><ul>{links}</ul></td></tr></tbody></table>"
+
+        collapsed_html = azure_present.collapse_findings_link_cells(html)
+
+        self.assertEqual(collapsed_html, html)
+
+    def test_findings_route_renders_long_link_list_as_collapsed(self):
+        links = [
+            f"/query/file-{index}.json?query=resource-{index}"
+            for index in range(11)
+        ]
+        finding_rows = {
+            "rows": [
+                {
+                    "title": "Example finding",
+                    "severity": "medium",
+                    "status": "found",
+                    "reason": "Regression test",
+                    "count": 11,
+                    "evidence": [],
+                    "viewer_links": links,
+                    "source_file": [],
+                    "azure_portal_links": [],
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            findings_path = data_dir / azure_present.FINDINGS_FLAT_FILENAME
+            findings_path.write_text(json.dumps(finding_rows), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                response = client.get("/findings?status=all")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b'<details class="findings-links-disclosure">', response.data)
+        self.assertIn(b"<summary>11 links</summary>", response.data)
+
     def test_dataset_groups_default_does_not_load_record_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
