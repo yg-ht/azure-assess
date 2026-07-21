@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Collection-run manifest models and safe persistence helpers."""
+"""Collection-run manifest models and persistence helpers."""
 
 import hashlib
 import json
@@ -10,12 +10,13 @@ import re
 import subprocess
 import tempfile
 import threading
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
-MANIFEST_SCHEMA_VERSION = "1.0"
+MANIFEST_SCHEMA_VERSION = "2.0"
 MANIFEST_FILENAME_PREFIX = "azure-collection-manifest"
 MAX_ERROR_MESSAGE_CHARS = 1000
 VALID_RUN_STATUSES = {"running", "success", "partial", "failed"}
@@ -28,73 +29,18 @@ VALID_ENDPOINT_STATUSES = {
     "not_attempted",
 }
 
-SENSITIVE_KEY_PARTS = {
-    "accesstoken",
-    "authorization",
-    "clientcertificatepassword",
-    "clientsecret",
-    "credential",
-    "password",
-    "refreshtoken",
-    "secret",
-    "token",
-}
-
-SENSITIVE_TEXT_PATTERNS = (
-    re.compile(
-        r"(?i)(--(?:client-)?secret|--password|--certificate-password)\s+"
-        r"(\"[^\"]*\"|'[^']*'|[^\s]+)"
-    ),
-    re.compile(r"(?i)(authorization:\s*bearer)\s+([^\s]+)"),
-    re.compile(
-        r"(?i)(access[_-]?token|refresh[_-]?token|client[_-]?secret|password)"
-        r"\s*[=:]\s*([^\s,;]+)"
-    ),
-)
-
 
 def utc_timestamp() -> str:
     """Return a second-precision RFC 3339 UTC timestamp."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def normalized_key(value: Any) -> str:
-    """Normalise a mapping key for conservative sensitive-field matching."""
-    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
-
-
-def is_sensitive_key(value: Any) -> bool:
-    """Return whether a key name indicates credential or token material."""
-    key = normalized_key(value)
-    return any(part in key for part in SENSITIVE_KEY_PARTS)
-
-
-def redact_text(value: Any) -> str:
-    """Remove common inline credential forms and limit persisted diagnostics."""
+def truncate_error_text(value: Any) -> str:
+    """Limit persisted endpoint error text without changing retained content."""
     text = str(value or "")
-    for pattern in SENSITIVE_TEXT_PATTERNS:
-        text = pattern.sub(lambda match: f"{match.group(1)} [REDACTED]", text)
     if len(text) > MAX_ERROR_MESSAGE_CHARS:
         text = text[:MAX_ERROR_MESSAGE_CHARS] + "... [truncated]"
     return text
-
-
-def redact_value(value: Any, key: Any = None) -> Any:
-    """Recursively redact sensitive values while retaining diagnostic structure."""
-    if key is not None and is_sensitive_key(key):
-        return "[REDACTED]"
-    if isinstance(value, Mapping):
-        return {
-            str(item_key): redact_value(item_value, item_key)
-            for item_key, item_value in value.items()
-        }
-    if isinstance(value, (list, tuple, set)):
-        return [redact_value(item) for item in value]
-    if isinstance(value, str):
-        return redact_text(value)
-    if value is None or isinstance(value, (bool, int, float)):
-        return value
-    return redact_text(value)
 
 
 def result_item_count(data: Any) -> int:
@@ -149,7 +95,7 @@ def classify_execution_status(
     error_message: Optional[str] = None,
     diagnostic_text: Optional[str] = None,
 ) -> str:
-    """Classify one command without persisting its potentially sensitive output."""
+    """Classify one command without persisting its diagnostic output."""
     combined_error = " ".join(
         str(item or "").lower()
         for item in (error_message, diagnostic_text)
@@ -223,8 +169,9 @@ class CollectionManifestRecorder:
     ) -> None:
         self.run_id = str(run_id)
         self.output_dir = Path(output_dir)
-        self.context = redact_value(dict(context or {}))
-        self.options = redact_value(dict(options or {}))
+        # Keep caller-owned mappings isolated while preserving every supplied value.
+        self.context = deepcopy(dict(context or {}))
+        self.options = deepcopy(dict(options or {}))
         self.started_at = utc_timestamp()
         self.completed_at: Optional[str] = None
         self.status = "running"
@@ -254,18 +201,18 @@ class CollectionManifestRecorder:
                     "endpoint_id": endpoint_id(endpoint.get("output_prefix") or command_template),
                     "endpoint_name": name,
                     "category": category,
-                    "command_template": redact_text(command_template),
+                    "command_template": command_template,
                 }
 
     def set_azure_cli_version(self, value: Any) -> None:
-        """Attach the non-sensitive Azure CLI version string when available."""
+        """Attach the Azure CLI version string when available."""
         with self._lock:
             self.tool["azure_cli_version"] = str(value) if value else None
 
     def update_context(self, values: Mapping[str, Any]) -> None:
         """Update run context after authentication establishes the active account."""
         with self._lock:
-            self.context.update(redact_value(dict(values)))
+            self.context.update(deepcopy(dict(values)))
 
     def record_execution(
         self,
@@ -293,15 +240,15 @@ class CollectionManifestRecorder:
             "endpoint_id": endpoint_id(endpoint_identifier or command_template),
             "endpoint_name": str(endpoint_name or "unknown"),
             "category": str(category or "collection"),
-            "command_template": redact_text(command_template),
-            "parameter_context": redact_value(dict(parameter_context or {})),
+            "command_template": str(command_template),
+            "parameter_context": deepcopy(dict(parameter_context or {})),
             "status": status,
             "started_at": started_at,
             "duration_ms": max(0, round(float(duration_seconds) * 1000)),
             "returncode": returncode,
             "result_count": result_count,
             "attempt_count": max(1, int(retry_count) + 1),
-            "error": redact_text(error_message) if error_message else None,
+            "error": truncate_error_text(error_message) if error_message else None,
         }
         with self._lock:
             self.endpoint_runs.append(record)
@@ -329,7 +276,7 @@ class CollectionManifestRecorder:
             "endpoint_id": endpoint_id(endpoint_identifier or command_template),
             "endpoint_name": str(endpoint_name or "unknown"),
             "category": str(category or "collection"),
-            "command_template": redact_text(command_template),
+            "command_template": str(command_template),
             "parameter_context": {},
             "status": "skipped",
             "started_at": None,
@@ -337,7 +284,7 @@ class CollectionManifestRecorder:
             "returncode": None,
             "result_count": None,
             "attempt_count": 0,
-            "error": redact_text(reason),
+            "error": truncate_error_text(reason),
         }
         with self._lock:
             self.endpoint_runs.append(record)
@@ -388,10 +335,10 @@ class CollectionManifestRecorder:
 
     def add_limitation(self, message: str) -> None:
         """Record a non-fatal limitation once."""
-        safe_message = redact_text(message)
+        limitation = str(message)
         with self._lock:
-            if safe_message not in self.limitations:
-                self.limitations.append(safe_message)
+            if limitation not in self.limitations:
+                self.limitations.append(limitation)
 
     def finish(self, execution_successful: bool = True) -> Dict[str, Any]:
         """Finalise planned endpoints and derive the overall run status."""

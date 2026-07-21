@@ -9,8 +9,8 @@ from unittest import mock
 from azure_collection_manifest import (
     CollectionManifestRecorder,
     classify_execution_status,
-    redact_value,
     sha256_file,
+    truncate_error_text,
     validate_manifest,
 )
 
@@ -24,29 +24,57 @@ azure_collect = importlib.util.module_from_spec(COLLECT_SPEC)
 COLLECT_SPEC.loader.exec_module(azure_collect)
 
 
-class CollectionManifestSecurityTests(unittest.TestCase):
-    def test_recursive_redaction_removes_credentials_and_inline_secrets(self):
-        value = {
-            "tenant_id": "tenant-one",
-            "client_secret": "do-not-store",
-            "nested": {
-                "accessToken": "token-value",
-                "message": "az login --password plaintext --tenant tenant-one",
-            },
-        }
+class CollectionManifestContentTests(unittest.TestCase):
+    def test_manifest_preserves_all_context_and_diagnostic_content(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            command = "az login --password 'words with spaces' --tenant tenant-one"
+            context = {
+                "tenant_id": "tenant-one",
+                "client_secret": "do-not-remove",
+                "nested": {"accessToken": "token-value"},
+            }
+            recorder = CollectionManifestRecorder(
+                "run-content",
+                Path(tmpdir),
+                context=context,
+                options={"authorization": "Bearer token-value"},
+                project_dir=Path(tmpdir),
+            )
+            recorder.record_execution(
+                "Authentication",
+                "setup",
+                command,
+                "2026-07-21T12:00:00Z",
+                0.1,
+                1,
+                None,
+                parameter_context={"password": "words with spaces"},
+                error_message="Password: words with spaces; Authorization: Bearer token-value",
+            )
+            recorder.add_limitation("ClientSecret=do-not-remove")
 
-        redacted = redact_value(value)
+            manifest = recorder.finish()
 
-        self.assertEqual(redacted["tenant_id"], "tenant-one")
-        self.assertEqual(redacted["client_secret"], "[REDACTED]")
-        self.assertEqual(redacted["nested"]["accessToken"], "[REDACTED]")
-        self.assertNotIn("plaintext", redacted["nested"]["message"])
+        self.assertEqual(manifest["context"], context)
+        self.assertEqual(manifest["options"]["authorization"], "Bearer token-value")
+        execution = manifest["endpoint_runs"][0]
+        self.assertEqual(execution["command_template"], command)
+        self.assertEqual(execution["parameter_context"]["password"], "words with spaces")
+        self.assertEqual(
+            execution["error"],
+            "Password: words with spaces; Authorization: Bearer token-value",
+        )
+        self.assertEqual(manifest["limitations"], ["ClientSecret=do-not-remove"])
 
-    def test_recursive_redaction_removes_quoted_passwords(self):
-        redacted = redact_value("az login --password 'words with spaces' --tenant tenant-one")
+    def test_only_error_text_over_one_thousand_characters_is_truncated(self):
+        exact = "s" * 1000
+        oversized = "s" * 1001
 
-        self.assertNotIn("words with spaces", redacted)
-        self.assertIn("--password [REDACTED]", redacted)
+        self.assertEqual(truncate_error_text(exact), exact)
+        self.assertEqual(
+            truncate_error_text(oversized),
+            exact + "... [truncated]",
+        )
 
     def test_permission_failures_are_classified_without_persisting_output(self):
         status = classify_execution_status(
@@ -244,10 +272,40 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
         execution = manifest["endpoint_runs"][0]
         self.assertEqual(execution["status"], "success")
         self.assertEqual(execution["parameter_context"]["name"], "nsg-one")
-        self.assertEqual(execution["parameter_context"]["client_secret"], "[REDACTED]")
+        self.assertEqual(execution["parameter_context"]["client_secret"], "never-store")
         self.assertIn("{name}", execution["command_template"])
         self.assertNotIn("nsg-one", execution["command_template"])
         self.assertEqual(execution["attempt_count"], 2)
+
+    def test_failed_azure_cli_execution_preserves_diagnostic_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-failed-command",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            azure_collect.COLLECTION_MANIFEST = recorder
+            result = {
+                "returncode": 1,
+                "success": False,
+                "stdout": "Authorization: Bearer token-value",
+                "json": {},
+                "collection_error": "Command failed",
+            }
+
+            with mock.patch.object(azure_collect, "run_az_cli", return_value=result):
+                azure_collect.timed_run_az_cli(
+                    "az resource list",
+                    endpoint_name="Resources",
+                    category="base",
+                )
+
+            manifest = recorder.finish()
+
+        self.assertEqual(
+            manifest["endpoint_runs"][0]["error"],
+            "Command failed: Authorization: Bearer token-value",
+        )
 
     def test_managed_role_cache_records_version_dataset_and_output_link(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -283,7 +341,7 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
             ["managed-roles.json"],
         )
 
-    def test_post_processing_failure_is_recorded_without_exception_details(self):
+    def test_post_processing_failure_preserves_exception_details(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = CollectionManifestRecorder(
                 "run-processing-failure",
@@ -315,9 +373,9 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
         self.assertEqual(manifest["endpoint_runs"][0]["status"], "failed")
         self.assertEqual(
             manifest["endpoint_runs"][0]["error"],
-            "Collected data could not be post-processed",
+            "Collected data could not be post-processed: sensitive implementation detail",
         )
-        self.assertNotIn("sensitive implementation detail", json.dumps(manifest))
+        self.assertIn("sensitive implementation detail", json.dumps(manifest))
 
     def test_save_json_registers_generated_dataset(self):
         with tempfile.TemporaryDirectory() as tmpdir:

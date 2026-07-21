@@ -1,24 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Generate a compact, secret-safe report-ready findings export."""
+"""Generate a compact report-ready findings export."""
 
-import re
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
-from urllib.parse import parse_qsl, urlsplit
 
 
-REPORT_READY_SCHEMA_VERSION = "1.0"
+REPORT_READY_SCHEMA_VERSION = "2.0"
 INCLUDED_DISPOSITIONS = [
     "candidate",
     "confirmed",
     "accepted_risk",
     "informational",
 ]
-REDACTION_MARKER = "[REDACTED]"
-MAX_REPORT_VALUE_LENGTH = 100_000
-MAX_REPORT_NODES = 100_000
-MAX_REPORT_DEPTH = 30
 SEVERITY_ORDER = {
     "Critical": 0,
     "High": 1,
@@ -27,54 +21,6 @@ SEVERITY_ORDER = {
     "Informational": 4,
     "Unknown": 5,
 }
-SENSITIVE_FIELD_NAMES = {
-    "accesstoken",
-    "accountkey",
-    "apikey",
-    "authorization",
-    "clientsecret",
-    "connectionstring",
-    "credential",
-    "credentials",
-    "functionkeys",
-    "idtoken",
-    "instrumentationkey",
-    "key",
-    "masterkey",
-    "password",
-    "passwd",
-    "primarykey",
-    "privatekey",
-    "refreshtoken",
-    "sas",
-    "sastoken",
-    "secondarykey",
-    "secret",
-    "sharedaccesskey",
-    "sharedaccesssignature",
-    "systemkeys",
-    "token",
-}
-SAFE_SECRET_METADATA_SUFFIXES = {
-    "enabled",
-    "expiry",
-    "expiration",
-    "id",
-    "name",
-    "type",
-}
-SENSITIVE_QUERY_PARAMETERS = {
-    "code",
-    "key",
-    "sig",
-    "signature",
-    "sastoken",
-    "token",
-}
-SENSITIVE_VALUE_RE = re.compile(
-    r"(?i)(accountkey|sharedaccesskey|sharedaccesssignature|clientsecret|password)\s*="
-)
-JWT_RE = re.compile(r"^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$")
 
 
 def utc_timestamp() -> str:
@@ -83,113 +29,6 @@ def utc_timestamp() -> str:
         "+00:00",
         "Z",
     )
-
-
-def normalised_field_name(value: Any) -> str:
-    """Normalise a JSON key for deterministic sensitive-name matching."""
-    return re.sub(r"[^a-z0-9]", "", str(value or "").casefold())
-
-
-def sensitive_field_name(value: Any) -> bool:
-    """Return whether a field name is credential-bearing rather than metadata."""
-    name = normalised_field_name(value)
-    if name in SENSITIVE_FIELD_NAMES:
-        return True
-    if "secret" in name:
-        return not any(name.endswith(suffix) for suffix in SAFE_SECRET_METADATA_SUFFIXES)
-    if name.endswith("password") or name.endswith("token"):
-        return True
-    if name.endswith("connectionstring"):
-        return True
-    if name.endswith("privatekey") or name.endswith("accesskey"):
-        return True
-    return False
-
-
-def sensitive_string_value(value: str) -> bool:
-    """Detect common credential formats even when stored under a generic key."""
-    text = value.strip()
-    if SENSITIVE_VALUE_RE.search(text):
-        return True
-    if "-----BEGIN PRIVATE KEY-----" in text or "-----BEGIN RSA PRIVATE KEY-----" in text:
-        return True
-    if len(text) <= MAX_REPORT_VALUE_LENGTH and JWT_RE.fullmatch(text):
-        return True
-    try:
-        parsed = urlsplit(text)
-    except ValueError:
-        return False
-    if not parsed.scheme or not parsed.query:
-        return False
-    query_names = {
-        normalised_field_name(name)
-        for name, _ in parse_qsl(parsed.query, keep_blank_values=True)
-    }
-    return bool(query_names.intersection(SENSITIVE_QUERY_PARAMETERS))
-
-
-def redact_report_value(value: Any) -> Tuple[Any, List[str]]:
-    """Deep-copy JSON-compatible data while removing likely credential values."""
-    redactions = []
-    nodes_seen = 0
-
-    def redact(item: Any, path: str, depth: int) -> Any:
-        nonlocal nodes_seen
-        nodes_seen += 1
-        if nodes_seen > MAX_REPORT_NODES or depth > MAX_REPORT_DEPTH:
-            redactions.append(path or "$")
-            return "[TRUNCATED]"
-        if isinstance(item, Mapping):
-            result = {}
-            for key, child in item.items():
-                key_text = str(key)
-                child_path = f"{path}.{key_text}" if path else key_text
-                if sensitive_field_name(key_text):
-                    result[key_text] = REDACTION_MARKER
-                    if child != REDACTION_MARKER:
-                        redactions.append(child_path)
-                else:
-                    result[key_text] = redact(child, child_path, depth + 1)
-            return result
-        if isinstance(item, list):
-            return [
-                redact(child, f"{path}[{index}]", depth + 1)
-                for index, child in enumerate(item)
-            ]
-        if isinstance(item, tuple):
-            return [
-                redact(child, f"{path}[{index}]", depth + 1)
-                for index, child in enumerate(item)
-            ]
-        if isinstance(item, str):
-            if len(item) > MAX_REPORT_VALUE_LENGTH:
-                redactions.append(path or "$")
-                return "[TRUNCATED]"
-            if sensitive_string_value(item):
-                redactions.append(path or "$")
-                return REDACTION_MARKER
-        return item
-
-    return redact(value, "", 0), sorted(set(redactions))
-
-
-def marker_paths(value: Any) -> List[str]:
-    """Return paths containing explicit report redaction or truncation markers."""
-    paths = []
-
-    def walk(item: Any, path: str) -> None:
-        if isinstance(item, Mapping):
-            for key, child in item.items():
-                child_path = f"{path}.{key}" if path else str(key)
-                walk(child, child_path)
-        elif isinstance(item, list):
-            for index, child in enumerate(item):
-                walk(child, f"{path}[{index}]")
-        elif item in {REDACTION_MARKER, "[TRUNCATED]"}:
-            paths.append(path or "$")
-
-    walk(value, "")
-    return sorted(set(paths))
 
 
 def canonical_observations(finding: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -205,25 +44,18 @@ def canonical_observations(finding: Mapping[str, Any]) -> List[Dict[str, Any]]:
     for observation in finding.get("reporting", {}).get("observations", []):
         if observation.get("observation_id") in duplicate_ids:
             continue
-        data, data_redactions = redact_report_value(observation.get("data", {}))
-        links, link_redactions = redact_report_value(
-            observation.get("reference_links", [])
-        )
-        redaction_paths = (
-            {f"data.{item}" for item in data_redactions}
-            | {f"reference_links.{item}" for item in link_redactions}
-            | {f"data.{item}" for item in marker_paths(data)}
-            | {f"reference_links.{item}" for item in marker_paths(links)}
-        )
         observations.append(
             {
                 "observation_id": observation.get("observation_id"),
                 "summary": observation.get("summary"),
                 "asset_ids": list(observation.get("asset_ids", [])),
-                "data": data,
+                # Report records must preserve evidence exactly, including values
+                # which resemble credentials or signed resource URLs.
+                "data": deepcopy(observation.get("data", {})),
                 "source_files": list(observation.get("source_files", [])),
-                "reference_links": links,
-                "redactions": sorted(redaction_paths),
+                "reference_links": deepcopy(
+                    observation.get("reference_links", [])
+                ),
             }
         )
     return observations
@@ -341,27 +173,6 @@ def report_finding(finding: Mapping[str, Any]) -> Dict[str, Any]:
         "retest": deepcopy(triage.get("retest", {})),
         "limitations": finding_limitations(finding),
     }
-    record, redactions = redact_report_value(record)
-    record["redactions"] = sorted(set(redactions).union(marker_paths(record)))
-    observation_redactions = any(
-        observation.get("redactions")
-        for observation in record.get("evidence", {}).get("observations", [])
-    )
-    publication = record["workflow"]["publication"]
-    if redactions or observation_redactions:
-        publication["warnings"] = sorted(
-            set(publication["warnings"]).union({"report_content_redacted"})
-        )
-    required_narrative_paths = {
-        "report.description",
-        "report.impact",
-        "report.recommendation",
-    }
-    if required_narrative_paths.intersection(redactions):
-        publication["blockers"] = sorted(
-            set(publication["blockers"]).union({"required_report_narrative_redacted"})
-        )
-        publication["ready_for_publication"] = False
     return record
 
 
@@ -505,12 +316,7 @@ def build_report_ready_output(
         if finding.get("finding_id") not in selected_ids
     ]
     excluded.sort(key=lambda item: str(item["finding_id"]))
-    engagement, engagement_redactions = redact_report_value(
-        shared_engagement(findings)
-    )
-    engagement_redactions = sorted(
-        set(engagement_redactions).union(marker_paths(engagement))
-    )
+    engagement = deepcopy(shared_engagement(findings))
     output = {
         "schema_version": REPORT_READY_SCHEMA_VERSION,
         "generated_at": generated_at or utc_timestamp(),
@@ -521,7 +327,6 @@ def build_report_ready_output(
         "assessment": {
             "input_dir": str(input_dir),
             "engagement": engagement,
-            "redactions": engagement_redactions,
         },
         "selection_policy": {
             "include_candidates_by_default": True,
@@ -556,7 +361,7 @@ def validate_report_ready_output(
     output: Mapping[str, Any],
     source_findings: Optional[Iterable[Mapping[str, Any]]] = None,
 ) -> None:
-    """Reject malformed selection, summary, grouping, or redaction metadata."""
+    """Reject malformed selection, summary, grouping, or evidence metadata."""
     if output.get("schema_version") != REPORT_READY_SCHEMA_VERSION:
         raise ValueError("Unsupported report-ready schema")
     parse_timestamp(output.get("generated_at"))
@@ -580,17 +385,6 @@ def validate_report_ready_output(
         assessment.get("engagement"), Mapping
     ):
         raise ValueError("Report-ready assessment engagement must be an object")
-    if not isinstance(assessment.get("redactions"), list):
-        raise ValueError("Report-ready assessment redactions must be a list")
-    redacted_engagement, engagement_redactions = redact_report_value(
-        assessment["engagement"]
-    )
-    if engagement_redactions or redacted_engagement != assessment["engagement"]:
-        raise ValueError("Report-ready engagement contains unredacted sensitive data")
-    if not set(marker_paths(assessment["engagement"])).issubset(
-        assessment["redactions"]
-    ):
-        raise ValueError("Report-ready engagement redaction paths are incomplete")
     if not all(isinstance(value, list) for value in (groups, records, excluded)):
         raise ValueError("Report-ready findings, groups, and exclusions must be lists")
 
@@ -643,24 +437,6 @@ def validate_report_ready_output(
             not publication["blockers"]
         ):
             raise ValueError("Report-ready publication readiness is inconsistent")
-        redacted_again, new_record_redactions = redact_report_value(
-            {
-                key: value
-                for key, value in record.items()
-                if key != "redactions"
-            }
-        )
-        original_without_redactions = {
-            key: value
-            for key, value in record.items()
-            if key != "redactions"
-        }
-        if new_record_redactions or redacted_again != original_without_redactions:
-            raise ValueError("Report-ready finding contains unredacted sensitive data")
-        if not isinstance(record.get("redactions"), list) or not set(
-            marker_paths(original_without_redactions)
-        ).issubset(record["redactions"]):
-            raise ValueError("Report-ready finding redaction paths are incomplete")
         observations = evidence.get("observations")
         if not isinstance(observations, list):
             raise ValueError("Report-ready observations must be a list")
@@ -707,29 +483,10 @@ def validate_report_ready_output(
         for observation in observations:
             if not isinstance(observation, Mapping):
                 raise ValueError("Report-ready observations must be objects")
-            redacted_again, new_redactions = redact_report_value(
-                {
-                    "data": observation.get("data"),
-                    "reference_links": observation.get("reference_links"),
-                }
-            )
-            if new_redactions or redacted_again != {
-                "data": observation.get("data"),
-                "reference_links": observation.get("reference_links"),
-            }:
-                raise ValueError("Report-ready observation contains unredacted sensitive data")
-            expected_observation_paths = {
-                f"data.{item}" for item in marker_paths(observation.get("data"))
-            }.union(
-                {
-                    f"reference_links.{item}"
-                    for item in marker_paths(observation.get("reference_links"))
-                }
-            )
-            if not isinstance(observation.get("redactions"), list) or not expected_observation_paths.issubset(
-                observation["redactions"]
-            ):
-                raise ValueError("Report-ready observation redaction paths are incomplete")
+            if not isinstance(observation.get("data"), Mapping):
+                raise ValueError("Report-ready observation data must be an object")
+            if not isinstance(observation.get("reference_links"), list):
+                raise ValueError("Report-ready observation reference links must be a list")
 
     expected_summary = {
         "checks_evaluated": len(records) + len(excluded),

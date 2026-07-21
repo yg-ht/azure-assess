@@ -415,7 +415,7 @@ def collection_run_record(
     manifest: Optional[Mapping[str, Any]],
     manifest_filename: Optional[str],
 ) -> Optional[Dict[str, Any]]:
-    """Select non-secret run metadata required for report provenance."""
+    """Select run metadata required for report provenance."""
     if manifest is None:
         return None
     tool = manifest.get("tool") if isinstance(manifest.get("tool"), Mapping) else {}

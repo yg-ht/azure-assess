@@ -7,10 +7,8 @@ from azure_findings_context import normalise_finding_context
 from azure_findings_coverage import normalise_finding_coverage
 from azure_findings_definitions import finding_definition
 from azure_findings_report import (
-    REDACTION_MARKER,
     REPORT_READY_SCHEMA_VERSION,
     build_report_ready_output,
-    redact_report_value,
     validate_report_ready_output,
 )
 from azure_findings_reporting import normalise_finding_reporting
@@ -133,38 +131,6 @@ def apply_authored_review(finding):
     normalise_finding_triage(finding)
 
 
-class ReportRedactionTests(unittest.TestCase):
-    def test_sensitive_names_values_and_signed_urls_are_redacted(self):
-        payload = {
-            "clientSecret": "secret-value",
-            "secretName": "metadata-is-safe",
-            "disablePasswordAuthentication": False,
-            "genericJwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
-            "connection": "Server=test;AccountKey=secret-value",
-            "signedUrl": "https://example.test/blob?sv=1&sig=secret-value",
-            "nested": {"functionKeys": {"default": "secret-value"}},
-        }
-
-        redacted, paths = redact_report_value(payload)
-
-        self.assertEqual(redacted["clientSecret"], REDACTION_MARKER)
-        self.assertEqual(redacted["secretName"], "metadata-is-safe")
-        self.assertFalse(redacted["disablePasswordAuthentication"])
-        self.assertEqual(redacted["genericJwt"], REDACTION_MARKER)
-        self.assertEqual(redacted["connection"], REDACTION_MARKER)
-        self.assertEqual(redacted["signedUrl"], REDACTION_MARKER)
-        self.assertEqual(redacted["nested"]["functionKeys"], REDACTION_MARKER)
-        self.assertIn("clientSecret", paths)
-
-    def test_redaction_is_idempotent(self):
-        first, first_paths = redact_report_value({"password": "secret-value"})
-        second, second_paths = redact_report_value(first)
-
-        self.assertEqual(first, second)
-        self.assertEqual(first_paths, ["password"])
-        self.assertEqual(second_paths, [])
-
-
 class ReportSelectionTests(unittest.TestCase):
     def test_unreviewed_candidate_is_selected_by_default(self):
         candidate = report_test_finding()
@@ -253,17 +219,22 @@ class ReportEvidenceTests(unittest.TestCase):
         self.assertEqual(len(evidence["duplicate_sets"]), 1)
         self.assertEqual(len(evidence["observations"]), 1)
 
-    def test_sensitive_observation_values_are_redacted_and_recorded(self):
+    def test_credential_values_and_signed_links_are_preserved_exactly(self):
         finding = report_test_finding(
             evidence=[
                 {
                     "id": RESOURCE_ID,
                     "name": "account-one",
                     "connectionString": "AccountKey=secret-value",
-                    "secretName": "report-safe-name",
+                    "clientSecret": "secret-value",
+                    "genericJwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+                    "privateKey": "-----BEGIN PRIVATE KEY-----\nvalue\n-----END PRIVATE KEY-----",
+                    "functionKeys": {"default": "function-key-value"},
                 }
             ]
         )
+        signed_url = "https://example.test/blob?sv=1&sig=signed-value"
+        finding["reporting"]["observations"][0]["reference_links"] = [signed_url]
 
         output = build_report_ready_output(
             "/tmp/assessment",
@@ -272,12 +243,24 @@ class ReportEvidenceTests(unittest.TestCase):
         )
 
         observation = output["findings"][0]["evidence"]["observations"][0]
-        self.assertEqual(observation["data"]["connectionString"], REDACTION_MARKER)
-        self.assertEqual(observation["data"]["secretName"], "report-safe-name")
-        self.assertIn("data.connectionString", observation["redactions"])
-        self.assertNotIn("secret-value", json.dumps(output))
+        self.assertEqual(
+            observation["data"]["connectionString"],
+            "AccountKey=secret-value",
+        )
+        self.assertEqual(observation["data"]["clientSecret"], "secret-value")
+        self.assertEqual(
+            observation["data"]["genericJwt"],
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+        )
+        self.assertIn("BEGIN PRIVATE KEY", observation["data"]["privateKey"])
+        self.assertEqual(
+            observation["data"]["functionKeys"]["default"],
+            "function-key-value",
+        )
+        self.assertEqual(observation["reference_links"], [signed_url])
+        self.assertNotIn("redactions", observation)
 
-    def test_analyst_text_with_connection_secret_is_redacted_from_export(self):
+    def test_analyst_text_with_connection_secret_is_preserved(self):
         finding = report_test_finding()
         override = analyst_override(finding["finding_id"])
         override["notes"] = "Captured AccountKey=secret-value during validation."
@@ -291,15 +274,33 @@ class ReportEvidenceTests(unittest.TestCase):
         )
 
         record = output["findings"][0]
-        self.assertEqual(record["workflow"]["analyst"]["notes"], REDACTION_MARKER)
-        self.assertIn("workflow.analyst.notes", record["redactions"])
-        self.assertIn(
+        self.assertEqual(
+            record["workflow"]["analyst"]["notes"],
+            "Captured AccountKey=secret-value during validation.",
+        )
+        self.assertNotIn("redactions", record)
+        self.assertNotIn(
             "report_content_redacted",
             record["workflow"]["publication"]["warnings"],
         )
-        self.assertNotIn("secret-value", json.dumps(output))
 
-    def test_redacted_required_narrative_blocks_publication(self):
+    def test_engagement_context_is_preserved_without_redaction_metadata(self):
+        finding = report_test_finding()
+        finding["context"]["engagement"]["client_secret"] = "engagement-secret"
+
+        output = build_report_ready_output(
+            "/tmp/assessment",
+            [finding],
+            generated_at="2026-07-21T12:00:00Z",
+        )
+
+        self.assertEqual(
+            output["assessment"]["engagement"]["client_secret"],
+            "engagement-secret",
+        )
+        self.assertNotIn("redactions", output["assessment"])
+
+    def test_secret_like_narrative_does_not_block_publication(self):
         finding = report_test_finding()
         apply_authored_review(finding)
         finding["definition"]["report"]["impact"] = (
@@ -314,9 +315,41 @@ class ReportEvidenceTests(unittest.TestCase):
 
         record = output["findings"][0]
         publication = record["workflow"]["publication"]
-        self.assertEqual(record["report"]["impact"], REDACTION_MARKER)
-        self.assertFalse(publication["ready_for_publication"])
-        self.assertIn("required_report_narrative_redacted", publication["blockers"])
+        self.assertEqual(
+            record["report"]["impact"],
+            "Validation captured AccountKey=secret-value in the exposed response.",
+        )
+        self.assertTrue(publication["ready_for_publication"])
+        self.assertNotIn("required_report_narrative_redacted", publication["blockers"])
+
+    def test_previous_report_size_and_depth_boundaries_do_not_change_content(self):
+        finding = report_test_finding()
+        long_value = "x" * 100_001
+        many_values = list(range(100_001))
+        deep_value = {"preserved": "Password: nested-secret"}
+        for index in range(35):
+            deep_value = {f"level_{index}": deep_value}
+        observation_data = finding["reporting"]["observations"][0]["data"]
+        observation_data.update(
+            {
+                "longValue": long_value,
+                "manyValues": many_values,
+                "deepValue": deep_value,
+                "literalMarkers": ["[REDACTED]", "[TRUNCATED]"],
+            }
+        )
+
+        output = build_report_ready_output(
+            "/tmp/assessment",
+            [finding],
+            generated_at="2026-07-21T12:00:00Z",
+        )
+
+        emitted = output["findings"][0]["evidence"]["observations"][0]["data"]
+        self.assertEqual(emitted["longValue"], long_value)
+        self.assertEqual(emitted["manyValues"], many_values)
+        self.assertEqual(emitted["deepValue"], deep_value)
+        self.assertEqual(emitted["literalMarkers"], ["[REDACTED]", "[TRUNCATED]"])
 
     def test_output_is_json_serialisable_and_omits_legacy_raw_evidence(self):
         finding = report_test_finding()
@@ -375,7 +408,7 @@ class ReportValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "selection conflicts"):
             validate_report_ready_output(output, source_findings=[finding])
 
-    def test_validation_rejects_unredacted_sensitive_observation(self):
+    def test_validation_accepts_unmodified_sensitive_observation(self):
         finding = report_test_finding()
         output = build_report_ready_output(
             "/tmp/assessment",
@@ -385,8 +418,7 @@ class ReportValidationTests(unittest.TestCase):
         observation = output["findings"][0]["evidence"]["observations"][0]
         observation["data"]["password"] = "secret-value"
 
-        with self.assertRaisesRegex(ValueError, "unredacted sensitive data"):
-            validate_report_ready_output(output)
+        validate_report_ready_output(output)
 
 
 class ReportPipelineIntegrationTests(unittest.TestCase):
