@@ -175,6 +175,13 @@ Finding definition metadata:
 - Existing requested-headline identifiers remain available in `definition.check_ids`. These are compatibility aliases and may be shared by related checks, so consumers should use `finding_id` as the primary key.
 - `definition` also records its schema and definition versions, report title, category, default severity, and a versioned `report` narrative contract. Narrative fields remain explicitly marked `not_authored` until report text is curated rather than being populated with unsafe generic advice.
 
+Normalised reporting data:
+
+- Each finding includes a versioned `reporting` object containing deduplicated `assets`, content-addressed `observations`, and `provenance`. Existing `evidence` and `references` fields remain unchanged for compatibility.
+- Assets distinguish Azure resources, subscriptions, Microsoft Entra principals, named resources, and assessment scopes. Observations retain the original evidence values and link them to stable asset IDs without copying generated navigation references into the observation data.
+- Current source attribution is explicitly marked `finding_level`, because the checks currently identify the set of input datasets used by a finding rather than the exact source record for every evidence item.
+- When a collection manifest is available, provenance links the collection run and source endpoint, verifies each source dataset against its recorded SHA-256 hash, and exposes partial runs, hash mismatches, and unavailable metadata as limitations. Collections created before manifests were introduced remain supported.
+
 ### `azure-present.py`
 
 Purpose:

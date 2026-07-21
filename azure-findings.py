@@ -21,6 +21,7 @@ from azure_findings_shared import (
     normalize_text,
     unsupported,
 )
+from azure_findings_reporting import normalise_finding_reporting
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
@@ -301,9 +302,11 @@ def flat_rows(findings):
     rows = []
     for finding in findings:
         ensure_finding_definition(finding)
+        ensure_finding_reporting(finding)
         row = {
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
+            "reporting": finding["reporting"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -327,6 +330,17 @@ def ensure_finding_definition(finding):
     finding["finding_id"] = definition["finding_id"]
     finding["definition"] = definition
     return definition
+
+
+def ensure_finding_reporting(finding, catalog=None):
+    """Attach report-facing normalisation to legacy finding objects."""
+    ensure_finding_definition(finding)
+    reporting = finding.get("reporting")
+    collection_run = (reporting or {}).get("provenance", {}).get("collection_run")
+    if reporting and (catalog is None or collection_run is not None):
+        return reporting
+    normalise_finding_reporting(finding, catalog=catalog)
+    return finding["reporting"]
 
 
 def finding_headline_ids(finding):
@@ -406,6 +420,7 @@ def sarif_locations(finding):
 
 def sarif_result(finding):
     ensure_finding_definition(finding)
+    ensure_finding_reporting(finding)
     result = {
         "ruleId": sarif_rule_id(finding),
         "level": sarif_level(finding["severity"]),
@@ -414,6 +429,7 @@ def sarif_result(finding):
         "properties": {
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
+            "reporting": finding["reporting"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -434,6 +450,7 @@ def sarif_output(input_dir, catalog, findings):
     found = [finding for finding in findings if finding["status"] == "found"]
     unique_rules = {}
     for finding in found:
+        ensure_finding_reporting(finding, catalog=catalog)
         unique_rules.setdefault(sarif_rule_id(finding), sarif_rule_descriptor(finding))
     return {
         "$schema": SARIF_SCHEMA_URI,
@@ -2875,6 +2892,7 @@ def evaluate_findings(catalog):
 
     for finding in findings:
         attach_references(finding, reference_sources.get(finding["title"], []))
+        normalise_finding_reporting(finding, catalog=catalog)
 
     return findings
 
