@@ -24,6 +24,7 @@ from azure_findings_definitions import (
 )
 from azure_findings_shared import (
     normalize_text,
+    result,
     unsupported,
 )
 from azure_findings_reporting import normalise_finding_reporting
@@ -40,10 +41,203 @@ from azure_findings_triage import (
     normalise_finding_triage,
     validate_finding_triage,
 )
+from azure_findings_correlation import (
+    AnalysisInputs,
+    CorrelationResult,
+    DatasetSpec,
+    collection_reference_time,
+    merge_correlation_results,
+)
+from azure_findings_governance import (
+    analyse_advisor_defender,
+    analyse_critical_resource_locks,
+    analyse_expected_policy_assignments,
+    analyse_policy_states,
+)
+from azure_findings_identity import (
+    analyse_application_credentials,
+    analyse_privileged_non_human_identities,
+)
+from azure_findings_network import (
+    PRIVATE_LINK_ADAPTERS,
+    analyse_external_attack_paths,
+    analyse_private_link_posture,
+)
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
 DEFAULT_INPUT_DIR = "azure-collect"
+
+
+OFFLINE_CORRELATION_DATASETS = (
+    DatasetSpec("resources", ("az_resource_list",), ("az_resource_list",)),
+    DatasetSpec("locks", ("az_lock_list",), ("az_lock_list",)),
+    DatasetSpec(
+        "policy_assignments",
+        ("az_policy_assignment_list",),
+        ("az_policy_assignment_list",),
+    ),
+    DatasetSpec(
+        "policy_states",
+        ("az_policy_state_list_--all",),
+        ("az_policy_state_list_--all",),
+    ),
+    DatasetSpec(
+        "policy_events",
+        ("az_policy_event_list",),
+        ("az_policy_event_list",),
+    ),
+    DatasetSpec(
+        "advisor_recommendations",
+        ("az_advisor_recommendation_list",),
+        ("az_advisor_recommendation_list",),
+    ),
+    DatasetSpec(
+        "defender_assessments",
+        (
+            "az_security_assessment_list",
+            "az_rest_--method_get_--url_subscriptions_id_providers_microsoft.security_assessments_api-version_2020-01-01",
+        ),
+        ("az_security_assessment_list", "az_rest_--method_get_--url_subscriptions_id_providers_microsoft.security_assessments_api-version_2020-01-01"),
+        expand_value=True,
+    ),
+    DatasetSpec("applications", ("az_ad_app_list",), ("az_ad_app_list",)),
+    DatasetSpec(
+        "service_principals",
+        ("az_ad_sp_list_--all",),
+        ("az_ad_sp_list_--all",),
+    ),
+    DatasetSpec("managed_identities", ("az_identity_list",), ("az_identity_list",)),
+    DatasetSpec("groups", ("az_ad_group_list",), ("az_ad_group_list",)),
+    DatasetSpec(
+        "role_assignments",
+        ("role_enriched", "az_role_assignment_list"),
+        ("az_role_assignment_list",),
+    ),
+    DatasetSpec(
+        "role_definitions",
+        ("az_role_definition_list", "az_role_definition_custom_list"),
+        ("az_role_definition_custom_list", "az_role_definition_list"),
+    ),
+    DatasetSpec(
+        "storage_accounts",
+        ("az_storage_account_list",),
+        ("az_storage_account_list",),
+    ),
+    DatasetSpec(
+        "storage_private_connections",
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.storage_storageaccounts",
+        ),
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.storage_storageaccounts",
+        ),
+    ),
+    DatasetSpec("key_vaults", ("az_keyvault_list",), ("az_keyvault_list",)),
+    DatasetSpec(
+        "key_vault_private_connections",
+        (
+            "az_keyvault_show_--name_name_--resource-group_resourcegroup_--query_privateendpointconnections",
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.keyvault_vaults",
+        ),
+        (
+            "az_keyvault_show_--name_name_--resource-group_resourcegroup_--query_privateendpointconnections",
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.keyvault_vaults",
+        ),
+    ),
+    DatasetSpec("container_registries", ("az_acr_list",), ("az_acr_list",)),
+    DatasetSpec(
+        "container_registry_private_connections",
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.containerregistry_registries",
+        ),
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.containerregistry_registries",
+        ),
+    ),
+    DatasetSpec("web_apps", ("az_webapp_list",), ("az_webapp_list",)),
+    DatasetSpec(
+        "web_private_connections",
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.web_sites",
+        ),
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.web_sites",
+        ),
+    ),
+    DatasetSpec(
+        "app_configuration",
+        ("az_appconfig_list",),
+        ("az_appconfig_list",),
+    ),
+    DatasetSpec(
+        "app_configuration_private_connections",
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.appconfiguration_configurationstores",
+        ),
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.appconfiguration_configurationstores",
+        ),
+    ),
+    DatasetSpec(
+        "application_gateway_private_connections",
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.network_applicationgateways",
+        ),
+        (
+            "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.network_applicationgateways",
+        ),
+    ),
+    DatasetSpec(
+        "cosmos_accounts", ("az_cosmosdb_list",), ("az_cosmosdb_list",)
+    ),
+    DatasetSpec(
+        "machine_learning_workspaces",
+        ("az_ml_workspace_show_--name_name_--resource-group_resourcegroup",),
+        ("az_ml_workspace_show_--name_name_--resource-group_resourcegroup",),
+    ),
+    DatasetSpec(
+        "search_services",
+        ("az_search_service_show_--name_name_--resource-group_resourcegroup",),
+        ("az_search_service_show_--name_name_--resource-group_resourcegroup",),
+    ),
+    DatasetSpec(
+        "private_endpoints",
+        ("az_network_private-endpoint_list",),
+        ("az_network_private-endpoint_list",),
+    ),
+    DatasetSpec(
+        "public_ips",
+        ("az_network_public-ip_list",),
+        ("az_network_public-ip_list",),
+    ),
+    DatasetSpec("nics", ("az_network_nic_list",), ("az_network_nic_list",)),
+    DatasetSpec("nsgs", ("az_network_nsg_list",), ("az_network_nsg_list",)),
+    DatasetSpec(
+        "nic_effective_nsgs",
+        ("az_network_nic_list-effective-nsg_--ids_id",),
+        ("az_network_nic_list-effective-nsg_--ids_id",),
+    ),
+    DatasetSpec(
+        "nic_effective_routes",
+        ("az_network_nic_show-effective-route-table_--ids_id",),
+        ("az_network_nic_show-effective-route-table_--ids_id",),
+    ),
+    DatasetSpec(
+        "load_balancers", ("az_network_lb_list",), ("az_network_lb_list",)
+    ),
+    DatasetSpec(
+        "application_gateways",
+        (
+            "az_network_application-gateway_list",
+            "az_network_application-gateway_show_--name_name_--resource-group_resourcegroup",
+        ),
+        (
+            "az_network_application-gateway_list",
+            "az_network_application-gateway_show_--name_name_--resource-group_resourcegroup",
+        ),
+    ),
+)
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Search collected Azure JSON for known-bad findings")
@@ -656,6 +850,23 @@ def annotate_finding_definitions(findings):
     return validate_finding_definitions(findings)
 
 
+def correlation_finding(title, severity, reason, correlation):
+    """Convert a conservative correlation result into the established finding shape."""
+    if correlation.observations or correlation.conclusion_support == "positive_and_negative":
+        finding = result(title, severity, reason, correlation.observations)
+    else:
+        limitation = "; ".join(correlation.limitations) or "required inputs were incomplete"
+        finding = unsupported(
+            title,
+            severity,
+            f"No complete set of required correlation datasets was available: {limitation}.",
+        )
+    finding["_coverage_eligible_assets"] = correlation.eligible_assets
+    finding["_correlation_limitations"] = correlation.limitations
+    finding["_correlation_source_files"] = correlation.source_files
+    return finding
+
+
 def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     apim_services = dataset_records(catalog, "az_apim_show")
     ad_users = dataset_records(catalog, "az_ad_user_list")
@@ -864,6 +1075,30 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "graph_security_defaults_policy": dataset_paths(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"),
         "graph_user_registration_details": dataset_paths(catalog, "graph.microsoft.com", "userregistrationdetails"),
     }
+
+    # Resolve exact dataset identities for the cross-dataset analyzers. Existing
+    # checks retain their compatible fragment matching until migrated separately.
+    offline_inputs = AnalysisInputs(catalog, OFFLINE_CORRELATION_DATASETS)
+
+    def offline_sources(*logical_names):
+        return sorted(
+            {
+                source_file
+                for logical_name in logical_names
+                for source_file in offline_inputs.get(logical_name).source_files
+            }
+        )
+
+    def offline_records(logical_name):
+        return offline_inputs.get(logical_name).records
+
+    def with_input_limitations(correlation, *logical_names):
+        correlation.limitations = list(
+            dict.fromkeys(
+                correlation.limitations + offline_inputs.limitations(logical_names)
+            )
+        )
+        return correlation
 
     findings = []
 
@@ -2803,6 +3038,277 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         )
     )
 
+    lock_result = with_input_limitations(
+        analyse_critical_resource_locks(
+            offline_records("resources"),
+            offline_records("locks"),
+            offline_inputs.conclusion_support(("resources", "locks")),
+            offline_sources("resources", "locks"),
+        ),
+        "resources",
+        "locks",
+    )
+    findings.append(
+        correlation_finding(
+            "Critical Azure resources do not have deletion locks",
+            "Low",
+            "Checks profiled critical Azure resources for an effective inherited CanNotDelete or ReadOnly lock.",
+            lock_result,
+        )
+    )
+
+    manifest_context = (offline_inputs.manifest or {}).get("context", {})
+    selected_subscription_id = (
+        manifest_context.get("subscription_id")
+        or manifest_context.get("selected_subscription_id")
+    )
+    # Older collections may not have the authenticated account in a manifest.
+    # In that case, az account list's single default entry is the only safe
+    # fallback; every accessible subscription is not the collected scope.
+    default_subscription_ids = {
+        item.get("id") or item.get("subscriptionId")
+        for item in subscriptions
+        if isinstance(item, dict) and item.get("isDefault") is True
+    }
+    subscription_ids = {selected_subscription_id} if selected_subscription_id else set()
+    if not subscription_ids and len(default_subscription_ids) == 1:
+        subscription_ids.update(default_subscription_ids)
+    subscription_ids.discard(None)
+    policy_assignment_result = with_input_limitations(
+        analyse_expected_policy_assignments(
+            offline_records("policy_assignments"),
+            subscription_ids,
+            offline_inputs.conclusion_support(("policy_assignments",)),
+            offline_sources("policy_assignments"),
+        ),
+        "policy_assignments",
+    )
+    findings.append(
+        correlation_finding(
+            "Expected Azure security policy assignments are missing",
+            "Medium",
+            "Compares enforced subscription assignments with the versioned expected-policy profile.",
+            policy_assignment_result,
+        )
+    )
+    policy_non_compliance, policy_errors = analyse_policy_states(
+        offline_records("policy_states"),
+        offline_inputs.conclusion_support(("policy_states",)),
+        offline_sources("policy_states", "policy_events"),
+        events=offline_records("policy_events"),
+        error_conclusion_support=offline_inputs.conclusion_support(
+            ("policy_states", "policy_events")
+        ),
+    )
+    policy_non_compliance = with_input_limitations(
+        policy_non_compliance, "policy_states"
+    )
+    policy_errors = with_input_limitations(
+        policy_errors, "policy_states", "policy_events"
+    )
+    findings.extend(
+        [
+            correlation_finding(
+                "Azure Policy reports current non-compliant resources",
+                "Medium",
+                "Selects the latest Policy state per resource and definition and surfaces current non-compliance.",
+                policy_non_compliance,
+            ),
+            correlation_finding(
+                "Azure Policy evaluations report explicit failures",
+                "Medium",
+                "Surfaces explicit Policy evaluation errors without treating ordinary non-compliance as an engine failure.",
+                policy_errors,
+            ),
+        ]
+    )
+
+    advisor_result = with_input_limitations(
+        analyse_advisor_defender(
+            offline_records("advisor_recommendations"),
+            offline_records("defender_assessments"),
+            offline_inputs.conclusion_support(("advisor_recommendations",)),
+            offline_sources("advisor_recommendations", "defender_assessments"),
+        ),
+        "advisor_recommendations",
+    )
+    findings.append(
+        correlation_finding(
+            "Azure Advisor reports active security recommendations",
+            "Medium",
+            "Surfaces active Advisor security recommendations with exact-first Defender assessment correlation.",
+            advisor_result,
+        )
+    )
+
+    private_link_services = (
+        ("storage", "storage_accounts", "storage_private_connections"),
+        ("key_vault", "key_vaults", "key_vault_private_connections"),
+        (
+            "container_registry",
+            "container_registries",
+            "container_registry_private_connections",
+        ),
+        ("web", "web_apps", "web_private_connections"),
+        (
+            "app_configuration",
+            "app_configuration",
+            "app_configuration_private_connections",
+        ),
+        (
+            "application_gateway",
+            "application_gateways",
+            "application_gateway_private_connections",
+        ),
+        ("cosmos_db", "cosmos_accounts", "cosmos_accounts"),
+        (
+            "machine_learning",
+            "machine_learning_workspaces",
+            "machine_learning_workspaces",
+        ),
+        ("search", "search_services", "search_services"),
+    )
+    private_link_result = merge_correlation_results(
+        with_input_limitations(
+            analyse_private_link_posture(
+                offline_records(resource_name),
+                offline_records(connection_name) + offline_records("private_endpoints"),
+                PRIVATE_LINK_ADAPTERS[adapter_name],
+                offline_inputs.conclusion_support((resource_name, connection_name)),
+                offline_sources(resource_name, connection_name, "private_endpoints"),
+            ),
+            resource_name,
+            connection_name,
+        )
+        for adapter_name, resource_name, connection_name in private_link_services
+    )
+    findings.append(
+        correlation_finding(
+            "Approved private endpoints do not remove public resource exposure",
+            "Medium",
+            "Identifies resources where approved private connectivity exists but public network access remains enabled.",
+            private_link_result,
+        )
+    )
+
+    non_human_result, group_result = analyse_privileged_non_human_identities(
+        offline_records("applications"),
+        offline_records("service_principals"),
+        offline_records("managed_identities"),
+        offline_records("groups"),
+        offline_records("role_assignments"),
+        offline_records("role_definitions"),
+        offline_inputs.conclusion_support(
+            (
+                "service_principals",
+                "managed_identities",
+                "role_assignments",
+                "role_definitions",
+            )
+        ),
+        offline_sources(
+            "applications",
+            "service_principals",
+            "managed_identities",
+            "groups",
+            "role_assignments",
+            "role_definitions",
+        ),
+        group_conclusion_support=offline_inputs.conclusion_support(
+            ("groups", "role_assignments", "role_definitions")
+        ),
+    )
+    non_human_result = with_input_limitations(
+        non_human_result,
+        "service_principals",
+        "managed_identities",
+        "role_assignments",
+        "role_definitions",
+    )
+    group_result = with_input_limitations(
+        group_result, "groups", "role_assignments", "role_definitions"
+    )
+    findings.extend(
+        [
+            correlation_finding(
+                "Non-human identities hold privileged roles at broad Azure scopes",
+                "High",
+                "Correlates application and managed identities with privileged built-in or custom roles at broad scopes.",
+                non_human_result,
+            ),
+            correlation_finding(
+                "Microsoft Entra groups hold privileged roles at broad Azure scopes",
+                "High",
+                "Identifies group objects with privileged Azure roles while declaring that group membership was not collected.",
+                group_result,
+            ),
+        ]
+    )
+    identity_sources = offline_sources("applications", "service_principals")
+    reference_time, reference_source = collection_reference_time(
+        offline_inputs.manifest,
+        identity_sources,
+    )
+    credential_result = with_input_limitations(
+        analyse_application_credentials(
+            offline_records("applications"),
+            offline_records("service_principals"),
+            reference_time,
+            reference_source,
+            offline_inputs.conclusion_support(("applications", "service_principals")),
+            identity_sources,
+        ),
+        "applications",
+        "service_principals",
+    )
+    findings.append(
+        correlation_finding(
+            "Application identity credentials are expired or require rotation",
+            "Medium",
+            "Checks application and service-principal credential metadata against the reproducible collection time.",
+            credential_result,
+        )
+    )
+
+    attack_required_inputs = (
+        "public_ips",
+        "nics",
+        "nsgs",
+        "nic_effective_nsgs",
+        "load_balancers",
+        "application_gateways",
+    )
+    attack_path_result = with_input_limitations(
+        analyse_external_attack_paths(
+            offline_records("public_ips"),
+            offline_records("nics"),
+            offline_records("nsgs"),
+            offline_inputs.conclusion_support(attack_required_inputs),
+            offline_sources(
+                "public_ips",
+                "nics",
+                "nsgs",
+                "nic_effective_nsgs",
+                "nic_effective_routes",
+                "load_balancers",
+                "application_gateways",
+            ),
+            effective_nsgs=offline_records("nic_effective_nsgs"),
+            effective_routes=offline_records("nic_effective_routes"),
+            load_balancers=offline_records("load_balancers"),
+            application_gateways=offline_records("application_gateways"),
+        ),
+        *attack_required_inputs,
+    )
+    findings.append(
+        correlation_finding(
+            "End-to-end Azure network paths are reachable from the Internet",
+            "High",
+            "Correlates assigned public IPs, forwarding resources, backend interfaces, and effective inbound controls.",
+            attack_path_result,
+        )
+    )
+
     if postgres_servers and not postgres_firewall_rules:
         for finding in findings:
             if finding["title"] in {
@@ -3022,6 +3528,13 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "Virtual machines are not using approved base images": source_map["vm_details"],
         "Virtual machine backup policies do not retain daily restore points long enough": source_map["backup_items"] + source_map["backup_policies"],
     }
+
+    correlation_sources = {
+        finding["title"]: list(finding.get("_correlation_source_files") or [])
+        for finding in findings
+        if finding.get("_coverage_eligible_assets") is not None
+    }
+    reference_sources.update(correlation_sources)
 
     findings = annotate_requested_headlines(findings)
     findings = annotate_finding_definitions(findings)

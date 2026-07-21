@@ -904,6 +904,34 @@ FINDING_ID_OVERRIDES = {
     "Key Vault Recovery Protection Not Enabled": "keyvault_recovery_protection_disabled",
     "Storage accounts do not trust Azure services network bypass": "storage_trusted_services_bypass_disabled",
     "Storage Account Permits Trusted Microsoft Services Bypass": "storage_trusted_services_bypass_enabled",
+    "Critical Azure resources do not have deletion locks": (
+        "resource_lock_critical_resource_delete_protection_missing"
+    ),
+    "Expected Azure security policy assignments are missing": (
+        "policy_required_security_assignment_missing"
+    ),
+    "Azure Policy reports current non-compliant resources": (
+        "policy_current_resource_non_compliance"
+    ),
+    "Azure Policy evaluations report explicit failures": "policy_evaluation_failure",
+    "Azure Advisor reports active security recommendations": (
+        "advisor_active_security_recommendation"
+    ),
+    "Approved private endpoints do not remove public resource exposure": (
+        "network_private_endpoint_public_exposure_remains"
+    ),
+    "Non-human identities hold privileged roles at broad Azure scopes": (
+        "entra_non_human_identity_privileged_broad_scope_role"
+    ),
+    "Microsoft Entra groups hold privileged roles at broad Azure scopes": (
+        "entra_group_privileged_broad_scope_role"
+    ),
+    "Application identity credentials are expired or require rotation": (
+        "entra_application_credential_rotation_required"
+    ),
+    "End-to-end Azure network paths are reachable from the Internet": (
+        "network_external_attack_path_identified"
+    ),
 }
 
 CATEGORY_PREFIXES = (
@@ -913,6 +941,8 @@ CATEGORY_PREFIXES = (
     (("keyvault_",), "Secrets and key management"),
     (("monitor_",), "Logging and monitoring"),
     (("defender_",), "Security posture management"),
+    (("advisor_",), "Security posture management"),
+    (("policy_", "resource_lock_"), "Governance and compliance"),
     (("aks_", "kubernetes_", "containerregistry_"), "Containers and Kubernetes"),
     (
         (

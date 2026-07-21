@@ -8,6 +8,16 @@
 
 - [x] Collapse findings link cells containing more than 10 links while retaining access to every link.
 
+### Offline finding correlations
+
+- [x] Add exact logical dataset contracts and conservative completeness handling for offline correlations.
+- [x] Surface critical resources without effective deletion locks, and emit absence findings only when lock collection supports negative conclusions.
+- [x] Surface Azure Policy non-compliance and complete-inventory assignment gaps; independently propagate policy-state and policy-event completeness into evaluation-failure conclusions.
+- [x] Correlate security Advisor recommendations with Defender assessments.
+- [x] Correlate public access with approved private endpoints across service datasets.
+- [x] Surface privileged non-human identities and application credential-expiry concerns.
+- [x] Build end-to-end public-IP, frontend, backend, route, and effective-NSG attack paths with destination-aware, source-set first-match processing, attached-NSG default-deny semantics, and no reachability finding for unknown decisions.
+
 ### Report-ready findings
 
 - [x] Persist a versioned collection-run manifest containing endpoint completeness and dataset integrity metadata.

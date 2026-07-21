@@ -200,7 +200,18 @@ Assessment coverage:
 - Each finding includes a versioned `coverage` object with a denominator, affected observation and asset counts, an optional affected percentage, and explicit limitations.
 - Current denominators are labelled `proxy`: they count unique identifiable assets in the first populated primary source, or source records when stable asset identities are unavailable. Duplicate asset records are counted once.
 - Percentages are emitted only when affected asset identities match an asset denominator. A found result with unmatched identities does not emit a misleading zero-percent value.
-- Check-specific eligibility filters are not yet instrumented, so the collected population must not be described as an exact eligible population. Missing data and unimplemented checks use `unavailable` and `not_implemented` coverage states instead of numeric claims.
+- Cross-dataset correlation checks provide their explicit eligible assets and use the `check_specific_eligible_assets` denominator basis. Existing single-dataset checks continue to use conservative collected-population proxies until they are migrated.
+- Missing data and unimplemented checks use `unavailable` and `not_implemented` coverage states instead of numeric claims.
+
+Offline cross-dataset correlations:
+
+- Exact logical dataset aliases and collection-manifest endpoint states distinguish complete, empty, partial, failed, missing, and pre-manifest inputs. Positive evidence can still be surfaced from a partial collection, but incomplete inputs cannot support a `not_found` conclusion.
+- Critical-resource lock analysis applies `ReadOnly` and `CanNotDelete` locks inherited from subscription and resource-group scopes. Eligibility is limited to the versioned critical-resource profile, and a missing lock is reported only when lock collection is complete.
+- Azure Policy analysis selects the latest resource/assignment/definition state, excludes compliant, exempt, and not-applicable records, separates explicit evaluation errors from non-compliance, and compares enforced assignments with the versioned Microsoft cloud security benchmark expectation. Missing assignments require a complete assignment inventory, while evaluation-error conclusions require both Policy states and events. The benchmark initiative identifier is documented by [Microsoft's Azure Policy built-in index](https://learn.microsoft.com/azure/governance/policy/samples/).
+- Active Azure Advisor security recommendations are correlated with Defender assessments using exact resource and control identifiers first. Strong title similarity is retained as an explicitly inferred match and never suppresses unmatched evidence.
+- Public-network settings are correlated with approved, successfully provisioned private endpoint connections for Storage, Key Vault, Container Registry, App Service, App Configuration, Application Gateway, Cosmos DB, Machine Learning, and Azure AI Search. A private endpoint is not treated as removing exposure while public access remains enabled.
+- Application registrations, service principals, managed identities, groups, role assignments, and role definitions are correlated to identify privileged non-human principals at tenant, management-group, and subscription scopes. Credential expiry uses the collection completion time and emits metadata only; group membership is declared unavailable because it is not collected.
+- Internet ingress analysis follows assigned public IPs through direct NICs, load-balancer rules and Application Gateway listeners to resolved backends. NSG decisions apply first-match priority across source address sets, the translated backend destination and port, Azure default inbound deny, and the intersection of effective NIC/subnet layers. Unknown NSG decisions do not establish reachability; effective route data is supporting evidence rather than proof of service exploitability.
 
 Analyst review:
 

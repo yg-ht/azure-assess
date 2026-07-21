@@ -61,6 +61,27 @@ def source_catalog(source_file, records):
 
 
 class FindingCoverageDenominatorTests(unittest.TestCase):
+    def test_correlation_supplied_population_uses_check_specific_denominator(self):
+        first = resource(
+            "/subscriptions/sub-one/resourceGroups/rg-one/providers/"
+            "Microsoft.Storage/storageAccounts/account-one",
+            "account-one",
+        )
+        second = resource(
+            "/subscriptions/sub-one/resourceGroups/rg-one/providers/"
+            "Microsoft.Storage/storageAccounts/account-two",
+            "account-two",
+        )
+        finding = coverage_finding([first])
+        finding["_coverage_eligible_assets"] = [first, second]
+
+        normalise_finding_coverage(finding)
+
+        coverage = finding["coverage"]
+        self.assertEqual(coverage["denominator"]["basis"], "check_specific_eligible_assets")
+        self.assertEqual(coverage["denominator"]["value"], 2)
+        self.assertEqual(coverage["affected_percentage"], 50.0)
+
     def test_unique_primary_assets_form_the_denominator(self):
         first = resource(
             "/subscriptions/sub-one/resourceGroups/rg-one/providers/"

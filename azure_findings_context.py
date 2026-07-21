@@ -51,6 +51,12 @@ FAMILY_DEFINITIONS = {
         "control_plane": "azure_resource_manager",
         "default_scope": "subscription",
     },
+    "Governance and compliance": {
+        "id": "governance_compliance",
+        "label": "Governance and compliance",
+        "control_plane": "azure_resource_manager",
+        "default_scope": "subscription",
+    },
     "Containers and Kubernetes": {
         "id": "containers_kubernetes",
         "label": "Containers and Kubernetes",
@@ -85,6 +91,9 @@ FAMILY_DEFINITIONS = {
 
 
 SERVICE_DEFINITIONS = {
+    "resource_lock_": ("resource_locks", "Azure resource locks", "protected resource"),
+    "advisor_": ("azure_advisor", "Azure Advisor", "recommendation"),
+    "policy_": ("azure_policy", "Azure Policy", "assignment or resource"),
     "machine_learning_": ("machine_learning", "Azure Machine Learning", "workspace"),
     "containerregistry_": ("container_registry", "Azure Container Registry", "registry"),
     "appinsights_": ("application_insights", "Application Insights", "component"),
