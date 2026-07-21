@@ -18,6 +18,3 @@ __pycache__/
 *.py[cod]
 .venv/
 .idea/
-
-# Local task tracking required by the development workflow
-TODO.md
