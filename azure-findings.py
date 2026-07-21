@@ -33,6 +33,7 @@ from azure_findings_review import (
     load_review_overrides,
     validate_finding_review,
 )
+from azure_findings_report import build_report_ready_output
 from azure_findings_triage import (
     apply_findings_triage,
     load_baseline_findings,
@@ -73,6 +74,15 @@ def parse_arguments():
         type=str,
         default=None,
         help="Path to save a flat list of findings for easier viewing in azure-present (defaults to <input-dir>/azure-findings-flat.json)",
+    )
+    parser.add_argument(
+        "--report-ready-output-file",
+        type=str,
+        default=None,
+        help=(
+            "Path to save versioned report-ready findings JSON "
+            "(defaults to <input-dir>/azure-findings-report-ready.json)."
+        ),
     )
     parser.add_argument(
         "--review-file",
@@ -3061,6 +3071,7 @@ def main():
         baseline_findings=baseline_findings,
     )
     output = sarif_output(input_dir, catalog, findings)
+    report_ready_output = build_report_ready_output(input_dir, findings)
     flat_output = {
         "input_dir": str(input_dir),
         "files_loaded": sorted(catalog.keys()),
@@ -3076,8 +3087,16 @@ def main():
         flat_output_path = resolve_output_path(input_dir, args.flat_output_file, "azure-findings-flat.json")
         with open(flat_output_path, "w", encoding="utf-8") as handle:
             json.dump(flat_output, handle, indent=2)
+        report_ready_output_path = resolve_output_path(
+            input_dir,
+            args.report_ready_output_file,
+            "azure-findings-report-ready.json",
+        )
+        with open(report_ready_output_path, "w", encoding="utf-8") as handle:
+            json.dump(report_ready_output, handle, indent=2)
         print(f"\nSaved findings JSON to: {output_path}")
         print(f"Saved flat findings JSON to: {flat_output_path}")
+        print(f"Saved report-ready findings JSON to: {report_ready_output_path}")
 
 
 if __name__ == "__main__":

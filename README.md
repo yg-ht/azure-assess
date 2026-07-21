@@ -163,6 +163,7 @@ Parameters:
 - `-o`, `--output-file`: path for the SARIF 2.1.0 findings output. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings.json`
 - `--no-save`: do not write findings JSON files; print summary output only
 - `--flat-output-file`: path for the flattened findings output used by `azure-present.py`. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings-flat.json`
+- `--report-ready-output-file`: path for the versioned report-ready findings export. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings-report-ready.json`
 - `--review-file`: optional versioned JSON file containing analyst review overrides keyed by canonical `finding_id`. Relative paths are resolved below `<input-dir>`
 - `--baseline-findings-file`: optional prior `azure-findings-flat.json` used for conservative retest comparison. Relative paths are resolved below `<input-dir>`
 
@@ -170,6 +171,7 @@ Outputs:
 
 - `azure-findings.json`: SARIF 2.1.0 output containing the full set of findings in the `found` state
 - `azure-findings-flat.json`: flattened findings rows for easier dashboard display
+- `azure-findings-report-ready.json`: versioned, compact report-processing export containing selected findings, publication readiness, report groups, and auditable exclusions
 
 Finding definition metadata:
 
@@ -241,6 +243,15 @@ Grouping, deduplication, and retesting:
 - Supplying `--baseline-findings-file` compares current rows with the same canonical definitions from a prior flat output. Outcomes distinguish new, persistent, potentially resolved, unchanged non-detections, changed scope, same-run comparisons, and inconclusive results. Definitions absent from the baseline remain explicitly not assessed.
 - `potentially_resolved` requires matching engagement scope, a different run, a current `not_found` result, measurable current assessment coverage, a successful collection run, hash-verified source datasets, and successful or empty relevant endpoint results. It is deliberately not labelled resolved because analyst verification may still be required.
 - Retest metadata records persisting, new, and potentially resolved asset IDs without deleting or changing current evidence. Stale baseline IDs, duplicate rows, invalid statuses, malformed envelopes, and baseline files over 100 MiB fail validation.
+
+Report-ready export:
+
+- Selection is driven by `review.report_ready.include`. Every unreviewed `candidate` remains selected by default, alongside confirmed, accepted-risk, and informational dispositions. False positives, duplicates, non-findings, and other excluded dispositions remain in the compact `excluded_findings` audit list.
+- Selection is separate from publication readiness. Each selected finding lists blockers such as missing analyst review, unauthored report narrative, insufficient evidence confidence, unavailable coverage, or absence of a positive automated result. Candidates therefore remain visible for processing without being misrepresented as ready to publish.
+- The assessment envelope consolidates engagement context, selection policy, summary counts, and stable report groups. Finding records contain definition and narrative fields, evaluation status, workflow state, contextual severity, affected assets, coverage, provenance, grouping, fingerprint, retest data, and attributed limitations.
+- Exact duplicate observations are represented once using their canonical observation while duplicate IDs and original, emitted, and duplicate counts remain explicit. The original flat and SARIF outputs retain every observation.
+- The export does not copy legacy raw `evidence`. Normalised observation data is recursively checked for credential-bearing field names, connection strings, private keys, JWTs, and signed URLs. Redacted values use `[REDACTED]`, and exact redaction paths are recorded. Traversal depth, node counts, and individual string lengths are bounded.
+- Analyst-authored narrative, rationale, and notes are also passed through the report redaction boundary. Analysts should still avoid placing credentials in review files or report prose.
 
 ### `azure-present.py`
 
