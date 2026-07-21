@@ -42,6 +42,26 @@ class FakeStdout:
         return next(self.lines, "")
 
 
+class AuthenticationContextTests(unittest.TestCase):
+    def test_validation_captures_the_active_account_when_scope_was_not_supplied(self):
+        account_result = mock.Mock(
+            returncode=0,
+            stdout=json.dumps({"id": "sub-active", "tenantId": "tenant-active"}),
+        )
+        azure_collect.AUTH_CONFIG = {
+            "auth_method": "existing",
+            "tenant_id": None,
+            "subscription_id": None,
+        }
+
+        with mock.patch.object(azure_collect, "run_az_command", return_value=account_result):
+            with mock.patch.object(azure_collect, "validate_access_token", return_value=True):
+                self.assertTrue(azure_collect.validate_auth_session())
+
+        self.assertEqual(azure_collect.AUTH_CONFIG["tenant_id"], "tenant-active")
+        self.assertEqual(azure_collect.AUTH_CONFIG["subscription_id"], "sub-active")
+
+
 class DefenderAssessmentsEndpointTests(unittest.TestCase):
     def test_defender_assessments_use_arm_rest_endpoint(self):
         endpoint = next(
@@ -792,8 +812,15 @@ class ManagedRoleDefinitionCacheTests(unittest.TestCase):
             azure_collect.SOURCE_RECORD_CACHE.clear()
             azure_collect.SOURCE_FILE_INDEX_CACHE.clear()
 
-            def fake_save_json(data, filename, append=False):
-                saved_payloads.append((data, filename, append))
+            def fake_save_json(
+                data,
+                filename,
+                append=False,
+                source_endpoint_identifiers=None,
+            ):
+                saved_payloads.append(
+                    (data, filename, append, source_endpoint_identifiers)
+                )
 
             with mock.patch.object(
                 azure_collect,
@@ -811,6 +838,10 @@ class ManagedRoleDefinitionCacheTests(unittest.TestCase):
             ],
         )
         self.assertEqual(saved_payloads[0][1], "az_role_definition_list_20260402-000000.json")
+        self.assertEqual(
+            saved_payloads[0][3],
+            ["az_role_definition_custom_list"],
+        )
 
     def test_role_assignment_enrichment_matches_subscription_neutral_builtin_role_ids(self):
         role_assignments = [

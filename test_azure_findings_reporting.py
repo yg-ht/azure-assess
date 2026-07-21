@@ -242,6 +242,45 @@ class FindingProvenanceTests(unittest.TestCase):
         self.assertEqual(provenance["limitations"], [])
         self.assertNotIn("do-not-copy", json.dumps(provenance))
 
+    def test_derived_dataset_collects_statuses_from_all_input_endpoints(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset_path = Path(tmpdir) / "role_enriched_run-one.json"
+            dataset_path.write_text(
+                json.dumps([{"name": "assignment-one"}]),
+                encoding="utf-8",
+            )
+            catalog = self.manifest_catalog(dataset_path, sha256_file(dataset_path))
+            manifest = catalog["azure-collection-manifest"]["data"]
+            manifest["datasets"][0]["source_endpoint_ids"] = [
+                "az_role_assignment_list",
+                "az_role_definition_custom_list",
+            ]
+            manifest["endpoint_runs"] = [
+                {
+                    "endpoint_id": "az_role_assignment_list",
+                    "status": "success",
+                    "output_files": [dataset_path.name],
+                },
+                {
+                    "endpoint_id": "az_role_definition_custom_list",
+                    "status": "empty",
+                    "output_files": [dataset_path.name],
+                },
+            ]
+            finding = example_finding(
+                [{"name": "assignment-one"}],
+                source_files=[str(dataset_path)],
+            )
+
+            normalise_finding_reporting(finding, catalog=catalog)
+
+        source_dataset = finding["reporting"]["provenance"]["source_datasets"][0]
+        self.assertEqual(
+            source_dataset["source_endpoint_ids"],
+            ["az_role_assignment_list", "az_role_definition_custom_list"],
+        )
+        self.assertEqual(source_dataset["collection_statuses"], ["empty", "success"])
+
     def test_manifest_hash_mismatch_is_an_explicit_limitation(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dataset_path = Path(tmpdir) / "az_storage_account_list_run-two.json"

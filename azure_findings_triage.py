@@ -398,9 +398,12 @@ def compare_retest(
     elif baseline_status == "found" and current_status == "found":
         outcome = "persistent"
         rationale.append("The finding remains present in a comparable assessment scope")
-    elif baseline_status != "found" and current_status == "found":
+    elif baseline_status == "not_found" and current_status == "found":
         outcome = "new"
         rationale.append("The finding is present but was not detected in the baseline")
+    elif baseline_status in INCOMPLETE_STATUSES and current_status == "found":
+        outcome = "inconclusive"
+        rationale.append("The baseline check status cannot establish prior non-detection")
     elif baseline_status == "found" and current_status in NON_DETECTED_STATUSES:
         adequate, limitations = collection_supports_resolution(finding)
         if adequate:

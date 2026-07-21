@@ -262,6 +262,11 @@ class CollectionManifestRecorder:
         with self._lock:
             self.tool["azure_cli_version"] = str(value) if value else None
 
+    def update_context(self, values: Mapping[str, Any]) -> None:
+        """Update run context after authentication establishes the active account."""
+        with self._lock:
+            self.context.update(redact_value(dict(values)))
+
     def record_execution(
         self,
         endpoint_name: str,
@@ -345,15 +350,26 @@ class CollectionManifestRecorder:
         append: bool = False,
         record_count: Optional[int] = None,
         source_endpoint_identifier: Optional[str] = None,
+        source_endpoint_identifiers: Optional[Iterable[str]] = None,
     ) -> None:
         """Record the identity and integrity metadata for a generated JSON dataset."""
         dataset_path = Path(path)
+        inferred_endpoint_id = self._source_endpoint_id(dataset_path)
+        source_endpoint_ids = [
+            endpoint_id(identifier)
+            for identifier in (source_endpoint_identifiers or [])
+            if identifier
+        ]
+        if source_endpoint_identifier:
+            source_endpoint_ids.insert(0, endpoint_id(source_endpoint_identifier))
+        source_endpoint_ids = list(dict.fromkeys(source_endpoint_ids))
+        if not source_endpoint_ids:
+            source_endpoint_ids = [inferred_endpoint_id]
         record = {
             "dataset_id": dataset_path.stem,
             "filename": dataset_path.name,
-            "source_endpoint_id": endpoint_id(source_endpoint_identifier)
-            if source_endpoint_identifier
-            else self._source_endpoint_id(dataset_path),
+            "source_endpoint_id": source_endpoint_ids[0],
+            "source_endpoint_ids": source_endpoint_ids,
             "record_count": result_item_count(data) if record_count is None else int(record_count),
             "sha256": sha256_file(dataset_path),
             "size_bytes": dataset_path.stat().st_size,
@@ -421,9 +437,13 @@ class CollectionManifestRecorder:
         datasets = sorted(self.datasets, key=lambda item: item["filename"])
         output_files_by_endpoint: Dict[str, List[str]] = {}
         for dataset in datasets:
-            output_files_by_endpoint.setdefault(dataset["source_endpoint_id"], []).append(
-                dataset["filename"]
-            )
+            source_endpoint_ids = dataset.get("source_endpoint_ids") or [
+                dataset["source_endpoint_id"]
+            ]
+            for source_endpoint_id in source_endpoint_ids:
+                output_files_by_endpoint.setdefault(source_endpoint_id, []).append(
+                    dataset["filename"]
+                )
         endpoint_runs = sorted(
             (
                 {

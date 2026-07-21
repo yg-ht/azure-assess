@@ -336,10 +336,15 @@ def source_dataset_records(
             "sha256": None,
             "size_bytes": None,
             "source_endpoint_id": None,
+            "source_endpoint_ids": [],
             "collection_statuses": [],
             "integrity_status": "manifest_unavailable" if manifest is None else "not_recorded",
         }
         if manifest_record:
+            source_endpoint_ids = manifest_record.get("source_endpoint_ids") or [
+                manifest_record.get("source_endpoint_id")
+            ]
+            source_endpoint_ids = [item for item in source_endpoint_ids if item]
             record.update(
                 {
                     "dataset_id": manifest_record.get("dataset_id"),
@@ -347,6 +352,7 @@ def source_dataset_records(
                     "sha256": manifest_record.get("sha256"),
                     "size_bytes": manifest_record.get("size_bytes"),
                     "source_endpoint_id": manifest_record.get("source_endpoint_id"),
+                    "source_endpoint_ids": source_endpoint_ids,
                 }
             )
             record["collection_statuses"] = sorted(
@@ -357,9 +363,9 @@ def source_dataset_records(
                     and (
                         filename in (endpoint_run.get("output_files") or [])
                         or (
-                            manifest_record.get("source_endpoint_id")
+                            source_endpoint_ids
                             and endpoint_run.get("endpoint_id")
-                            == manifest_record.get("source_endpoint_id")
+                            in source_endpoint_ids
                         )
                     )
                 }

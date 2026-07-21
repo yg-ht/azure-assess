@@ -341,6 +341,21 @@ class FindingRetestTests(unittest.TestCase):
 
         self.assertEqual(current["triage"]["retest"]["outcome"], "new")
 
+    def test_positive_finding_after_incomplete_baseline_is_inconclusive(self):
+        for baseline_status in ("no_data_to_assess", "not_implemented"):
+            with self.subTest(baseline_status=baseline_status):
+                baseline = triage_finding(
+                    status=baseline_status,
+                    run_id="run-baseline",
+                )
+                current = triage_finding(run_id="run-current")
+
+                normalise_finding_triage(current, baseline=baseline)
+
+                retest = current["triage"]["retest"]
+                self.assertEqual(retest["outcome"], "inconclusive")
+                self.assertTrue(any("baseline" in item.lower() for item in retest["rationale"]))
+
     def test_direct_comparison_requires_matching_finding_ids(self):
         baseline = triage_finding(run_id="run-baseline")
         baseline["finding_id"] = "different_finding"

@@ -1697,6 +1697,8 @@ def validate_access_token(resource):
 
 
 def validate_auth_session(subscription_id=None):
+    global AUTH_CONFIG
+
     print("[*] Verifying Azure CLI authentication context...")
     account_result = run_az_command("az account show --output json", capture_output=True)
     if account_result.returncode != 0:
@@ -1718,6 +1720,9 @@ def validate_auth_session(subscription_id=None):
         if not validate_access_token(resource):
             print(f"[!] Azure CLI could not obtain an access token for {resource}")
             return False
+
+    AUTH_CONFIG["tenant_id"] = account.get("tenantId") or AUTH_CONFIG.get("tenant_id")
+    AUTH_CONFIG["subscription_id"] = account.get("id") or AUTH_CONFIG.get("subscription_id")
 
     return True
 
@@ -2372,7 +2377,7 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
         exit(1)
 
 
-def save_json(data, filename, append=False):
+def save_json(data, filename, append=False, source_endpoint_identifiers=None):
     """Save data to a JSON file."""
     OUTPUT_DIR.mkdir(exist_ok=True)
     if append:
@@ -2387,7 +2392,12 @@ def save_json(data, filename, append=False):
         SOURCE_FILE_INDEX_CACHE.clear()
     if COLLECTION_MANIFEST is not None:
         try:
-            COLLECTION_MANIFEST.record_dataset(path, data, append=append)
+            COLLECTION_MANIFEST.record_dataset(
+                path,
+                data,
+                append=append,
+                source_endpoint_identifiers=source_endpoint_identifiers,
+            )
         except (OSError, ValueError) as exc:
             # Dataset persistence remains the primary operation. A failed
             # integrity calculation is reported as a manifest limitation.
@@ -2567,7 +2577,14 @@ def merge_role_definition_dataset(cache_path=None):
         print("[!] No role definitions available for merged role definition dataset.")
         return []
 
-    save_json(role_definitions, f"az_role_definition_list_{START_TIMESTAMP}.json")
+    source_endpoint_ids = ["az_role_definition_custom_list"]
+    if builtin_roles is None:
+        source_endpoint_ids.append("az_role_definition_list")
+    save_json(
+        role_definitions,
+        f"az_role_definition_list_{START_TIMESTAMP}.json",
+        source_endpoint_identifiers=source_endpoint_ids,
+    )
     return role_definitions
 
 
@@ -3124,6 +3141,13 @@ def filter_endpoints(keyword=None, endpoints=None):
 def execute_collection(args, max_workers):
     """Run the selected collection workflow and return whether it completed cleanly."""
     ensure_az_login(skip_permission_baseline=args.collect_managed_role_definitions_cache)
+    if COLLECTION_MANIFEST is not None:
+        COLLECTION_MANIFEST.update_context(
+            {
+                "tenant_id": AUTH_CONFIG.get("tenant_id"),
+                "subscription_id": AUTH_CONFIG.get("subscription_id"),
+            }
+        )
 
     if args.collect_managed_role_definitions_cache:
         if COLLECTION_MANIFEST is not None:
@@ -3197,7 +3221,15 @@ def execute_collection(args, max_workers):
 
             if assignment_result and role_def_result:
                 enriched_data = resolve_role_assignments(assignment_result, role_def_result)
-                save_json(enriched_data, f"role_enriched_{START_TIMESTAMP}.json")
+                save_json(
+                    enriched_data,
+                    f"role_enriched_{START_TIMESTAMP}.json",
+                    source_endpoint_identifiers=[
+                        "az_role_assignment_list",
+                        "az_role_definition_custom_list",
+                        "az_role_definition_list",
+                    ],
+                )
                 summarise_statuses(assignment_result)
             else:
                 print("No assignments or role definitions found - cannot enrich")

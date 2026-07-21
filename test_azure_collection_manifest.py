@@ -336,6 +336,71 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
         self.assertEqual(manifest["datasets"][0]["filename"], saved_path.name)
         self.assertEqual(manifest["datasets"][0]["record_count"], 1)
 
+    def test_derived_dataset_is_linked_to_each_input_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            dataset_path = output_dir / "role_enriched_run-lineage.json"
+            dataset = [{"id": "assignment-one"}]
+            dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+            recorder = CollectionManifestRecorder(
+                "run-lineage",
+                output_dir,
+                project_dir=output_dir,
+            )
+            for endpoint_id_value, endpoint_name in (
+                ("az_role_assignment_list", "Role Assignments"),
+                ("az_role_definition_custom_list", "Custom Role Definitions"),
+            ):
+                recorder.record_execution(
+                    endpoint_name,
+                    "base",
+                    endpoint_id_value,
+                    "2026-07-21T12:00:00Z",
+                    0.1,
+                    0,
+                    1,
+                    endpoint_identifier=endpoint_id_value,
+                )
+            recorder.record_dataset(
+                dataset_path,
+                dataset,
+                source_endpoint_identifiers=[
+                    "az_role_assignment_list",
+                    "az_role_definition_custom_list",
+                ],
+            )
+
+            manifest = recorder.finish()
+
+        self.assertEqual(
+            manifest["datasets"][0]["source_endpoint_ids"],
+            ["az_role_assignment_list", "az_role_definition_custom_list"],
+        )
+        self.assertTrue(
+            all(
+                dataset_path.name in endpoint["output_files"]
+                for endpoint in manifest["endpoint_runs"]
+            )
+        )
+
+    def test_context_can_be_updated_after_authentication(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-context",
+                Path(tmpdir),
+                context={"tenant_id": None, "subscription_id": None},
+                project_dir=Path(tmpdir),
+            )
+
+            recorder.update_context(
+                {"tenant_id": "tenant-active", "subscription_id": "sub-active"}
+            )
+
+            manifest = recorder.finish()
+
+        self.assertEqual(manifest["context"]["tenant_id"], "tenant-active")
+        self.assertEqual(manifest["context"]["subscription_id"], "sub-active")
+
 
 if __name__ == "__main__":
     unittest.main()
