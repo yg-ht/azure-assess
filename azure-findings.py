@@ -23,6 +23,12 @@ from azure_findings_shared import (
     unsupported,
 )
 from azure_findings_reporting import normalise_finding_reporting
+from azure_findings_review import (
+    apply_review_override,
+    apply_review_overrides,
+    load_review_overrides,
+    validate_finding_review,
+)
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
@@ -58,6 +64,15 @@ def parse_arguments():
         default=None,
         help="Path to save a flat list of findings for easier viewing in azure-present (defaults to <input-dir>/azure-findings-flat.json)",
     )
+    parser.add_argument(
+        "--review-file",
+        type=str,
+        default=None,
+        help=(
+            "Optional versioned JSON file containing analyst review overrides. "
+            "Relative paths are resolved below <input-dir>."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -84,6 +99,16 @@ def resolve_output_path(input_dir, output_file, default_filename):
             return output_path
         return base_input_dir / output_path
     return base_input_dir / default_filename
+
+
+def resolve_review_path(input_dir, review_file):
+    """Resolve an optional analyst review file below the input directory."""
+    if review_file is None:
+        return None
+    review_path = Path(review_file).expanduser()
+    if review_path.is_absolute():
+        return review_path
+    return Path(input_dir) / review_path
 
 
 def strip_timestamp(path):
@@ -305,11 +330,13 @@ def flat_rows(findings):
         ensure_finding_definition(finding)
         ensure_finding_reporting(finding)
         ensure_finding_coverage(finding)
+        ensure_finding_review(finding)
         row = {
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
             "reporting": finding["reporting"],
             "coverage": finding["coverage"],
+            "review": finding["review"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -363,6 +390,16 @@ def ensure_finding_coverage(finding, catalog=None, ordered_source_files=None):
         ordered_source_files=ordered_source_files,
     )
     return finding["coverage"]
+
+
+def ensure_finding_review(finding):
+    """Attach default review metadata to legacy finding objects."""
+    ensure_finding_coverage(finding)
+    if finding.get("review"):
+        validate_finding_review(finding)
+        return finding["review"]
+    apply_review_override(finding)
+    return finding["review"]
 
 
 def finding_headline_ids(finding):
@@ -444,6 +481,7 @@ def sarif_result(finding):
     ensure_finding_definition(finding)
     ensure_finding_reporting(finding)
     ensure_finding_coverage(finding)
+    ensure_finding_review(finding)
     result = {
         "ruleId": sarif_rule_id(finding),
         "level": sarif_level(finding["severity"]),
@@ -454,6 +492,7 @@ def sarif_result(finding):
             "definition": finding["definition"],
             "reporting": finding["reporting"],
             "coverage": finding["coverage"],
+            "review": finding["review"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -476,6 +515,7 @@ def sarif_output(input_dir, catalog, findings):
     for finding in found:
         ensure_finding_reporting(finding, catalog=catalog)
         ensure_finding_coverage(finding, catalog=catalog)
+        ensure_finding_review(finding)
         unique_rules.setdefault(sarif_rule_id(finding), sarif_rule_descriptor(finding))
     return {
         "$schema": SARIF_SCHEMA_URI,
@@ -545,7 +585,7 @@ def annotate_finding_definitions(findings):
     return validate_finding_definitions(findings)
 
 
-def evaluate_findings(catalog):
+def evaluate_findings(catalog, review_overrides=None):
     apim_services = dataset_records(catalog, "az_apim_show")
     ad_users = dataset_records(catalog, "az_ad_user_list")
     app_service_environments = dataset_records(catalog, "az_appservice_ase_show")
@@ -2925,7 +2965,7 @@ def evaluate_findings(catalog):
             ordered_source_files=source_files,
         )
 
-    return findings
+    return apply_review_overrides(findings, review_overrides)
 
 
 def print_summary(findings):
@@ -2933,7 +2973,10 @@ def print_summary(findings):
     print("=" * 31)
     for finding in findings:
         print(
-            f"[{finding['status']}] {finding['title']} | severity={finding['severity']} | evidence={finding['evidence_count']}"
+            f"[{finding['status']}] {finding['title']} | severity={finding['severity']} "
+            f"| evidence={finding['evidence_count']} "
+            f"| disposition={finding['review']['disposition']} "
+            f"| confidence={finding['review']['confidence']['level']}"
         )
 
 
@@ -2941,7 +2984,9 @@ def main():
     args = parse_arguments()
     input_dir = resolve_input_dir(args.input_dir)
     catalog = load_catalog(input_dir)
-    findings = evaluate_findings(catalog)
+    review_path = resolve_review_path(input_dir, args.review_file)
+    review_overrides = load_review_overrides(review_path) if review_path else None
+    findings = evaluate_findings(catalog, review_overrides=review_overrides)
     output = sarif_output(input_dir, catalog, findings)
     flat_output = {
         "input_dir": str(input_dir),

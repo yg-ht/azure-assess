@@ -163,6 +163,7 @@ Parameters:
 - `-o`, `--output-file`: path for the SARIF 2.1.0 findings output. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings.json`
 - `--no-save`: do not write findings JSON files; print summary output only
 - `--flat-output-file`: path for the flattened findings output used by `azure-present.py`. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings-flat.json`
+- `--review-file`: optional versioned JSON file containing analyst review overrides keyed by canonical `finding_id`. Relative paths are resolved below `<input-dir>`
 
 Outputs:
 
@@ -188,6 +189,34 @@ Assessment coverage:
 - Current denominators are labelled `proxy`: they count unique identifiable assets in the first populated primary source, or source records when stable asset identities are unavailable. Duplicate asset records are counted once.
 - Percentages are emitted only when affected asset identities match an asset denominator. A found result with unmatched identities does not emit a misleading zero-percent value.
 - Check-specific eligibility filters are not yet instrumented, so the collected population must not be described as an exact eligible population. Missing data and unimplemented checks use `unavailable` and `not_implemented` coverage states instead of numeric claims.
+
+Analyst review:
+
+- Found checks default to an `unreviewed` `candidate` disposition and remain included for report-ready processing. Candidates are not silently excluded merely because an analyst has not reviewed them yet.
+- Automated evidence confidence is derived separately from observations, collection status, endpoint completeness, and dataset integrity. It is labelled `automated`; an analyst override may replace it with explicitly sourced analyst confidence.
+- Analyst dispositions include `confirmed`, `false_positive`, `accepted_risk`, `duplicate`, `informational`, `not_applicable`, and the default status-derived dispositions. The emitted review metadata marks false positives, duplicates, inconclusive checks, and non-findings for exclusion from subsequent report-ready processing.
+- Every override requires a reviewer and a timezone-aware `reviewed_at` value. Unknown finding IDs, duplicate entries, invalid dispositions, malformed timestamps, and unsupported schemas fail validation.
+
+Example review file:
+
+```json
+{
+  "schema_version": "1.0",
+  "reviews": [
+    {
+      "finding_id": "storage_blob_public_access_level_is_disabled",
+      "disposition": "confirmed",
+      "confidence": {
+        "level": "high",
+        "rationale": "The affected storage account was verified in the Azure portal."
+      },
+      "reviewer": "Analyst name",
+      "reviewed_at": "2026-07-21T12:00:00Z",
+      "notes": "Confirmed during manual review."
+    }
+  ]
+}
+```
 
 ### `azure-present.py`
 
