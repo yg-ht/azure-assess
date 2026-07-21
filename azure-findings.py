@@ -11,6 +11,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from azure_findings_checks import *
+from azure_findings_coverage import normalise_finding_coverage
 from azure_findings_definitions import (
     EXISTING_FINDING_HEADLINES,
     REQUESTED_HEADLINES,
@@ -303,10 +304,12 @@ def flat_rows(findings):
     for finding in findings:
         ensure_finding_definition(finding)
         ensure_finding_reporting(finding)
+        ensure_finding_coverage(finding)
         row = {
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
             "reporting": finding["reporting"],
+            "coverage": finding["coverage"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -341,6 +344,25 @@ def ensure_finding_reporting(finding, catalog=None):
         return reporting
     normalise_finding_reporting(finding, catalog=catalog)
     return finding["reporting"]
+
+
+def ensure_finding_coverage(finding, catalog=None, ordered_source_files=None):
+    """Attach coverage metadata to legacy finding objects."""
+    ensure_finding_reporting(finding, catalog=catalog)
+    coverage = finding.get("coverage")
+    attributed_sources = (coverage or {}).get("denominator", {}).get("source_files")
+    if coverage and (
+        catalog is None
+        or attributed_sources
+        or coverage.get("status") == "not_implemented"
+    ):
+        return coverage
+    normalise_finding_coverage(
+        finding,
+        catalog=catalog,
+        ordered_source_files=ordered_source_files,
+    )
+    return finding["coverage"]
 
 
 def finding_headline_ids(finding):
@@ -421,6 +443,7 @@ def sarif_locations(finding):
 def sarif_result(finding):
     ensure_finding_definition(finding)
     ensure_finding_reporting(finding)
+    ensure_finding_coverage(finding)
     result = {
         "ruleId": sarif_rule_id(finding),
         "level": sarif_level(finding["severity"]),
@@ -430,6 +453,7 @@ def sarif_result(finding):
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
             "reporting": finding["reporting"],
+            "coverage": finding["coverage"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -451,6 +475,7 @@ def sarif_output(input_dir, catalog, findings):
     unique_rules = {}
     for finding in found:
         ensure_finding_reporting(finding, catalog=catalog)
+        ensure_finding_coverage(finding, catalog=catalog)
         unique_rules.setdefault(sarif_rule_id(finding), sarif_rule_descriptor(finding))
     return {
         "$schema": SARIF_SCHEMA_URI,
@@ -2891,8 +2916,14 @@ def evaluate_findings(catalog):
     findings = annotate_finding_definitions(findings)
 
     for finding in findings:
-        attach_references(finding, reference_sources.get(finding["title"], []))
+        source_files = reference_sources.get(finding["title"], [])
+        attach_references(finding, source_files)
         normalise_finding_reporting(finding, catalog=catalog)
+        normalise_finding_coverage(
+            finding,
+            catalog=catalog,
+            ordered_source_files=source_files,
+        )
 
     return findings
 

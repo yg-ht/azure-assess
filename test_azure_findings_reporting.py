@@ -346,6 +346,8 @@ class FindingProvenanceTests(unittest.TestCase):
             ],
             "verified",
         )
+        self.assertEqual(finding["coverage"]["denominator"]["value"], 1)
+        self.assertEqual(finding["coverage"]["affected_percentage"], 100.0)
 
     def test_older_collection_without_manifest_remains_supported(self):
         finding = example_finding(

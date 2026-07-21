@@ -182,6 +182,13 @@ Normalised reporting data:
 - Current source attribution is explicitly marked `finding_level`, because the checks currently identify the set of input datasets used by a finding rather than the exact source record for every evidence item.
 - When a collection manifest is available, provenance links the collection run and source endpoint, verifies each source dataset against its recorded SHA-256 hash, and exposes partial runs, hash mismatches, and unavailable metadata as limitations. Collections created before manifests were introduced remain supported.
 
+Assessment coverage:
+
+- Each finding includes a versioned `coverage` object with a denominator, affected observation and asset counts, an optional affected percentage, and explicit limitations.
+- Current denominators are labelled `proxy`: they count unique identifiable assets in the first populated primary source, or source records when stable asset identities are unavailable. Duplicate asset records are counted once.
+- Percentages are emitted only when affected asset identities match an asset denominator. A found result with unmatched identities does not emit a misleading zero-percent value.
+- Check-specific eligibility filters are not yet instrumented, so the collected population must not be described as an exact eligible population. Missing data and unimplemented checks use `unavailable` and `not_implemented` coverage states instead of numeric claims.
+
 ### `azure-present.py`
 
 Purpose:
