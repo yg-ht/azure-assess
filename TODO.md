@@ -11,12 +11,12 @@
 ### Offline finding correlations
 
 - [x] Add exact logical dataset contracts and conservative completeness handling for offline correlations.
-- [x] Surface critical resources without effective deletion locks.
-- [x] Surface Azure Policy non-compliance, required-assignment gaps, and evaluation failures.
+- [x] Surface critical resources without effective deletion locks, gating absence conclusions on complete lock data.
+- [x] Surface Azure Policy non-compliance, complete-inventory assignment gaps, and state/event evaluation failures.
 - [x] Correlate security Advisor recommendations with Defender assessments.
 - [x] Correlate public access with approved private endpoints across service datasets.
 - [x] Surface privileged non-human identities and application credential-expiry concerns.
-- [x] Build end-to-end public-IP, frontend, backend, route, and effective-NSG attack paths.
+- [x] Build end-to-end public-IP, frontend, backend, route, and effective-NSG attack paths with source/destination-aware first-match and default-deny semantics.
 
 ### Report-ready findings
 

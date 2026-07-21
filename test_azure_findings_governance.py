@@ -52,6 +52,13 @@ class ResourceLockTests(unittest.TestCase):
         self.assertEqual(result.eligible_assets, [])
         self.assertEqual(result.observations, [])
 
+    def test_partial_lock_inventory_does_not_support_an_absence_finding(self):
+        result = analyse_critical_resource_locks(
+            [self.resource()], [], "positive_only"
+        )
+        self.assertEqual(result.observations, [])
+        self.assertEqual(len(result.eligible_assets), 1)
+
 
 class PolicyAssignmentTests(unittest.TestCase):
     DEFINITION_ID = "1f3afdf9-d0c9-4c3d-847f-89da613e70a8"
@@ -97,6 +104,13 @@ class PolicyAssignmentTests(unittest.TestCase):
             result.observations[0]["nonEnforcedAssignmentIds"],
             [self.assignment()["id"]],
         )
+
+    def test_partial_assignment_inventory_does_not_support_a_missing_finding(self):
+        result = analyse_expected_policy_assignments(
+            [], ["sub-one"], "inconclusive"
+        )
+        self.assertEqual(result.observations, [])
+        self.assertEqual(len(result.eligible_assets), 1)
 
     def test_returned_management_group_assignment_satisfies_subscription(self):
         assignment = self.assignment()
@@ -179,6 +193,15 @@ class PolicyStateTests(unittest.TestCase):
             events=[self.state("Unknown", "2026-07-21T12:00:00Z", error="AliasNotFound")],
         )
         self.assertEqual(errors.observations[0]["evaluationError"], "AliasNotFound")
+
+    def test_policy_error_support_can_include_event_completeness(self):
+        non_compliant, errors = analyse_policy_states(
+            [],
+            "positive_and_negative",
+            error_conclusion_support="inconclusive",
+        )
+        self.assertEqual(non_compliant.conclusion_support, "positive_and_negative")
+        self.assertEqual(errors.conclusion_support, "inconclusive")
 
 
 class AdvisorDefenderTests(unittest.TestCase):

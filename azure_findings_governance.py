@@ -108,7 +108,7 @@ def analyse_critical_resource_locks(
             {"id": resource.get("id"), "name": resource.get("name"), "type": current_type}
         )
         protected = effective_lock(resource_id, locks_by_scope)
-        if protected is not None:
+        if protected is not None or conclusion_support != "positive_and_negative":
             continue
         observations.append(
             {
@@ -215,6 +215,10 @@ def analyse_expected_policy_assignments(
             )
             if satisfied:
                 continue
+            if conclusion_support != "positive_and_negative":
+                # A partial assignment inventory cannot prove that another
+                # applicable enforced assignment is absent.
+                continue
             non_enforced = [
                 assignment.get("id")
                 for assignment in assignments
@@ -319,6 +323,7 @@ def analyse_policy_states(
     conclusion_support: str,
     source_files: Iterable[str] = (),
     events: Iterable[Mapping[str, Any]] = (),
+    error_conclusion_support: Optional[str] = None,
 ) -> Tuple[CorrelationResult, CorrelationResult]:
     """Return separate current non-compliance and explicit evaluation-error results."""
     current = current_policy_states(states)
@@ -397,11 +402,18 @@ def analyse_policy_states(
         "eligible_assets": eligible_assets,
         "source_files": sorted(set(source_files)),
         "limitations": limitations,
-        "conclusion_support": conclusion_support,
     }
     return (
-        CorrelationResult(observations=non_compliant, **common),
-        CorrelationResult(observations=errors, **common),
+        CorrelationResult(
+            observations=non_compliant,
+            conclusion_support=conclusion_support,
+            **common,
+        ),
+        CorrelationResult(
+            observations=errors,
+            conclusion_support=error_conclusion_support or conclusion_support,
+            **common,
+        ),
     )
 
 

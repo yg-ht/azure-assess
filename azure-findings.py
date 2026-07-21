@@ -3096,11 +3096,16 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         offline_inputs.conclusion_support(("policy_states",)),
         offline_sources("policy_states", "policy_events"),
         events=offline_records("policy_events"),
+        error_conclusion_support=offline_inputs.conclusion_support(
+            ("policy_states", "policy_events")
+        ),
     )
     policy_non_compliance = with_input_limitations(
         policy_non_compliance, "policy_states"
     )
-    policy_errors = with_input_limitations(policy_errors, "policy_states")
+    policy_errors = with_input_limitations(
+        policy_errors, "policy_states", "policy_events"
+    )
     findings.extend(
         [
             correlation_finding(

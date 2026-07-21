@@ -160,6 +160,46 @@ class OfflineCorrelationIntegrationTests(unittest.TestCase):
             by_id["entra_non_human_identity_privileged_broad_scope_role"]["status"],
             "no_data_to_assess",
         )
+        self.assertEqual(
+            by_id["policy_required_security_assignment_missing"]["status"],
+            "no_data_to_assess",
+        )
+        self.assertEqual(
+            by_id["policy_evaluation_failure"]["status"],
+            "no_data_to_assess",
+        )
+
+    def test_failed_lock_collection_does_not_create_absence_findings(self):
+        catalog = self.catalog()
+        for endpoint in catalog["azure-collection-manifest"]["data"]["endpoint_runs"]:
+            if endpoint["endpoint_id"] == "az_lock_list":
+                endpoint["status"] = "failed"
+        findings = azure_findings.evaluate_findings(catalog)
+        by_id = {finding["finding_id"]: finding for finding in findings}
+        lock_finding = by_id[
+            "resource_lock_critical_resource_delete_protection_missing"
+        ]
+        self.assertEqual(lock_finding["status"], "no_data_to_assess")
+        self.assertEqual(lock_finding["evidence"], [])
+        self.assertTrue(
+            any("locks" in item for item in lock_finding["coverage"]["limitations"])
+        )
+
+    def test_failed_policy_assignment_collection_does_not_create_a_gap(self):
+        catalog = self.catalog()
+        catalog["az_policy_assignment_list"] = {
+            "path": "/data/az_policy_assignment_list_20260721-120000.json",
+            "data": [],
+            "error": None,
+        }
+        catalog["azure-collection-manifest"]["data"]["endpoint_runs"].append(
+            {"endpoint_id": "az_policy_assignment_list", "status": "failed"}
+        )
+        findings = azure_findings.evaluate_findings(catalog)
+        by_id = {finding["finding_id"]: finding for finding in findings}
+        assignment_finding = by_id["policy_required_security_assignment_missing"]
+        self.assertEqual(assignment_finding["status"], "no_data_to_assess")
+        self.assertEqual(assignment_finding["evidence"], [])
 
 
 if __name__ == "__main__":
