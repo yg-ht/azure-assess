@@ -11,14 +11,37 @@ from pathlib import Path
 from urllib.parse import quote
 
 from azure_findings_checks import *
-from azure_findings_definitions import EXISTING_FINDING_HEADLINES, REQUESTED_HEADLINES
+from azure_findings_context import (
+    normalise_finding_context,
+    validate_finding_context,
+)
+from azure_findings_coverage import normalise_finding_coverage
+from azure_findings_definitions import (
+    EXISTING_FINDING_HEADLINES,
+    REQUESTED_HEADLINES,
+    finding_definition,
+    validate_finding_definitions,
+)
 from azure_findings_shared import (
     normalize_text,
     unsupported,
 )
+from azure_findings_reporting import normalise_finding_reporting
+from azure_findings_review import (
+    apply_review_override,
+    apply_review_overrides,
+    load_review_overrides,
+    validate_finding_review,
+)
+from azure_findings_report import build_report_ready_output
+from azure_findings_triage import (
+    apply_findings_triage,
+    load_baseline_findings,
+    normalise_finding_triage,
+    validate_finding_triage,
+)
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
-NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
 DEFAULT_INPUT_DIR = "azure-collect"
 
@@ -52,6 +75,33 @@ def parse_arguments():
         default=None,
         help="Path to save a flat list of findings for easier viewing in azure-present (defaults to <input-dir>/azure-findings-flat.json)",
     )
+    parser.add_argument(
+        "--report-ready-output-file",
+        type=str,
+        default=None,
+        help=(
+            "Path to save versioned report-ready findings JSON "
+            "(defaults to <input-dir>/azure-findings-report-ready.json)."
+        ),
+    )
+    parser.add_argument(
+        "--review-file",
+        type=str,
+        default=None,
+        help=(
+            "Optional versioned JSON file containing analyst review overrides. "
+            "Relative paths are resolved below <input-dir>."
+        ),
+    )
+    parser.add_argument(
+        "--baseline-findings-file",
+        type=str,
+        default=None,
+        help=(
+            "Optional prior azure-findings-flat.json used for conservative retest comparison. "
+            "Relative paths are resolved below <input-dir>."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -78,6 +128,26 @@ def resolve_output_path(input_dir, output_file, default_filename):
             return output_path
         return base_input_dir / output_path
     return base_input_dir / default_filename
+
+
+def resolve_review_path(input_dir, review_file):
+    """Resolve an optional analyst review file below the input directory."""
+    if review_file is None:
+        return None
+    review_path = Path(review_file).expanduser()
+    if review_path.is_absolute():
+        return review_path
+    return Path(input_dir) / review_path
+
+
+def resolve_baseline_path(input_dir, baseline_file):
+    """Resolve an optional prior flat findings file below the input directory."""
+    if baseline_file is None:
+        return None
+    baseline_path = Path(baseline_file).expanduser()
+    if baseline_path.is_absolute():
+        return baseline_path
+    return Path(input_dir) / baseline_path
 
 
 def strip_timestamp(path):
@@ -296,7 +366,20 @@ def attach_references(finding, source_files):
 def flat_rows(findings):
     rows = []
     for finding in findings:
+        ensure_finding_definition(finding)
+        ensure_finding_reporting(finding)
+        ensure_finding_context(finding)
+        ensure_finding_coverage(finding)
+        ensure_finding_review(finding)
+        ensure_finding_triage(finding)
         row = {
+            "finding_id": finding["finding_id"],
+            "definition": finding["definition"],
+            "reporting": finding["reporting"],
+            "context": finding["context"],
+            "coverage": finding["coverage"],
+            "review": finding["review"],
+            "triage": finding["triage"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -311,16 +394,85 @@ def flat_rows(findings):
     return rows
 
 
+def ensure_finding_definition(finding):
+    """Attach definition metadata when a helper receives a legacy finding object."""
+    definition = finding.get("definition")
+    if definition and finding.get("finding_id") == definition.get("finding_id"):
+        return definition
+    definition = finding_definition(finding["title"], finding["severity"])
+    finding["finding_id"] = definition["finding_id"]
+    finding["definition"] = definition
+    return definition
+
+
+def ensure_finding_reporting(finding, catalog=None):
+    """Attach report-facing normalisation to legacy finding objects."""
+    ensure_finding_definition(finding)
+    reporting = finding.get("reporting")
+    collection_run = (reporting or {}).get("provenance", {}).get("collection_run")
+    if reporting and (not catalog or collection_run is not None):
+        return reporting
+    normalise_finding_reporting(finding, catalog=catalog)
+    return finding["reporting"]
+
+
+def ensure_finding_coverage(finding, catalog=None, ordered_source_files=None):
+    """Attach coverage metadata to legacy finding objects."""
+    ensure_finding_reporting(finding, catalog=catalog)
+    coverage = finding.get("coverage")
+    attributed_sources = (coverage or {}).get("denominator", {}).get("source_files")
+    if coverage and (
+        catalog is None
+        or attributed_sources
+        or coverage.get("status") == "not_implemented"
+    ):
+        return coverage
+    normalise_finding_coverage(
+        finding,
+        catalog=catalog,
+        ordered_source_files=ordered_source_files,
+    )
+    return finding["coverage"]
+
+
+def ensure_finding_context(finding, catalog=None):
+    """Attach report-facing Azure and engagement context to legacy findings."""
+    ensure_finding_reporting(finding, catalog=catalog)
+    if finding.get("context") and catalog is None:
+        validate_finding_context(finding)
+        return finding["context"]
+    normalise_finding_context(finding, catalog=catalog)
+    return finding["context"]
+
+
+def ensure_finding_review(finding):
+    """Attach default review metadata to legacy finding objects."""
+    ensure_finding_coverage(finding)
+    if finding.get("review"):
+        validate_finding_review(finding)
+        return finding["review"]
+    apply_review_override(finding)
+    return finding["review"]
+
+
+def ensure_finding_triage(finding):
+    """Attach grouping and lifecycle metadata to legacy finding objects."""
+    ensure_finding_context(finding)
+    ensure_finding_coverage(finding)
+    ensure_finding_review(finding)
+    if finding.get("triage"):
+        validate_finding_triage(finding)
+        return finding["triage"]
+    normalise_finding_triage(finding)
+    return finding["triage"]
+
+
 def finding_headline_ids(finding):
-    return EXISTING_FINDING_HEADLINES.get(finding["title"], [])
+    return ensure_finding_definition(finding)["check_ids"]
 
 
 def sarif_rule_id(finding):
-    headline_ids = finding_headline_ids(finding)
-    if headline_ids:
-        return headline_ids[0]
-    normalized = NON_ALNUM_RE.sub("_", finding["title"].strip().lower()).strip("_")
-    return normalized or "azure_finding"
+    return ensure_finding_definition(finding)["finding_id"]
 
 
 def sarif_level(severity):
@@ -334,6 +486,7 @@ def sarif_level(severity):
 
 
 def sarif_rule_descriptor(finding):
+    ensure_finding_definition(finding)
     descriptor = {
         "id": sarif_rule_id(finding),
         "name": finding["title"],
@@ -341,6 +494,8 @@ def sarif_rule_descriptor(finding):
         "fullDescription": {"text": finding["reason"]},
         "defaultConfiguration": {"level": sarif_level(finding["severity"])},
         "properties": {
+            "finding_id": finding["finding_id"],
+            "definition": finding["definition"],
             "severity": finding["severity"],
             "headline_ids": finding_headline_ids(finding),
         },
@@ -388,12 +543,25 @@ def sarif_locations(finding):
 
 
 def sarif_result(finding):
+    ensure_finding_definition(finding)
+    ensure_finding_reporting(finding)
+    ensure_finding_context(finding)
+    ensure_finding_coverage(finding)
+    ensure_finding_review(finding)
+    ensure_finding_triage(finding)
     result = {
         "ruleId": sarif_rule_id(finding),
         "level": sarif_level(finding["severity"]),
         "kind": "fail",
         "message": {"text": sarif_result_message(finding)},
         "properties": {
+            "finding_id": finding["finding_id"],
+            "definition": finding["definition"],
+            "reporting": finding["reporting"],
+            "context": finding["context"],
+            "coverage": finding["coverage"],
+            "review": finding["review"],
+            "triage": finding["triage"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -414,6 +582,11 @@ def sarif_output(input_dir, catalog, findings):
     found = [finding for finding in findings if finding["status"] == "found"]
     unique_rules = {}
     for finding in found:
+        ensure_finding_reporting(finding, catalog=catalog)
+        ensure_finding_context(finding, catalog=catalog)
+        ensure_finding_coverage(finding, catalog=catalog)
+        ensure_finding_review(finding)
+        ensure_finding_triage(finding)
         unique_rules.setdefault(sarif_rule_id(finding), sarif_rule_descriptor(finding))
     return {
         "$schema": SARIF_SCHEMA_URI,
@@ -474,7 +647,16 @@ def annotate_requested_headlines(findings):
     return findings
 
 
-def evaluate_findings(catalog):
+def annotate_finding_definitions(findings):
+    """Attach canonical identity and status-independent report metadata."""
+    for finding in findings:
+        definition = finding_definition(finding["title"], finding["severity"])
+        finding["finding_id"] = definition["finding_id"]
+        finding["definition"] = definition
+    return validate_finding_definitions(findings)
+
+
+def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     apim_services = dataset_records(catalog, "az_apim_show")
     ad_users = dataset_records(catalog, "az_ad_user_list")
     app_service_environments = dataset_records(catalog, "az_appservice_ase_show")
@@ -2842,11 +3024,21 @@ def evaluate_findings(catalog):
     }
 
     findings = annotate_requested_headlines(findings)
+    findings = annotate_finding_definitions(findings)
 
     for finding in findings:
-        attach_references(finding, reference_sources.get(finding["title"], []))
+        source_files = reference_sources.get(finding["title"], [])
+        attach_references(finding, source_files)
+        normalise_finding_reporting(finding, catalog=catalog)
+        normalise_finding_context(finding, catalog=catalog)
+        normalise_finding_coverage(
+            finding,
+            catalog=catalog,
+            ordered_source_files=source_files,
+        )
 
-    return findings
+    findings = apply_review_overrides(findings, review_overrides)
+    return apply_findings_triage(findings, baseline_findings=baseline_findings)
 
 
 def print_summary(findings):
@@ -2854,7 +3046,14 @@ def print_summary(findings):
     print("=" * 31)
     for finding in findings:
         print(
-            f"[{finding['status']}] {finding['title']} | severity={finding['severity']} | evidence={finding['evidence_count']}"
+            f"[{finding['status']}] {finding['title']} | severity={finding['severity']} "
+            f"| evidence={finding['evidence_count']} "
+            f"| disposition={finding['review']['disposition']} "
+            f"| confidence={finding['review']['confidence']['level']} "
+            f"| service={finding['context']['family']['service_label']} "
+            f"| scope={finding['context']['scope']['level']} "
+            f"| contextual_severity={finding['triage']['severity']['contextual']} "
+            f"| retest={finding['triage']['retest']['outcome']}"
         )
 
 
@@ -2862,8 +3061,17 @@ def main():
     args = parse_arguments()
     input_dir = resolve_input_dir(args.input_dir)
     catalog = load_catalog(input_dir)
-    findings = evaluate_findings(catalog)
+    review_path = resolve_review_path(input_dir, args.review_file)
+    review_overrides = load_review_overrides(review_path) if review_path else None
+    baseline_path = resolve_baseline_path(input_dir, args.baseline_findings_file)
+    baseline_findings = load_baseline_findings(baseline_path) if baseline_path else None
+    findings = evaluate_findings(
+        catalog,
+        review_overrides=review_overrides,
+        baseline_findings=baseline_findings,
+    )
     output = sarif_output(input_dir, catalog, findings)
+    report_ready_output = build_report_ready_output(input_dir, findings)
     flat_output = {
         "input_dir": str(input_dir),
         "files_loaded": sorted(catalog.keys()),
@@ -2879,8 +3087,16 @@ def main():
         flat_output_path = resolve_output_path(input_dir, args.flat_output_file, "azure-findings-flat.json")
         with open(flat_output_path, "w", encoding="utf-8") as handle:
             json.dump(flat_output, handle, indent=2)
+        report_ready_output_path = resolve_output_path(
+            input_dir,
+            args.report_ready_output_file,
+            "azure-findings-report-ready.json",
+        )
+        with open(report_ready_output_path, "w", encoding="utf-8") as handle:
+            json.dump(report_ready_output, handle, indent=2)
         print(f"\nSaved findings JSON to: {output_path}")
         print(f"Saved flat findings JSON to: {flat_output_path}")
+        print(f"Saved report-ready findings JSON to: {report_ready_output_path}")
 
 
 if __name__ == "__main__":
