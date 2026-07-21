@@ -1228,6 +1228,7 @@ class AzureCliExtensionInstallTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertEqual(result["json"], [{"name": "hub-one"}])
+        self.assertEqual(result["_retry_count"], 1)
         self.assertEqual(
             [call.args[0] for call in popen_mock.call_args_list],
             ["az iot hub list --output json", "az iot hub list --output json"],

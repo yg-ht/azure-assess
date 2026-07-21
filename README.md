@@ -115,6 +115,9 @@ Notes:
 - Authentication validation checks both the current Azure account context and token acquisition for Azure Resource Manager and Microsoft Graph before collection starts.
 - `--subscription-id` applies the Azure CLI account context after authentication and can also be supplied through `AZURE_SUBSCRIPTION_ID`.
 - Output files are timestamped in their filenames, which is used by the dashboard to track dataset history.
+- Every collection run also writes `azure-collection-manifest_<timestamp>.json`. The manifest records the selected endpoint executions, whether each execution succeeded, returned no records, failed, was unauthorised, was skipped, or was not attempted, plus record counts and SHA-256 hashes for generated datasets.
+- A manifest run status of `partial` means an endpoint failed, was unauthorised or was not attempted, or the top-level workflow did not complete. Legitimately skipped endpoints remain visible individually. Review `endpoint_runs`, `errors`, and `limitations` before treating an absent finding as evidence of a secure configuration.
+- Manifest command entries use configured command templates rather than substituted commands. Credential- and token-like values are redacted, and raw Azure CLI output is not persisted in the manifest.
 - Normal collection combines live custom Azure RBAC role definitions with the managed role definition cache when it exists. If the cache has not been generated, the collector falls back to a live full role definition collection.
 - Managed role definition cache generation skips customer-facing collection and permission baseline checks so the cache is not mixed with customer custom roles or audit output.
 

@@ -70,6 +70,8 @@ from pathlib import Path
 from time import monotonic, sleep
 from tqdm import tqdm
 
+from azure_collection_manifest import CollectionManifestRecorder, utc_timestamp
+
 AUTH_CONFIG = {}
 DEBUG = False
 MAX_DEBUG_STDOUT_CHARS = 8000
@@ -82,6 +84,7 @@ SOURCE_FILE_INDEX_CACHE = {}
 SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE = {}
 TIMING_RECORDS = []
 COLLECTION_ERRORS = []
+COLLECTION_MANIFEST = None
 
 PERMISSION_BASELINE_CHECKED = False
 SOURCE_FILE_INDEX_LOCK = threading.Lock()
@@ -246,8 +249,16 @@ def result_item_count(data):
     return 0
 
 
-def timed_run_az_cli(cmd, endpoint_name=None, category="collection"):
+def timed_run_az_cli(
+    cmd,
+    endpoint_name=None,
+    category="collection",
+    command_template=None,
+    parameter_context=None,
+    endpoint_identifier=None,
+):
     """Run an Azure CLI command and capture timing metadata."""
+    started_at = utc_timestamp()
     started = monotonic()
     previous_endpoint = getattr(AZURE_CLI_CONTEXT, "endpoint_name", None)
     previous_category = getattr(AZURE_CLI_CONTEXT, "category", None)
@@ -259,6 +270,7 @@ def timed_run_az_cli(cmd, endpoint_name=None, category="collection"):
         AZURE_CLI_CONTEXT.endpoint_name = previous_endpoint
         AZURE_CLI_CONTEXT.category = previous_category
     duration = monotonic() - started
+    retry_count = result.get("_retry_count", 0)
     record_timing(
         endpoint_name,
         category,
@@ -266,7 +278,27 @@ def timed_run_az_cli(cmd, endpoint_name=None, category="collection"):
         duration,
         returncode=result.get("returncode"),
         result_count=result_item_count(result.get("json")),
+        retry_count=retry_count,
     )
+    if COLLECTION_MANIFEST is not None:
+        COLLECTION_MANIFEST.record_execution(
+            endpoint_name=endpoint_name or "unknown",
+            category=category,
+            command_template=command_template or cmd,
+            parameter_context=parameter_context,
+            started_at=started_at,
+            duration_seconds=duration,
+            returncode=result.get("returncode"),
+            result_count=result_item_count(result.get("json")),
+            error_message=result.get("collection_error"),
+            diagnostic_text=(
+                result.get("stdout")
+                if result.get("returncode") not in (None, 0) or result.get("collection_error")
+                else None
+            ),
+            endpoint_identifier=endpoint_identifier,
+            retry_count=retry_count,
+        )
     return result
 
 
@@ -419,13 +451,28 @@ def write_managed_role_definitions_cache(role_definitions, path=None, az_version
 
     os.replace(temp_name, cache_path)
     print(f"[+] Saved managed role definition cache: {cache_path}")
+    return cache_path
 
 
 def collect_managed_role_definitions_cache(path=None):
     """Collect only Microsoft-managed role definitions and write the dedicated cache."""
     command = "az role definition list --query \"[?roleType=='BuiltInRole']\" --output json"
+    started_at = utc_timestamp()
+    started = monotonic()
     role_definitions, error = run_json_command(command)
     if error:
+        if COLLECTION_MANIFEST is not None:
+            COLLECTION_MANIFEST.record_execution(
+                endpoint_name="Managed Role Definitions",
+                category="cache",
+                command_template=command,
+                started_at=started_at,
+                duration_seconds=monotonic() - started,
+                returncode=1,
+                result_count=None,
+                error_message="Managed role definition collection failed",
+                diagnostic_text=error,
+            )
         print(f"[ERROR] Failed to collect managed role definitions: {error}")
         exit(1)
 
@@ -436,8 +483,38 @@ def collect_managed_role_definitions_cache(path=None):
     if version_error:
         az_version = {"error": version_error}
 
-    write_managed_role_definitions_cache(role_definitions, path=path, az_version=az_version)
+    cache_path = write_managed_role_definitions_cache(
+        role_definitions,
+        path=path,
+        az_version=az_version,
+    )
+    if COLLECTION_MANIFEST is not None:
+        if version_error:
+            COLLECTION_MANIFEST.add_limitation(
+                f"Could not determine Azure CLI version: {version_error}"
+            )
+        COLLECTION_MANIFEST.set_azure_cli_version(
+            az_version.get("azure-cli") if isinstance(az_version, dict) else None
+        )
+        COLLECTION_MANIFEST.record_execution(
+            endpoint_name="Managed Role Definitions",
+            category="cache",
+            command_template=command,
+            started_at=started_at,
+            duration_seconds=monotonic() - started,
+            returncode=0,
+            result_count=len(role_definitions),
+            endpoint_identifier="managed_role_definitions_cache",
+        )
+        if cache_path is not None:
+            COLLECTION_MANIFEST.record_dataset(
+                cache_path,
+                role_definitions,
+                record_count=len(role_definitions),
+                source_endpoint_identifier="managed_role_definitions_cache",
+            )
     print(f"[✓] Cached {len(role_definitions)} managed role definitions.")
+    return cache_path
 
 
 AZURE_CLI_ENDPOINTS = [
@@ -2230,6 +2307,7 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
         if result["returncode"] != 0 and not error_message:
             retry_result = install_missing_extension_and_retry(cmd, result)
             if retry_result:
+                retry_result["_retry_count"] = result.get("_retry_count", 0) + 1
                 result = retry_result
                 if DEBUG:
                     print(f"Return code after extension retry: {result['returncode']}")
@@ -2270,6 +2348,10 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
                     error_message = "Something has gone wrong - data returned but not JSON"
 
         if error_message:
+            # Retain only the application-level classification for the manifest.
+            # Command output is used transiently to classify permission failures,
+            # but is never persisted by the manifest recorder.
+            result["collection_error"] = error_message
             record_collection_error(cmd, error_message, result, endpoint_name=endpoint_name, category=category)
             context = endpoint_name or cmd
             print(f"[!] Recorded command error for {context}: {error_message}")
@@ -2303,6 +2385,16 @@ def save_json(data, filename, append=False):
     print(f"[+] Saved: {path}")
     with SOURCE_FILE_INDEX_LOCK:
         SOURCE_FILE_INDEX_CACHE.clear()
+    if COLLECTION_MANIFEST is not None:
+        try:
+            COLLECTION_MANIFEST.record_dataset(path, data, append=append)
+        except (OSError, ValueError) as exc:
+            # Dataset persistence remains the primary operation. A failed
+            # integrity calculation is reported as a manifest limitation.
+            COLLECTION_MANIFEST.add_limitation(
+                f"Could not record integrity metadata for {path.name}: {exc}"
+            )
+    return path
 
 
 def attach_collection_context(data, endpoint_name, param_set):
@@ -2699,7 +2791,14 @@ def collect_parameter_set(endpoint, param_set):
 
     print(f"[*] Fetching: {name} with parameters: {param_set} ...")
     try:
-        result = timed_run_az_cli(cli_command, endpoint_name=name, category="parameterised")
+        result = timed_run_az_cli(
+            cli_command,
+            endpoint_name=name,
+            category="parameterised",
+            command_template=cli_template,
+            parameter_context=param_set,
+            endpoint_identifier=endpoint_output_prefix(endpoint),
+        )
         data = result.get("json", [])
 
         if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
@@ -2729,6 +2828,20 @@ def collect_parameter_set(endpoint, param_set):
         return [data]
 
     except Exception as e:
+        if COLLECTION_MANIFEST is not None:
+            COLLECTION_MANIFEST.record_execution(
+                endpoint_name=name,
+                category="parameterised",
+                command_template=cli_template,
+                parameter_context=param_set,
+                started_at=utc_timestamp(),
+                duration_seconds=0,
+                returncode=1,
+                result_count=None,
+                error_message="Collected data could not be post-processed",
+                diagnostic_text=str(e),
+                endpoint_identifier=endpoint_output_prefix(endpoint),
+            )
         print(f"[!] Data collect with params failed for {name} with {param_set}: {e}")
         return []
 
@@ -2794,6 +2907,14 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
 
         if missing_params:
             print(f"[~] Skipping {name}: Missing required parameters: {missing_params}")
+            if COLLECTION_MANIFEST is not None:
+                COLLECTION_MANIFEST.record_skipped_endpoint(
+                    name,
+                    "parameterised",
+                    cli_template,
+                    f"Missing required parameters: {', '.join(missing_params)}",
+                    endpoint_identifier=endpoint_output_prefix(endpoint),
+                )
             continue
 
         from collections import defaultdict
@@ -2831,6 +2952,14 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
 
             if not grouped_records:
                 print(f"[~] Skipping {name}: Missing usable parameter records from source: {source}")
+                if COLLECTION_MANIFEST is not None:
+                    COLLECTION_MANIFEST.record_skipped_endpoint(
+                        name,
+                        "parameterised",
+                        cli_template,
+                        f"Missing usable parameter records from source: {source}",
+                        endpoint_identifier=endpoint_output_prefix(endpoint),
+                    )
                 zipped_groups = []
                 break
 
@@ -2904,7 +3033,13 @@ def collect_endpoint(endpoint):
 
     print(f"[*] Fetching: {name} ...")
     try:
-        result = timed_run_az_cli(cmd, endpoint_name=name, category="base")
+        result = timed_run_az_cli(
+            cmd,
+            endpoint_name=name,
+            category="base",
+            command_template=cmd,
+            endpoint_identifier=endpoint_output_prefix(endpoint),
+        )
         data = result.get("json", [])
 
         if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
@@ -2930,6 +3065,19 @@ def collect_endpoint(endpoint):
         return data
 
     except Exception as e:
+        if COLLECTION_MANIFEST is not None:
+            COLLECTION_MANIFEST.record_execution(
+                endpoint_name=name,
+                category="base",
+                command_template=cmd,
+                started_at=utc_timestamp(),
+                duration_seconds=0,
+                returncode=1,
+                result_count=None,
+                error_message="Collected data could not be post-processed",
+                diagnostic_text=str(e),
+                endpoint_identifier=endpoint_output_prefix(endpoint),
+            )
         print(f"[!] Failed to collect {name}: {e}")
         return None
 
@@ -2973,36 +3121,43 @@ def filter_endpoints(keyword=None, endpoints=None):
     return filtered
 
 
-if __name__ == "__main__":
-    global START_TIMESTAMP
-    START_TIMESTAMP = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    args = parse_arguments()
-    AUTH_CONFIG = build_auth_config(args)
-    max_workers = bounded_worker_count(args.max_workers)
-
-    if args.debug == True:
-        DEBUG = True
-    else:
-        DEBUG = False
-
-    if args.listendpoints or args.listparamendpoints:
-        list_all_enabled_cli_endpoints(args.listparamendpoints)
-
-    # Set the output directory dynamically
-    global OUTPUT_DIR
-    OUTPUT_DIR = Path(args.output_dir)
+def execute_collection(args, max_workers):
+    """Run the selected collection workflow and return whether it completed cleanly."""
+    ensure_az_login(skip_permission_baseline=args.collect_managed_role_definitions_cache)
 
     if args.collect_managed_role_definitions_cache:
-        ensure_az_login(skip_permission_baseline=True)
+        if COLLECTION_MANIFEST is not None:
+            COLLECTION_MANIFEST.register_endpoints(
+                [
+                    {
+                        "name": "Managed Role Definitions",
+                        "cli_command": "az role definition list --query \"[?roleType=='BuiltInRole']\" --output json",
+                        "output_prefix": "managed_role_definitions_cache",
+                    }
+                ],
+                "cache",
+            )
         collect_managed_role_definitions_cache(args.managed_role_definitions_cache_path)
         if args.timing_summary:
             print_timing_summary()
-        exit(0)
+        return True
 
-    ensure_az_login()
+    # Azure CLI version collection is diagnostic only. A version lookup failure
+    # must not prevent assessment data from being collected.
+    az_version, version_error = run_json_command("az version --output json")
+    if COLLECTION_MANIFEST is not None:
+        if isinstance(az_version, dict):
+            COLLECTION_MANIFEST.set_azure_cli_version(az_version.get("azure-cli"))
+        elif version_error:
+            COLLECTION_MANIFEST.add_limitation(
+                f"Could not determine Azure CLI version: {version_error}"
+            )
 
     if not args.paramendpointsonly:
-        collect_data(filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS), max_workers=max_workers)
+        base_endpoints = filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS)
+        if COLLECTION_MANIFEST is not None:
+            COLLECTION_MANIFEST.register_endpoints(base_endpoints, "base")
+        collect_data(base_endpoints, max_workers=max_workers)
         if not args.endpoint or "role definition" in str(args.endpoint).lower():
             merge_role_definition_dataset(args.managed_role_definitions_cache_path)
 
@@ -3011,8 +3166,11 @@ if __name__ == "__main__":
     if args.paramendpointsonly:
         print("[~] Parameter-only mode enabled: allowing existing source files from previous runs.")
 
+    parameterised_endpoints = filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS_PARAMS)
+    if COLLECTION_MANIFEST is not None:
+        COLLECTION_MANIFEST.register_endpoints(parameterised_endpoints, "parameterised")
     collect_data_with_params(
-        filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS_PARAMS),
+        parameterised_endpoints,
         current_run_only=current_run_only,
         max_workers=max_workers,
     )
@@ -3020,7 +3178,7 @@ if __name__ == "__main__":
     if not args.donotenrich and not args.endpoint:
         # Special handling for role assignments
         try:
-            print(f"[+] Enriching roles with assignments and permissions...")
+            print("[+] Enriching roles with assignments and permissions...")
             assignment_result = load_current_dataset("az_role_assignment_list")
             if not assignment_result:
                 assignment_result = timed_run_az_cli(
@@ -3042,15 +3200,73 @@ if __name__ == "__main__":
                 save_json(enriched_data, f"role_enriched_{START_TIMESTAMP}.json")
                 summarise_statuses(assignment_result)
             else:
-                print(f"No assignments or role definitions found - cannot enrich")
-        except Exception as e:
-            print(f"[!] Failed to enrich data: {e}")
+                print("No assignments or role definitions found - cannot enrich")
+        except Exception as exc:
+            print(f"[!] Failed to enrich data: {exc}")
+            if COLLECTION_MANIFEST is not None:
+                COLLECTION_MANIFEST.add_limitation(
+                    f"Role assignment enrichment failed: {exc}"
+                )
 
     if args.timing_summary:
         print_timing_summary()
 
     print_collection_error_summary()
     if COLLECTION_ERRORS:
-        exit(1)
+        return False
 
     print("[✓] Azure audit data collection complete.")
+    return True
+
+
+if __name__ == "__main__":
+    global START_TIMESTAMP
+    START_TIMESTAMP = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    args = parse_arguments()
+    AUTH_CONFIG = build_auth_config(args)
+    max_workers = bounded_worker_count(args.max_workers)
+
+    if args.debug == True:
+        DEBUG = True
+    else:
+        DEBUG = False
+
+    if args.listendpoints or args.listparamendpoints:
+        list_all_enabled_cli_endpoints(args.listparamendpoints)
+
+    # Set the output directory dynamically
+    global OUTPUT_DIR
+    OUTPUT_DIR = Path(args.output_dir)
+    COLLECTION_MANIFEST = CollectionManifestRecorder(
+        run_id=START_TIMESTAMP,
+        output_dir=OUTPUT_DIR,
+        context={
+            "auth_method": AUTH_CONFIG.get("auth_method"),
+            "tenant_id": AUTH_CONFIG.get("tenant_id"),
+            "subscription_id": AUTH_CONFIG.get("subscription_id"),
+        },
+        options={
+            "endpoint_filter": args.endpoint,
+            "parameter_endpoints_only": args.paramendpointsonly,
+            "enrichment_enabled": not args.donotenrich,
+            "max_workers": max_workers,
+        },
+        project_dir=Path(__file__).resolve().parent,
+    )
+
+    collection_successful = False
+    manifest_written = False
+    try:
+        collection_successful = execute_collection(args, max_workers)
+    finally:
+        try:
+            manifest_path = COLLECTION_MANIFEST.write(
+                execution_successful=collection_successful
+            )
+            manifest_written = True
+            print(f"[+] Saved collection manifest: {manifest_path}")
+        except (OSError, TypeError, ValueError) as exc:
+            print(f"[ERROR] Failed to save collection manifest: {exc}")
+
+    if not collection_successful or not manifest_written:
+        exit(1)
