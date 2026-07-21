@@ -183,6 +183,15 @@ Normalised reporting data:
 - Current source attribution is explicitly marked `finding_level`, because the checks currently identify the set of input datasets used by a finding rather than the exact source record for every evidence item.
 - When a collection manifest is available, provenance links the collection run and source endpoint, verifies each source dataset against its recorded SHA-256 hash, and exposes partial runs, hash mismatches, and unavailable metadata as limitations. Collections created before manifests were introduced remain supported.
 
+Azure and engagement context:
+
+- Each finding includes a versioned `context` object which separates engagement metadata, finding-family classification, affected scope, selected family-specific attributes, and limitations.
+- Engagement context records collected tenant and subscription identities, subscription display names and state where available, the selected subscription, collection run identity and timing, and whether the manifest and subscription inventory were available. Missing scope data is declared rather than inferred.
+- Family metadata classifies every current finding under a stable report family and Azure service, identifies the relevant control plane, and supplies a primary report subject such as a storage account, Entra tenant identity, Kubernetes cluster, or SQL server.
+- Scope context summarises affected asset names and kinds, subscription IDs, resource groups, resource types, Azure locations, and observation counts. Resource ID components are parsed case-insensitively from normalised Azure resource identifiers when separate fields are absent.
+- `context.attributes` contains only an allow-listed set of report-useful fields for its family, such as network protocols and ports, identity and role types, runtime or TLS versions, public-network settings, or monitoring destinations. Arbitrary evidence keys, credentials, tokens, and keys are not copied into context. Extraction depth, traversal, string length, and repeated values are bounded, with truncation recorded as a limitation.
+- Context remains a concise index into `reporting.assets` and `reporting.observations`; it does not replace the underlying evidence or claim that unavailable location or resource metadata was assessed.
+
 Assessment coverage:
 
 - Each finding includes a versioned `coverage` object with a denominator, affected observation and asset counts, an optional affected percentage, and explicit limitations.

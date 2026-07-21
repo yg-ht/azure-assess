@@ -11,6 +11,10 @@ from pathlib import Path
 from urllib.parse import quote
 
 from azure_findings_checks import *
+from azure_findings_context import (
+    normalise_finding_context,
+    validate_finding_context,
+)
 from azure_findings_coverage import normalise_finding_coverage
 from azure_findings_definitions import (
     EXISTING_FINDING_HEADLINES,
@@ -329,12 +333,14 @@ def flat_rows(findings):
     for finding in findings:
         ensure_finding_definition(finding)
         ensure_finding_reporting(finding)
+        ensure_finding_context(finding)
         ensure_finding_coverage(finding)
         ensure_finding_review(finding)
         row = {
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
             "reporting": finding["reporting"],
+            "context": finding["context"],
             "coverage": finding["coverage"],
             "review": finding["review"],
             "title": finding["title"],
@@ -390,6 +396,16 @@ def ensure_finding_coverage(finding, catalog=None, ordered_source_files=None):
         ordered_source_files=ordered_source_files,
     )
     return finding["coverage"]
+
+
+def ensure_finding_context(finding, catalog=None):
+    """Attach report-facing Azure and engagement context to legacy findings."""
+    ensure_finding_reporting(finding, catalog=catalog)
+    if finding.get("context") and catalog is None:
+        validate_finding_context(finding)
+        return finding["context"]
+    normalise_finding_context(finding, catalog=catalog)
+    return finding["context"]
 
 
 def ensure_finding_review(finding):
@@ -480,6 +496,7 @@ def sarif_locations(finding):
 def sarif_result(finding):
     ensure_finding_definition(finding)
     ensure_finding_reporting(finding)
+    ensure_finding_context(finding)
     ensure_finding_coverage(finding)
     ensure_finding_review(finding)
     result = {
@@ -491,6 +508,7 @@ def sarif_result(finding):
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
             "reporting": finding["reporting"],
+            "context": finding["context"],
             "coverage": finding["coverage"],
             "review": finding["review"],
             "title": finding["title"],
@@ -514,6 +532,7 @@ def sarif_output(input_dir, catalog, findings):
     unique_rules = {}
     for finding in found:
         ensure_finding_reporting(finding, catalog=catalog)
+        ensure_finding_context(finding, catalog=catalog)
         ensure_finding_coverage(finding, catalog=catalog)
         ensure_finding_review(finding)
         unique_rules.setdefault(sarif_rule_id(finding), sarif_rule_descriptor(finding))
@@ -2959,6 +2978,7 @@ def evaluate_findings(catalog, review_overrides=None):
         source_files = reference_sources.get(finding["title"], [])
         attach_references(finding, source_files)
         normalise_finding_reporting(finding, catalog=catalog)
+        normalise_finding_context(finding, catalog=catalog)
         normalise_finding_coverage(
             finding,
             catalog=catalog,
@@ -2976,7 +2996,9 @@ def print_summary(findings):
             f"[{finding['status']}] {finding['title']} | severity={finding['severity']} "
             f"| evidence={finding['evidence_count']} "
             f"| disposition={finding['review']['disposition']} "
-            f"| confidence={finding['review']['confidence']['level']}"
+            f"| confidence={finding['review']['confidence']['level']} "
+            f"| service={finding['context']['family']['service_label']} "
+            f"| scope={finding['context']['scope']['level']}"
         )
 
 
