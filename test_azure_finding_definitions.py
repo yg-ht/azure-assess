@@ -31,7 +31,7 @@ class FindingDefinitionIdentityTests(unittest.TestCase):
     def test_every_current_finding_has_a_unique_canonical_id(self):
         finding_ids = [finding["finding_id"] for finding in self.findings]
 
-        self.assertEqual(len(finding_ids), 205)
+        self.assertEqual(len(finding_ids), 215)
         self.assertEqual(len(finding_ids), len(set(finding_ids)))
         self.assertTrue(all(finding_id == finding_id.lower() for finding_id in finding_ids))
 

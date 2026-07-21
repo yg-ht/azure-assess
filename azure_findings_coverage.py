@@ -124,6 +124,27 @@ def affected_asset_ids(finding: Mapping[str, Any]) -> set:
     }
 
 
+def explicit_eligible_identifiers(finding: Mapping[str, Any]) -> set:
+    """Return check-specific eligible identities supplied by a correlation analyzer."""
+    identifiers = set()
+    for asset in finding.get("_coverage_eligible_assets") or []:
+        if not isinstance(asset, Mapping):
+            continue
+        value = asset.get("id") or asset.get("identifier")
+        if value:
+            identifiers.add(str(value).strip().casefold().rstrip("/"))
+    return identifiers
+
+
+def reporting_asset_identifiers(finding: Mapping[str, Any]) -> set:
+    """Return normalised report asset identifiers for exact population matching."""
+    return {
+        str(asset.get("identifier")).strip().casefold().rstrip("/")
+        for asset in finding.get("reporting", {}).get("assets", [])
+        if asset.get("identifier") and asset.get("kind") != "assessment_scope"
+    }
+
+
 def unavailable_coverage(status: str, limitations: Iterable[str]) -> Dict[str, Any]:
     """Build a complete unavailable or not-implemented coverage object."""
     return {
@@ -165,6 +186,44 @@ def normalise_finding_coverage(
         if ordered_source_files is not None
         else finding.get("references", {}).get("source_files", [])
     )
+    explicit_population = explicit_eligible_identifiers(finding)
+    if finding.get("_coverage_eligible_assets") is not None and status in {"found", "not_found"}:
+        matched = explicit_population.intersection(reporting_asset_identifiers(finding))
+        percentage = None
+        if explicit_population:
+            percentage = round((len(matched) / len(explicit_population)) * 100, 2)
+            if finding.get("evidence_count") and not matched:
+                percentage = None
+        finding["coverage"] = {
+            "schema_version": COVERAGE_SCHEMA_VERSION,
+            "status": "proxy",
+            "denominator": {
+                "value": len(explicit_population),
+                "unit": "assets",
+                "basis": "check_specific_eligible_assets",
+                "source_files": [Path(item).name for item in source_files],
+            },
+            "affected": {
+                "observations": int(finding.get("evidence_count") or 0),
+                "assets": len(affected_asset_ids(finding)),
+                "matched_denominator_assets": len(matched),
+            },
+            "affected_percentage": percentage,
+            "limitations": list(
+                dict.fromkeys(
+                    list(finding.get("_correlation_limitations") or [])
+                    + (
+                        []
+                        if not finding.get("evidence_count") or matched
+                        else [
+                            "Affected observations could not be matched to the eligible-asset identifiers"
+                        ]
+                    )
+                )
+            ),
+        }
+        validate_finding_coverage(finding)
+        return finding
     source_file, records = select_primary_source(source_files, catalog)
     denominator, population_asset_ids = population_denominator(records)
     affected_ids = affected_asset_ids(finding)
@@ -175,7 +234,8 @@ def normalise_finding_coverage(
     if status == "no_data_to_assess":
         coverage = unavailable_coverage(
             "unavailable",
-            ["Required source data was unavailable, so coverage cannot be measured"],
+            ["Required source data was unavailable, so coverage cannot be measured"]
+            + list(finding.get("_correlation_limitations") or []),
         )
         if source_file is not None:
             coverage["denominator"].update(denominator)
