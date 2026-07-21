@@ -11,14 +11,18 @@ from pathlib import Path
 from urllib.parse import quote
 
 from azure_findings_checks import *
-from azure_findings_definitions import EXISTING_FINDING_HEADLINES, REQUESTED_HEADLINES
+from azure_findings_definitions import (
+    EXISTING_FINDING_HEADLINES,
+    REQUESTED_HEADLINES,
+    finding_definition,
+    validate_finding_definitions,
+)
 from azure_findings_shared import (
     normalize_text,
     unsupported,
 )
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
-NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
 DEFAULT_INPUT_DIR = "azure-collect"
 
@@ -296,7 +300,10 @@ def attach_references(finding, source_files):
 def flat_rows(findings):
     rows = []
     for finding in findings:
+        ensure_finding_definition(finding)
         row = {
+            "finding_id": finding["finding_id"],
+            "definition": finding["definition"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -311,16 +318,23 @@ def flat_rows(findings):
     return rows
 
 
+def ensure_finding_definition(finding):
+    """Attach definition metadata when a helper receives a legacy finding object."""
+    definition = finding.get("definition")
+    if definition and finding.get("finding_id") == definition.get("finding_id"):
+        return definition
+    definition = finding_definition(finding["title"], finding["severity"])
+    finding["finding_id"] = definition["finding_id"]
+    finding["definition"] = definition
+    return definition
+
+
 def finding_headline_ids(finding):
-    return EXISTING_FINDING_HEADLINES.get(finding["title"], [])
+    return ensure_finding_definition(finding)["check_ids"]
 
 
 def sarif_rule_id(finding):
-    headline_ids = finding_headline_ids(finding)
-    if headline_ids:
-        return headline_ids[0]
-    normalized = NON_ALNUM_RE.sub("_", finding["title"].strip().lower()).strip("_")
-    return normalized or "azure_finding"
+    return ensure_finding_definition(finding)["finding_id"]
 
 
 def sarif_level(severity):
@@ -334,6 +348,7 @@ def sarif_level(severity):
 
 
 def sarif_rule_descriptor(finding):
+    ensure_finding_definition(finding)
     descriptor = {
         "id": sarif_rule_id(finding),
         "name": finding["title"],
@@ -341,6 +356,8 @@ def sarif_rule_descriptor(finding):
         "fullDescription": {"text": finding["reason"]},
         "defaultConfiguration": {"level": sarif_level(finding["severity"])},
         "properties": {
+            "finding_id": finding["finding_id"],
+            "definition": finding["definition"],
             "severity": finding["severity"],
             "headline_ids": finding_headline_ids(finding),
         },
@@ -388,12 +405,15 @@ def sarif_locations(finding):
 
 
 def sarif_result(finding):
+    ensure_finding_definition(finding)
     result = {
         "ruleId": sarif_rule_id(finding),
         "level": sarif_level(finding["severity"]),
         "kind": "fail",
         "message": {"text": sarif_result_message(finding)},
         "properties": {
+            "finding_id": finding["finding_id"],
+            "definition": finding["definition"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -472,6 +492,15 @@ def annotate_requested_headlines(findings):
         )
 
     return findings
+
+
+def annotate_finding_definitions(findings):
+    """Attach canonical identity and status-independent report metadata."""
+    for finding in findings:
+        definition = finding_definition(finding["title"], finding["severity"])
+        finding["finding_id"] = definition["finding_id"]
+        finding["definition"] = definition
+    return validate_finding_definitions(findings)
 
 
 def evaluate_findings(catalog):
@@ -2842,6 +2871,7 @@ def evaluate_findings(catalog):
     }
 
     findings = annotate_requested_headlines(findings)
+    findings = annotate_finding_definitions(findings)
 
     for finding in findings:
         attach_references(finding, reference_sources.get(finding["title"], []))

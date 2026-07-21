@@ -169,6 +169,12 @@ Outputs:
 - `azure-findings.json`: SARIF 2.1.0 output containing the full set of findings in the `found` state
 - `azure-findings-flat.json`: flattened findings rows for easier dashboard display
 
+Finding definition metadata:
+
+- Every evaluated check has a unique, lower-case `finding_id`. SARIF uses this canonical ID as `ruleId`, and the flat output includes it alongside each row.
+- Existing requested-headline identifiers remain available in `definition.check_ids`. These are compatibility aliases and may be shared by related checks, so consumers should use `finding_id` as the primary key.
+- `definition` also records its schema and definition versions, report title, category, default severity, and a versioned `report` narrative contract. Narrative fields remain explicitly marked `not_authored` until report text is curated rather than being populated with unsafe generic advice.
+
 ### `azure-present.py`
 
 Purpose:

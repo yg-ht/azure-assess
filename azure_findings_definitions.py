@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+import re
+
 REQUESTED_HEADLINES = [
     "aisearch_service_not_publicly_accessible",
     "aks_cluster_rbac_enabled",
@@ -843,3 +845,178 @@ EXISTING_FINDING_HEADLINES = {
         "vm_sufficient_daily_backup_retention_period",
     ],
 }
+
+
+FINDING_DEFINITION_SCHEMA_VERSION = "1.0"
+FINDING_DEFINITION_VERSION = 1
+FINDING_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+# These IDs are deliberately pinned rather than regenerated from report titles.
+# The overrides cover checks which had no legacy headline ID and checks whose
+# first legacy ID collided with another independently evaluated finding.
+FINDING_ID_OVERRIDES = {
+    "Unauthenticated Guest Users Present in Azure AD": "entra_unauthenticated_guest_users_present",
+    "Access to Azure Key Vault not restricted to trusted source addresses": (
+        "keyvault_access_not_restricted_to_trusted_sources"
+    ),
+    "Key Vault Allows Public Network Access": "keyvault_public_network_access_enabled",
+    "Security Contacts Not Configured": "defender_security_contacts_not_configured",
+    "Security Contact Email Address Not Configured": "defender_security_contact_email_not_configured",
+    "AKS clusters with local accounts enabled": "aks_local_accounts_enabled",
+    "AKS clusters without authorized API server IP ranges": "aks_authorized_api_server_ip_ranges_missing",
+    "Network security groups expose common data ports to the Internet": "network_nsg_common_data_ports_exposed",
+    "NSG Inbound Rule Allows Internet Access to All Ports": "network_nsg_all_ports_exposed",
+    "NSG Inbound Rule Allows Internet Access to MSSQL Service": "network_nsg_mssql_exposed",
+    "NSG Inbound Rule Allows Internet Access to Exposed Services": "network_nsg_common_services_exposed",
+    "Azure App Services do not enforce FTPS-only": "app_ftps_only_not_enforced",
+    "Azure App Services have remote debugging enabled": "app_remote_debugging_enabled",
+    "Azure App Services allow wildcard CORS origins": "app_wildcard_cors_enabled",
+    "Azure App Services have no access restrictions configured": "app_access_restrictions_missing",
+    "Azure App Services have unrestricted SCM endpoints": "app_scm_access_restrictions_missing",
+    "App Service Running Outdated .NET Version": "app_dotnet_runtime_outdated",
+    "App Service Running Outdated Programming Language Version": "app_programming_language_runtime_outdated",
+    "Security Contact Email Notifications Not Enabled": "defender_security_contact_email_notifications_disabled",
+    "Security Contact Admin Email Notifications Not Enabled": "defender_security_contact_admin_notifications_disabled",
+    "Activity Log Profile Does Not Capture All Events": "monitor_activity_log_profile_incomplete",
+    "PostgreSQL Server Connection Throttling Not Enabled": "postgresql_connection_throttling_logging_disabled",
+    "PostgreSQL Server Duration Logging Not Enabled": "postgresql_duration_logging_disabled",
+    "PostgreSQL Server Firewall Allows Access from Any IP": "postgresql_firewall_any_ip_allowed",
+    "SQL Server Threat Detection Alerts Not Enabled": "sqlserver_threat_detection_alerts_disabled",
+    "SQL Server Threat Detection Retention Period Too Low": "sqlserver_threat_detection_retention_too_short",
+    "SQL Server Threat Detection Email Alerts Not Enabled": "sqlserver_threat_detection_email_alerts_disabled",
+    "SQL Database Auditing Not Enabled": "sql_database_auditing_disabled",
+    "SQL Database Auditing Retention Period Too Low": "sql_database_auditing_retention_too_short",
+    "SQL Database Threat Detection Not Enabled": "sql_database_threat_detection_disabled",
+    "SQL Database Threat Detection Alerts Not Enabled": "sql_database_threat_detection_alerts_disabled",
+    "SQL Database Threat Detection Retention Period Too Low": "sql_database_threat_detection_retention_too_short",
+    "SQL Database Threat Detection Email Alerts Not Enabled": "sql_database_threat_detection_email_alerts_disabled",
+    "SQL Server Vulnerability Assessment Scan Report Recipients Not Configured": (
+        "sqlserver_va_report_recipients_missing"
+    ),
+    "VM Disk Encryption Not Enabled": "vm_disk_encryption_disabled",
+    "VM Not Using Managed Disks": "vm_managed_disks_not_used",
+    "Unapproved VM Extensions Installed": "vm_unapproved_extensions_installed",
+    "Diagnostic Settings Not Configured": "monitor_resource_diagnostic_settings_missing",
+    "Azure Subscription-level activity logs without a 'Diagnostic Setting' exist": (
+        "monitor_subscription_diagnostic_settings_missing"
+    ),
+    "Azure Key Vault not recoverable": "keyvault_recoverability_disabled",
+    "Key Vault Recovery Protection Not Enabled": "keyvault_recovery_protection_disabled",
+    "Storage accounts do not trust Azure services network bypass": "storage_trusted_services_bypass_disabled",
+    "Storage Account Permits Trusted Microsoft Services Bypass": "storage_trusted_services_bypass_enabled",
+}
+
+CATEGORY_PREFIXES = (
+    (("entra_", "iam_"), "Identity and access management"),
+    (("network_",), "Network security"),
+    (("storage_",), "Storage security"),
+    (("keyvault_",), "Secrets and key management"),
+    (("monitor_",), "Logging and monitoring"),
+    (("defender_",), "Security posture management"),
+    (("aks_", "kubernetes_", "containerregistry_"), "Containers and Kubernetes"),
+    (
+        (
+            "app_",
+            "appinsights_",
+            "apim_",
+            "aisearch_",
+            "search_",
+            "cognitive_",
+        ),
+        "Application and platform services",
+    ),
+    (("vm_", "machine_learning_", "databricks_", "hdinsight_", "synapse_"), "Compute and analytics"),
+    (("sql_", "sqlserver_", "mysql_", "postgresql_", "cosmosdb_", "redis_"), "Database security"),
+    (("eventgrid_", "servicebus_", "signalr_", "iot_"), "Integration and messaging"),
+)
+
+
+def slug_finding_id(value):
+    """Return a conservative fallback ID for a newly introduced title."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    return normalized or "azure_finding"
+
+
+def canonical_finding_id(title):
+    """Return the pinned canonical ID for a finding title."""
+    if title in FINDING_ID_OVERRIDES:
+        return FINDING_ID_OVERRIDES[title]
+    legacy_ids = EXISTING_FINDING_HEADLINES.get(title, [])
+    if legacy_ids:
+        return legacy_ids[0]
+    return slug_finding_id(title)
+
+
+def finding_category(finding_id):
+    """Map a canonical finding ID to a stable report category."""
+    for prefixes, category in CATEGORY_PREFIXES:
+        if str(finding_id).startswith(prefixes):
+            return category
+    return "Azure configuration"
+
+
+def finding_definition(title, severity):
+    """Build status-independent report metadata for one finding definition."""
+    finding_id = canonical_finding_id(title)
+    return {
+        "schema_version": FINDING_DEFINITION_SCHEMA_VERSION,
+        "finding_id": finding_id,
+        "definition_version": FINDING_DEFINITION_VERSION,
+        "report_title": str(title),
+        "category": finding_category(finding_id),
+        "default_severity": str(severity),
+        "check_ids": list(dict.fromkeys(EXISTING_FINDING_HEADLINES.get(title, []))),
+        "report": {
+            "description": None,
+            "impact": None,
+            "recommendation": None,
+            "references": [],
+            "narrative_status": "not_authored",
+        },
+    }
+
+
+def validate_finding_definitions(findings):
+    """Reject malformed or duplicate canonical finding definitions."""
+    seen = {}
+    for finding in findings:
+        definition = finding.get("definition") or {}
+        finding_id = definition.get("finding_id")
+        if not FINDING_ID_RE.fullmatch(str(finding_id or "")):
+            raise ValueError(f"Invalid canonical finding ID: {finding_id}")
+        if finding.get("finding_id") != finding_id:
+            raise ValueError(f"Finding ID does not match its definition: {finding_id}")
+        previous_title = seen.get(finding_id)
+        if previous_title is not None:
+            raise ValueError(
+                f"Duplicate canonical finding ID {finding_id}: "
+                f"{previous_title!r} and {finding.get('title')!r}"
+            )
+        seen[finding_id] = finding.get("title")
+        if definition.get("schema_version") != FINDING_DEFINITION_SCHEMA_VERSION:
+            raise ValueError(f"Unsupported finding definition schema: {finding_id}")
+        if definition.get("definition_version") != FINDING_DEFINITION_VERSION:
+            raise ValueError(f"Unsupported finding definition version: {finding_id}")
+        if not definition.get("report_title"):
+            raise ValueError(f"Finding definition has no report title: {finding_id}")
+        if not definition.get("category"):
+            raise ValueError(f"Finding definition has no category: {finding_id}")
+        if not definition.get("default_severity"):
+            raise ValueError(f"Finding definition has no default severity: {finding_id}")
+        if not isinstance(definition.get("check_ids"), list):
+            raise ValueError(f"Finding definition check IDs must be a list: {finding_id}")
+        report = definition.get("report")
+        if not isinstance(report, dict):
+            raise ValueError(f"Finding definition has no report contract: {finding_id}")
+        required_report_fields = {
+            "description",
+            "impact",
+            "recommendation",
+            "references",
+            "narrative_status",
+        }
+        if not required_report_fields.issubset(report):
+            raise ValueError(f"Finding definition report contract is incomplete: {finding_id}")
+        if not isinstance(report.get("references"), list):
+            raise ValueError(f"Finding definition report references must be a list: {finding_id}")
+    return findings
