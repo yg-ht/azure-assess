@@ -178,7 +178,7 @@ def bounded_worker_count(value):
 
 
 def record_timing(endpoint_name, category, command, duration, returncode=None, result_count=None, retry_count=0):
-    """Record non-sensitive command timing metadata for the final summary."""
+    """Record command timing metadata for the final summary."""
     with TIMING_RECORDS_LOCK:
         TIMING_RECORDS.append(
             {
@@ -281,6 +281,20 @@ def timed_run_az_cli(
         retry_count=retry_count,
     )
     if COLLECTION_MANIFEST is not None:
+        # Preserve both the application-level classification and the underlying
+        # command diagnostic when they provide different failure information.
+        manifest_error = result.get("collection_error")
+        diagnostic_output = (
+            result.get("stdout")
+            if result.get("returncode") not in (None, 0) or manifest_error
+            else None
+        )
+        if diagnostic_output and diagnostic_output != manifest_error:
+            manifest_error = (
+                f"{manifest_error}: {diagnostic_output}"
+                if manifest_error
+                else diagnostic_output
+            )
         COLLECTION_MANIFEST.record_execution(
             endpoint_name=endpoint_name or "unknown",
             category=category,
@@ -290,12 +304,8 @@ def timed_run_az_cli(
             duration_seconds=duration,
             returncode=result.get("returncode"),
             result_count=result_item_count(result.get("json")),
-            error_message=result.get("collection_error"),
-            diagnostic_text=(
-                result.get("stdout")
-                if result.get("returncode") not in (None, 0) or result.get("collection_error")
-                else None
-            ),
+            error_message=manifest_error,
+            diagnostic_text=diagnostic_output,
             endpoint_identifier=endpoint_identifier,
             retry_count=retry_count,
         )
@@ -470,7 +480,7 @@ def collect_managed_role_definitions_cache(path=None):
                 duration_seconds=monotonic() - started,
                 returncode=1,
                 result_count=None,
-                error_message="Managed role definition collection failed",
+                error_message=error,
                 diagnostic_text=error,
             )
         print(f"[ERROR] Failed to collect managed role definitions: {error}")
@@ -2353,9 +2363,8 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
                     error_message = "Something has gone wrong - data returned but not JSON"
 
         if error_message:
-            # Retain only the application-level classification for the manifest.
-            # Command output is used transiently to classify permission failures,
-            # but is never persisted by the manifest recorder.
+            # Keep a concise classification alongside the command output. The
+            # manifest recorder combines both and applies its error-length limit.
             result["collection_error"] = error_message
             record_collection_error(cmd, error_message, result, endpoint_name=endpoint_name, category=category)
             context = endpoint_name or cmd
@@ -2855,7 +2864,7 @@ def collect_parameter_set(endpoint, param_set):
                 duration_seconds=0,
                 returncode=1,
                 result_count=None,
-                error_message="Collected data could not be post-processed",
+                error_message=f"Collected data could not be post-processed: {e}",
                 diagnostic_text=str(e),
                 endpoint_identifier=endpoint_output_prefix(endpoint),
             )
@@ -3091,7 +3100,7 @@ def collect_endpoint(endpoint):
                 duration_seconds=0,
                 returncode=1,
                 result_count=None,
-                error_message="Collected data could not be post-processed",
+                error_message=f"Collected data could not be post-processed: {e}",
                 diagnostic_text=str(e),
                 endpoint_identifier=endpoint_output_prefix(endpoint),
             )

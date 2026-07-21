@@ -115,9 +115,9 @@ Notes:
 - Authentication validation checks both the current Azure account context and token acquisition for Azure Resource Manager and Microsoft Graph before collection starts.
 - `--subscription-id` applies the Azure CLI account context after authentication and can also be supplied through `AZURE_SUBSCRIPTION_ID`.
 - Output files are timestamped in their filenames, which is used by the dashboard to track dataset history.
-- Every collection run also writes `azure-collection-manifest_<timestamp>.json`. The manifest records the selected endpoint executions, whether each execution succeeded, returned no records, failed, was unauthorised, was skipped, or was not attempted, plus record counts and SHA-256 hashes for generated datasets.
+- Every collection run also writes a version 2.0 `azure-collection-manifest_<timestamp>.json`. The manifest records the selected endpoint executions, whether each execution succeeded, returned no records, failed, was unauthorised, was skipped, or was not attempted, plus record counts and SHA-256 hashes for generated datasets.
 - A manifest run status of `partial` means an endpoint failed, was unauthorised or was not attempted, or the top-level workflow did not complete. Legitimately skipped endpoints remain visible individually. Review `endpoint_runs`, `errors`, and `limitations` before treating an absent finding as evidence of a secure configuration.
-- Manifest command entries use configured command templates rather than substituted commands. Credential- and token-like values are redacted, and raw Azure CLI output is not persisted in the manifest.
+- Manifest command entries use configured command templates rather than reconstructed shell commands, while context, options, parameter values, limitations, and recorded error content are preserved without content filtering. Endpoint error fields are limited to 1,000 characters. Raw Azure CLI output is not duplicated into successful manifest entries because it remains in the generated dataset; failed-command diagnostic output is recorded as the endpoint error. Manifests may therefore contain credentials or other sensitive engagement data and must be protected accordingly.
 - Normal collection combines live custom Azure RBAC role definitions with the managed role definition cache when it exists. If the cache has not been generated, the collector falls back to a live full role definition collection.
 - Managed role definition cache generation skips customer-facing collection and permission baseline checks so the cache is not mixed with customer custom roles or audit output.
 
@@ -171,7 +171,7 @@ Outputs:
 
 - `azure-findings.json`: SARIF 2.1.0 output containing the full set of findings in the `found` state
 - `azure-findings-flat.json`: flattened findings rows for easier dashboard display
-- `azure-findings-report-ready.json`: versioned, compact report-processing export containing selected findings, publication readiness, report groups, and auditable exclusions
+- `azure-findings-report-ready.json`: version 2.0 compact report-processing export containing selected findings, publication readiness, report groups, and auditable exclusions
 
 Finding definition metadata:
 
@@ -261,8 +261,8 @@ Report-ready export:
 - Selection is separate from publication readiness. Each selected finding lists blockers such as missing analyst review, unauthored report narrative, insufficient evidence confidence, unavailable coverage, or absence of a positive automated result. Candidates therefore remain visible for processing without being misrepresented as ready to publish.
 - The assessment envelope consolidates engagement context, selection policy, summary counts, and stable report groups. Finding records contain definition and narrative fields, evaluation status, workflow state, contextual severity, affected assets, coverage, provenance, grouping, fingerprint, retest data, and attributed limitations.
 - Exact duplicate observations are represented once using their canonical observation while duplicate IDs and original, emitted, and duplicate counts remain explicit. The original flat and SARIF outputs retain every observation.
-- The export does not copy legacy raw `evidence`. Normalised observation data is recursively checked for credential-bearing field names, connection strings, private keys, JWTs, and signed URLs. Redacted values use `[REDACTED]`, and exact redaction paths are recorded. Traversal depth, node counts, and individual string lengths are bounded.
-- Analyst-authored narrative, rationale, and notes are also passed through the report redaction boundary. Analysts should still avoid placing credentials in review files or report prose.
+- The export does not copy legacy raw `evidence`; it emits canonical normalised observations while retaining exact duplicate accounting. Engagement context, observation data, reference links, report narratives, analyst rationale, and notes are copied without content filtering or size-based substitution.
+- Report-ready exports may therefore contain credentials, tokens, keys, signed URLs, private keys, or other sensitive engagement data present in collected evidence or analyst-authored content. Store, transmit, and dispose of these files according to the engagement's sensitive-data handling requirements.
 
 ### `azure-present.py`
 

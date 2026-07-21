@@ -8,6 +8,16 @@
 
 - [x] Collapse findings link cells containing more than 10 links while retaining access to every link.
 
+### Remove content redaction
+
+- [x] Preserve collection-manifest context, options, parameters, command templates, limitations, and error content without credential or token replacement.
+- [x] Retain only the 1,000-character collection-manifest endpoint error limit.
+- [x] Preserve all report-ready engagement, finding, observation, reference-link, narrative, and analyst content without redaction or truncation.
+- [x] Remove report-ready redaction metadata, warnings, blockers, and validation rules, with an explicit schema-version boundary.
+- [x] Replace redaction tests with exact content-preservation and retained error-limit regression tests.
+- [x] Update documentation to state that generated artefacts may contain sensitive content.
+- [x] Run focused and full validation, search for residual redaction functionality, and complete a full changed-file review.
+
 ### Offline finding correlations
 
 - [x] Add exact logical dataset contracts and conservative completeness handling for offline correlations.
