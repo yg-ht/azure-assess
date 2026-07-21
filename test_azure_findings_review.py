@@ -169,6 +169,32 @@ class FindingReviewOverrideTests(unittest.TestCase):
         self.assertEqual(review["analyst"]["reviewer"], "A. Tester")
         self.assertTrue(review["report_ready"]["include"])
 
+    def test_contextual_severity_override_requires_and_retains_rationale(self):
+        finding = review_finding()
+        override = confirmed_override(finding["finding_id"])
+        override["contextual_severity"] = {
+            "level": "Critical",
+            "rationale": "Production data is exposed to unauthenticated internet users.",
+        }
+
+        apply_review_override(finding, override)
+
+        self.assertEqual(
+            finding["review"]["analyst"]["contextual_severity"],
+            override["contextual_severity"],
+        )
+
+    def test_contextual_severity_override_rejects_missing_rationale(self):
+        finding = review_finding()
+        override = confirmed_override(finding["finding_id"])
+        override["contextual_severity"] = {
+            "level": "Critical",
+            "rationale": None,
+        }
+
+        with self.assertRaisesRegex(ValueError, "rationale is required"):
+            apply_review_override(finding, override)
+
     def test_false_positive_override_excludes_finding_from_report_ready_output(self):
         finding = review_finding()
         override = {

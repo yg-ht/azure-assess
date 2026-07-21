@@ -33,6 +33,12 @@ from azure_findings_review import (
     load_review_overrides,
     validate_finding_review,
 )
+from azure_findings_triage import (
+    apply_findings_triage,
+    load_baseline_findings,
+    normalise_finding_triage,
+    validate_finding_triage,
+)
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
@@ -77,6 +83,15 @@ def parse_arguments():
             "Relative paths are resolved below <input-dir>."
         ),
     )
+    parser.add_argument(
+        "--baseline-findings-file",
+        type=str,
+        default=None,
+        help=(
+            "Optional prior azure-findings-flat.json used for conservative retest comparison. "
+            "Relative paths are resolved below <input-dir>."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -113,6 +128,16 @@ def resolve_review_path(input_dir, review_file):
     if review_path.is_absolute():
         return review_path
     return Path(input_dir) / review_path
+
+
+def resolve_baseline_path(input_dir, baseline_file):
+    """Resolve an optional prior flat findings file below the input directory."""
+    if baseline_file is None:
+        return None
+    baseline_path = Path(baseline_file).expanduser()
+    if baseline_path.is_absolute():
+        return baseline_path
+    return Path(input_dir) / baseline_path
 
 
 def strip_timestamp(path):
@@ -336,6 +361,7 @@ def flat_rows(findings):
         ensure_finding_context(finding)
         ensure_finding_coverage(finding)
         ensure_finding_review(finding)
+        ensure_finding_triage(finding)
         row = {
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
@@ -343,6 +369,7 @@ def flat_rows(findings):
             "context": finding["context"],
             "coverage": finding["coverage"],
             "review": finding["review"],
+            "triage": finding["triage"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -373,7 +400,7 @@ def ensure_finding_reporting(finding, catalog=None):
     ensure_finding_definition(finding)
     reporting = finding.get("reporting")
     collection_run = (reporting or {}).get("provenance", {}).get("collection_run")
-    if reporting and (catalog is None or collection_run is not None):
+    if reporting and (not catalog or collection_run is not None):
         return reporting
     normalise_finding_reporting(finding, catalog=catalog)
     return finding["reporting"]
@@ -416,6 +443,18 @@ def ensure_finding_review(finding):
         return finding["review"]
     apply_review_override(finding)
     return finding["review"]
+
+
+def ensure_finding_triage(finding):
+    """Attach grouping and lifecycle metadata to legacy finding objects."""
+    ensure_finding_context(finding)
+    ensure_finding_coverage(finding)
+    ensure_finding_review(finding)
+    if finding.get("triage"):
+        validate_finding_triage(finding)
+        return finding["triage"]
+    normalise_finding_triage(finding)
+    return finding["triage"]
 
 
 def finding_headline_ids(finding):
@@ -499,6 +538,7 @@ def sarif_result(finding):
     ensure_finding_context(finding)
     ensure_finding_coverage(finding)
     ensure_finding_review(finding)
+    ensure_finding_triage(finding)
     result = {
         "ruleId": sarif_rule_id(finding),
         "level": sarif_level(finding["severity"]),
@@ -511,6 +551,7 @@ def sarif_result(finding):
             "context": finding["context"],
             "coverage": finding["coverage"],
             "review": finding["review"],
+            "triage": finding["triage"],
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
@@ -535,6 +576,7 @@ def sarif_output(input_dir, catalog, findings):
         ensure_finding_context(finding, catalog=catalog)
         ensure_finding_coverage(finding, catalog=catalog)
         ensure_finding_review(finding)
+        ensure_finding_triage(finding)
         unique_rules.setdefault(sarif_rule_id(finding), sarif_rule_descriptor(finding))
     return {
         "$schema": SARIF_SCHEMA_URI,
@@ -604,7 +646,7 @@ def annotate_finding_definitions(findings):
     return validate_finding_definitions(findings)
 
 
-def evaluate_findings(catalog, review_overrides=None):
+def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     apim_services = dataset_records(catalog, "az_apim_show")
     ad_users = dataset_records(catalog, "az_ad_user_list")
     app_service_environments = dataset_records(catalog, "az_appservice_ase_show")
@@ -2985,7 +3027,8 @@ def evaluate_findings(catalog, review_overrides=None):
             ordered_source_files=source_files,
         )
 
-    return apply_review_overrides(findings, review_overrides)
+    findings = apply_review_overrides(findings, review_overrides)
+    return apply_findings_triage(findings, baseline_findings=baseline_findings)
 
 
 def print_summary(findings):
@@ -2998,7 +3041,9 @@ def print_summary(findings):
             f"| disposition={finding['review']['disposition']} "
             f"| confidence={finding['review']['confidence']['level']} "
             f"| service={finding['context']['family']['service_label']} "
-            f"| scope={finding['context']['scope']['level']}"
+            f"| scope={finding['context']['scope']['level']} "
+            f"| contextual_severity={finding['triage']['severity']['contextual']} "
+            f"| retest={finding['triage']['retest']['outcome']}"
         )
 
 
@@ -3008,7 +3053,13 @@ def main():
     catalog = load_catalog(input_dir)
     review_path = resolve_review_path(input_dir, args.review_file)
     review_overrides = load_review_overrides(review_path) if review_path else None
-    findings = evaluate_findings(catalog, review_overrides=review_overrides)
+    baseline_path = resolve_baseline_path(input_dir, args.baseline_findings_file)
+    baseline_findings = load_baseline_findings(baseline_path) if baseline_path else None
+    findings = evaluate_findings(
+        catalog,
+        review_overrides=review_overrides,
+        baseline_findings=baseline_findings,
+    )
     output = sarif_output(input_dir, catalog, findings)
     flat_output = {
         "input_dir": str(input_dir),

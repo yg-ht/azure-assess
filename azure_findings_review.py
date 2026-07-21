@@ -22,6 +22,13 @@ REVIEW_DISPOSITIONS = {
     "not_implemented",
 }
 CONFIDENCE_LEVELS = {"high", "medium", "low", "not_assessed"}
+CONTEXTUAL_SEVERITY_LEVELS = {
+    "Critical",
+    "High",
+    "Medium",
+    "Low",
+    "Informational",
+}
 REPORT_INCLUDED_DISPOSITIONS = {
     "candidate",
     "confirmed",
@@ -164,6 +171,7 @@ def default_finding_review(finding: Mapping[str, Any]) -> Dict[str, Any]:
             "reviewer": None,
             "reviewed_at": None,
             "notes": None,
+            "contextual_severity": None,
         },
         "report_ready": report_inclusion(disposition),
     }
@@ -208,6 +216,20 @@ def validate_review_override(review: Mapping[str, Any]) -> None:
         if confidence.get("level") not in CONFIDENCE_LEVELS:
             raise ValueError(f"Invalid review confidence level for {finding_id}")
         validate_review_text(confidence.get("rationale"), "confidence rationale")
+    contextual_severity = review.get("contextual_severity")
+    if contextual_severity is not None:
+        if not isinstance(contextual_severity, Mapping):
+            raise ValueError(
+                f"Review contextual_severity must be an object for {finding_id}"
+            )
+        if contextual_severity.get("level") not in CONTEXTUAL_SEVERITY_LEVELS:
+            raise ValueError(f"Invalid contextual severity level for {finding_id}")
+        rationale = contextual_severity.get("rationale")
+        validate_review_text(rationale, "contextual severity rationale")
+        if not rationale:
+            raise ValueError(
+                f"Review contextual severity rationale is required for {finding_id}"
+            )
     validate_review_text(review.get("reviewer"), "reviewer")
     validate_review_text(review.get("notes"), "notes")
     validate_reviewed_at(review.get("reviewed_at"))
@@ -258,6 +280,9 @@ def apply_review_override(
             "reviewer": override.get("reviewer"),
             "reviewed_at": override.get("reviewed_at"),
             "notes": override.get("notes"),
+            "contextual_severity": dict(override["contextual_severity"])
+            if override.get("contextual_severity") is not None
+            else None,
         }
         if override.get("confidence") is not None:
             review["confidence"] = {
@@ -321,6 +346,16 @@ def validate_finding_review(finding: Mapping[str, Any]) -> None:
     validate_review_text(analyst.get("reviewer"), "reviewer")
     validate_review_text(analyst.get("notes"), "notes")
     validate_reviewed_at(analyst.get("reviewed_at"))
+    contextual_severity = analyst.get("contextual_severity")
+    if contextual_severity is not None:
+        if not isinstance(contextual_severity, Mapping):
+            raise ValueError("Finding contextual severity override must be an object")
+        if contextual_severity.get("level") not in CONTEXTUAL_SEVERITY_LEVELS:
+            raise ValueError("Invalid finding contextual severity level")
+        rationale = contextual_severity.get("rationale")
+        validate_review_text(rationale, "contextual severity rationale")
+        if not rationale:
+            raise ValueError("Finding contextual severity rationale is required")
     if review.get("review_state") == "reviewed":
         if not analyst.get("reviewer") or not analyst.get("reviewed_at"):
             raise ValueError("Reviewed findings require a reviewer and reviewed_at")

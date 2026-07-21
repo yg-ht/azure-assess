@@ -164,6 +164,7 @@ Parameters:
 - `--no-save`: do not write findings JSON files; print summary output only
 - `--flat-output-file`: path for the flattened findings output used by `azure-present.py`. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings-flat.json`
 - `--review-file`: optional versioned JSON file containing analyst review overrides keyed by canonical `finding_id`. Relative paths are resolved below `<input-dir>`
+- `--baseline-findings-file`: optional prior `azure-findings-flat.json` used for conservative retest comparison. Relative paths are resolved below `<input-dir>`
 
 Outputs:
 
@@ -205,6 +206,7 @@ Analyst review:
 - Automated evidence confidence is derived separately from observations, collection status, endpoint completeness, and dataset integrity. It is labelled `automated`; an analyst override may replace it with explicitly sourced analyst confidence.
 - Analyst dispositions include `confirmed`, `false_positive`, `accepted_risk`, `duplicate`, `informational`, `not_applicable`, and the default status-derived dispositions. The emitted review metadata marks false positives, duplicates, inconclusive checks, and non-findings for exclusion from subsequent report-ready processing.
 - Every override requires a reviewer and a timezone-aware `reviewed_at` value. Unknown finding IDs, duplicate entries, invalid dispositions, malformed timestamps, and unsupported schemas fail validation.
+- An override may include `contextual_severity` with a severity level and mandatory rationale. Automated confidence, affected population, and exposure context are recorded as decision factors, but never change severity automatically.
 
 Example review file:
 
@@ -219,6 +221,10 @@ Example review file:
         "level": "high",
         "rationale": "The affected storage account was verified in the Azure portal."
       },
+      "contextual_severity": {
+        "level": "Critical",
+        "rationale": "The affected production account exposes regulated customer data."
+      },
       "reviewer": "Analyst name",
       "reviewed_at": "2026-07-21T12:00:00Z",
       "notes": "Confirmed during manual review."
@@ -226,6 +232,15 @@ Example review file:
   ]
 }
 ```
+
+Grouping, deduplication, and retesting:
+
+- Each finding includes a versioned `triage` object. Stable report groups use family, service, tenant, and subscription dimensions; observation groups collect evidence affecting the same normalised assets.
+- Exact duplicate observations are identified using their data, asset IDs, and source files. A canonical observation and duplicate IDs are recorded, but all original evidence remains in `reporting.observations` and existing outputs.
+- A stable finding fingerprint uses the canonical finding ID and concrete asset identities, falling back to assessment scope where evidence has no concrete asset. Fingerprints do not include mutable evidence values or current finding status.
+- Supplying `--baseline-findings-file` compares current rows with the same canonical definitions from a prior flat output. Outcomes distinguish new, persistent, potentially resolved, unchanged non-detections, changed scope, same-run comparisons, and inconclusive results. Definitions absent from the baseline remain explicitly not assessed.
+- `potentially_resolved` requires matching engagement scope, a different run, a current `not_found` result, measurable current assessment coverage, a successful collection run, hash-verified source datasets, and successful or empty relevant endpoint results. It is deliberately not labelled resolved because analyst verification may still be required.
+- Retest metadata records persisting, new, and potentially resolved asset IDs without deleting or changing current evidence. Stale baseline IDs, duplicate rows, invalid statuses, malformed envelopes, and baseline files over 100 MiB fail validation.
 
 ### `azure-present.py`
 
