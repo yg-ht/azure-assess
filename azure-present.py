@@ -104,6 +104,7 @@ HTML_TEMPLATE = """
 <html lang="en">
   <head>
     <meta charset="utf-8">
+    <script>document.documentElement.classList.add('js-enabled');</script>
     <title>Azure Audit Data Viewer</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
@@ -240,6 +241,28 @@ HTML_TEMPLATE = """
         width: 100%;
         /* Set height to fill remaining space. Adjust 250px as needed */
         height: calc(100vh - 360px);
+      }
+      .data-table-loading {
+        display: none;
+        min-height: 12rem;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      .data-table-loading-panel {
+        width: min(32rem, 90%);
+      }
+      .js-enabled .data-table-loading {
+        display: flex;
+      }
+      .js-enabled .data-table-loading[hidden] {
+        display: none;
+      }
+      .js-enabled .table-content-pending {
+        display: none;
+      }
+      .table-loading-progress {
+        height: 0.75rem;
       }
       /* Data view container takes remaining height */
       .data-view {
@@ -435,7 +458,25 @@ HTML_TEMPLATE = """
         </div>
         <!-- Scrollable Table Container fills remaining height -->
         <div id="table-container" class="table-container mt-3">
-          {{ table|safe }}
+          <div id="data-table-loading"
+               class="data-table-loading"
+               role="status"
+               aria-live="polite"
+               aria-busy="true">
+            <div class="data-table-loading-panel">
+              <div class="mb-2 fw-semibold">Preparing data view…</div>
+              <div class="progress table-loading-progress"
+                   aria-label="Preparing data view">
+                <div class="progress-bar progress-bar-striped progress-bar-animated w-100"></div>
+              </div>
+            </div>
+          </div>
+          <div id="table-content" class="table-content-pending">
+            <script>
+              document.getElementById('table-content').setAttribute('aria-hidden', 'true');
+            </script>
+            {{ table|safe }}
+          </div>
         </div>
       </div>
       {% endif %}
@@ -832,6 +873,23 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
               }
             });
+          }
+        });
+      });
+    </script>
+
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        window.requestAnimationFrame(function() {
+          var loading = document.getElementById('data-table-loading');
+          var content = document.getElementById('table-content');
+          if (content) {
+            content.classList.remove('table-content-pending');
+            content.removeAttribute('aria-hidden');
+          }
+          if (loading) {
+            loading.setAttribute('aria-busy', 'false');
+            loading.hidden = true;
           }
         });
       });

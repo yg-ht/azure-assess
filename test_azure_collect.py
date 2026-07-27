@@ -436,6 +436,57 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn(b'<details class="findings-links-disclosure">', response.data)
         self.assertIn(b"<summary>11 links</summary>", response.data)
 
+    def test_findings_route_hides_unprepared_table_behind_loading_status(self):
+        finding_rows = {
+            "rows": [
+                {
+                    "title": "Example finding",
+                    "severity": "medium",
+                    "status": "found",
+                    "reason": "Regression test",
+                    "count": 1,
+                    "evidence": [{"name": "account-one"}],
+                    "viewer_links": [],
+                    "source_file": [],
+                    "azure_portal_links": [],
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            findings_path = data_dir / azure_present.FINDINGS_FLAT_FILENAME
+            findings_path.write_text(json.dumps(finding_rows), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                response = client.get("/findings?status=all")
+
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="data-table-loading"', body)
+        self.assertIn('role="status"', body)
+        self.assertIn("Preparing data view…", body)
+        self.assertIn('id="table-content" class="table-content-pending"', body)
+        self.assertIn("content.classList.remove('table-content-pending')", body)
+        self.assertIn("loading.hidden = true", body)
+
+    def test_dataset_query_route_uses_the_same_loading_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset_path = data_dir / "az_resource_list_20260402-000000.json"
+            dataset_path.write_text(json.dumps([{"name": "account-one"}]), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                response = client.get(f"/query/{dataset_path.name}")
+
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('id="data-table-loading"', body)
+        self.assertIn('progress-bar-animated', body)
+        self.assertIn('id="table-content" class="table-content-pending"', body)
+
     def test_dataset_groups_default_does_not_load_record_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
