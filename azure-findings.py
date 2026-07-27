@@ -66,6 +66,7 @@ from azure_findings_network import (
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
+DEFAULT_SARIF_OUTPUT_FILENAME = "azure-findings-SARIF.json"
 DEFAULT_INPUT_DIR = "azure-collect"
 
 
@@ -256,7 +257,10 @@ def parse_arguments():
         "--output-file",
         type=str,
         default=None,
-        help="Path to save found findings as SARIF 2.1.0 JSON (defaults to <input-dir>/azure-findings.json)",
+        help=(
+            "Path to save found findings as SARIF 2.1.0 JSON "
+            f"(defaults to <input-dir>/{DEFAULT_SARIF_OUTPUT_FILENAME})"
+        ),
     )
     parser.add_argument(
         "--no-save",
@@ -3594,7 +3598,11 @@ def main():
     print_summary(findings)
 
     if not args.no_save:
-        output_path = resolve_output_path(input_dir, args.output_file, "azure-findings.json")
+        output_path = resolve_output_path(
+            input_dir,
+            args.output_file,
+            DEFAULT_SARIF_OUTPUT_FILENAME,
+        )
         with open(output_path, "w", encoding="utf-8") as handle:
             json.dump(output, handle, indent=2)
         flat_output_path = resolve_output_path(input_dir, args.flat_output_file, "azure-findings-flat.json")

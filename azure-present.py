@@ -47,8 +47,13 @@ from urllib.parse import unquote, urlparse, parse_qs
 app = Flask(__name__)
 DATA_DIR = Path("azure-collect")
 FINDINGS_FLAT_FILENAME = "azure-findings-flat.json"
-FINDINGS_STRUCTURED_FILENAME = "azure-findings.json"
-FINDINGS_FILENAMES = {FINDINGS_FLAT_FILENAME, FINDINGS_STRUCTURED_FILENAME}
+FINDINGS_SARIF_FILENAME = "azure-findings-SARIF.json"
+LEGACY_FINDINGS_SARIF_FILENAME = "azure-findings.json"
+FINDINGS_FILENAMES = {
+    FINDINGS_FLAT_FILENAME,
+    FINDINGS_SARIF_FILENAME,
+    LEGACY_FINDINGS_SARIF_FILENAME,
+}
 FINDING_STATUS_OPTIONS = OrderedDict(
     [
         ("found", {"label": "Found Items", "statuses": {"found"}}),

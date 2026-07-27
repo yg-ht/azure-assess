@@ -160,7 +160,7 @@ pipenv run python azure-findings.py -i ~/azure-collect-data
 Parameters:
 
 - `-i`, `--input-dir`: directory containing JSON produced by `azure-collect.py`. Relative paths are resolved next to `azure-findings.py`. Default: `azure-collect` next to `azure-findings.py`
-- `-o`, `--output-file`: path for the SARIF 2.1.0 findings output. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings.json`
+- `-o`, `--output-file`: path for the SARIF 2.1.0 findings output. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings-SARIF.json`
 - `--no-save`: do not write findings JSON files; print summary output only
 - `--flat-output-file`: path for the flattened findings output used by `azure-present.py`. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings-flat.json`
 - `--report-ready-output-file`: path for the versioned report-ready findings export. Relative paths are resolved below `<input-dir>`. Default: `<input-dir>/azure-findings-report-ready.json`
@@ -169,7 +169,7 @@ Parameters:
 
 Outputs:
 
-- `azure-findings.json`: SARIF 2.1.0 output containing the full set of findings in the `found` state
+- `azure-findings-SARIF.json`: SARIF 2.1.0 output containing the full set of findings in the `found` state
 - `azure-findings-flat.json`: flattened findings rows for easier dashboard display
 - `azure-findings-report-ready.json`: version 2.0 compact report-processing export containing selected findings, publication readiness, report groups, and auditable exclusions
 

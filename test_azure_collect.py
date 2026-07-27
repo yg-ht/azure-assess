@@ -166,9 +166,16 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
             input_dir = Path(tmpdir) / "collected"
 
             self.assertEqual(
-                azure_findings.resolve_output_path(input_dir, None, "azure-findings-flat.json"),
-                input_dir / "azure-findings-flat.json",
+                azure_findings.resolve_output_path(
+                    input_dir,
+                    None,
+                    azure_findings.DEFAULT_SARIF_OUTPUT_FILENAME,
+                ),
+                input_dir / "azure-findings-SARIF.json",
             )
+
+    def test_sarif_output_filename_identifies_its_format(self):
+        self.assertIn("SARIF", azure_findings.DEFAULT_SARIF_OUTPUT_FILENAME)
 
     def test_relative_findings_output_paths_follow_resolved_input_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -378,6 +385,8 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                         ("filename", dataset_path.name),
                         ("filename", "../secrets.json"),
                         ("filename", "azure-findings-flat.json"),
+                        ("filename", "azure-findings-SARIF.json"),
+                        ("filename", "azure-findings.json"),
                     ],
                 )
 
@@ -388,6 +397,8 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                 {
                     "../secrets.json": "Unknown dataset file",
                     "azure-findings-flat.json": "Unknown dataset file",
+                    "azure-findings-SARIF.json": "Unknown dataset file",
+                    "azure-findings.json": "Unknown dataset file",
                 },
             )
 
