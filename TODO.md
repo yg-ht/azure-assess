@@ -6,6 +6,7 @@
 
 ## Completed
 
+- [x] Correct dashboard font colours in both dark and light modes.
 - [x] Collapse findings link cells containing more than 10 links while retaining access to every link.
 
 ### Remove content redaction
