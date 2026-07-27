@@ -368,12 +368,12 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         self.assertIn("<th>json_string</th>", annotated)
         self.assertIn(
-            '<th class="findings-sortable" tabindex="0" role="button" '
+            '<th class="table-sortable" tabindex="0" role="button" '
             'aria-sort="none">Title</th>',
             annotated,
         )
         self.assertIn(
-            '<th class="findings-sortable" tabindex="0" role="button" '
+            '<th class="table-sortable" tabindex="0" role="button" '
             'aria-sort="none">Count</th>',
             annotated,
         )
@@ -497,6 +497,18 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("'Show fewer'", body)
         self.assertIn('data-initial-visible-count="8"', body)
         self.assertIn("font-size: var(--table-font-size, 0.8rem)", body)
+        self.assertIn('class="data-filter-controls-row"', body)
+        self.assertIn('class="data-filter-actions-row"', body)
+        controls_row = body.split('class="data-filter-controls-row"', 1)[1]
+        controls_row = controls_row.split('class="data-filter-actions-row"', 1)[0]
+        self.assertIn('id="findingsStatusSelect" name="status"', controls_row)
+        self.assertIn('id="query"', controls_row)
+        self.assertNotIn('id="findingsStatusInput"', body)
+        actions_row = body.split('class="data-filter-actions-row"', 1)[1]
+        actions_row = actions_row.split("</form>", 1)[0]
+        self.assertIn(">Search</button>", actions_row)
+        self.assertIn(">Reset Search</a>", actions_row)
+        self.assertIn('aria-label="Table font size"', actions_row)
 
     def test_dataset_query_route_uses_the_same_loading_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -515,7 +527,14 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('id="table-content" class="table-content-pending"', body)
         self.assertIn('id="decreaseTableFont"', body)
         self.assertIn('id="increaseTableFont"', body)
-        self.assertIn("<th>Name</th>", body)
+        self.assertIn(
+            '<th class="table-sortable" tabindex="0" role="button" '
+            'aria-sort="none">Name</th>',
+            body,
+        )
+        self.assertIn('class="data-filter-controls-row"', body)
+        self.assertIn('class="data-filter-actions-row"', body)
+        self.assertNotIn('id="findingsStatusSelect"', body)
 
     def test_dataset_groups_default_does_not_load_record_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:

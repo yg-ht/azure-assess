@@ -186,24 +186,24 @@ HTML_TEMPLATE = """
         background: var(--table-bg);
         z-index: 1;
       }
-      table thead th.findings-sortable {
+      table thead th.table-sortable {
         cursor: pointer;
         user-select: none;
         white-space: nowrap;
       }
-      table thead th.findings-sortable::after {
+      table thead th.table-sortable::after {
         content: " ↕";
         opacity: 0.55;
       }
-      table thead th.findings-sortable[aria-sort="ascending"]::after {
+      table thead th.table-sortable[aria-sort="ascending"]::after {
         content: " ↑";
         opacity: 1;
       }
-      table thead th.findings-sortable[aria-sort="descending"]::after {
+      table thead th.table-sortable[aria-sort="descending"]::after {
         content: " ↓";
         opacity: 1;
       }
-      table thead th.findings-sortable:focus-visible {
+      table thead th.table-sortable:focus-visible {
         outline: 2px solid var(--link-color);
         outline-offset: -2px;
       }
@@ -299,6 +299,59 @@ HTML_TEMPLATE = """
       /* Ensure the search form and drop-down take only needed space */
       .data-controls {
         flex: 0 0 auto;
+      }
+      .data-filter-form {
+        margin-top: 1rem;
+      }
+      .data-filter-controls-row,
+      .data-filter-actions-row,
+      .data-inline-control {
+        display: flex;
+        align-items: center;
+      }
+      .data-filter-controls-row {
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      .data-inline-control {
+        gap: 0.5rem;
+      }
+      .data-inline-control label {
+        margin: 0;
+        white-space: nowrap;
+      }
+      .findings-status-control {
+        flex: 0 1 24rem;
+      }
+      .findings-status-control select {
+        min-width: 12rem;
+      }
+      .filter-data-control {
+        flex: 1 1 30rem;
+      }
+      .filter-data-control input {
+        min-width: 12rem;
+      }
+      .data-filter-actions-row {
+        gap: 0.5rem;
+        flex-wrap: wrap;
+        margin-top: 0.75rem;
+      }
+      .data-filter-actions-row .table-font-controls {
+        margin-left: 0.5rem;
+      }
+      @media (max-width: 700px) {
+        .data-inline-control {
+          flex: 1 1 100%;
+        }
+        .data-inline-control input,
+        .data-inline-control select {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+        .data-filter-actions-row .table-font-controls {
+          margin-left: 0;
+        }
       }
       .dashboard-chart-card {
         background-color: transparent;
@@ -452,48 +505,49 @@ HTML_TEMPLATE = """
             </select>
           </div>
           {% endif %}
-          {% if findings_status_options %}
-          <div class="mt-3 mb-3">
-            <label for="findingsStatusSelect" class="form-label">Findings Status:</label>
-            <select id="findingsStatusSelect" name="status" class="form-select">
-              {% for option in findings_status_options %}
-              <option value="{{ option.value }}" {% if findings_status == option.value %}selected{% endif %}>
-                {{ option.label }}
-              </option>
-              {% endfor %}
-            </select>
-          </div>
-          {% endif %}
           <!-- Search Form (using GET so the search term is preserved) -->
-          <form method="get" action="{{ search_action }}">
-            <div class="mb-3 mt-3">
-              <label for="query" class="form-label">Filter Data (search within JSON):</label>
-              <input type="text"
-                     class="form-control"
-                     id="query"
-                     name="query"
-                     placeholder="Enter search term"
-                     value="{{ request.args.get('query', '') }}">
+          <form method="get" action="{{ search_action }}" class="data-filter-form">
+            <div class="data-filter-controls-row">
+              {% if findings_status_options %}
+              <div class="data-inline-control findings-status-control">
+                <label for="findingsStatusSelect" class="form-label">Findings Status:</label>
+                <select id="findingsStatusSelect" name="status" class="form-select">
+                  {% for option in findings_status_options %}
+                  <option value="{{ option.value }}" {% if findings_status == option.value %}selected{% endif %}>
+                    {{ option.label }}
+                  </option>
+                  {% endfor %}
+                </select>
+              </div>
+              {% endif %}
+              <div class="data-inline-control filter-data-control">
+                <label for="query" class="form-label">Filter Data:</label>
+                <input type="text"
+                       class="form-control"
+                       id="query"
+                       name="query"
+                       placeholder="Enter search term"
+                       value="{{ request.args.get('query', '') }}">
+              </div>
             </div>
-            {% if findings_status_options %}
-            <input type="hidden" id="findingsStatusInput" name="status" value="{{ findings_status }}">
-            {% endif %}
-            <button type="submit" class="btn btn-primary">Search</button>
-            <a href="{{ reset_action }}" class="btn btn-secondary">Reset Search</a>
+            <div class="data-filter-actions-row">
+              <button type="submit" class="btn btn-primary">Search</button>
+              <a href="{{ reset_action }}" class="btn btn-secondary">Reset Search</a>
+              <div class="table-font-controls"
+                   role="group"
+                   aria-label="Table font size">
+                <span class="small text-secondary">Table font size</span>
+                <button id="decreaseTableFont"
+                        type="button"
+                        class="btn btn-outline-secondary btn-sm"
+                        aria-label="Decrease table font size">A−</button>
+                <button id="increaseTableFont"
+                        type="button"
+                        class="btn btn-outline-secondary btn-sm"
+                        aria-label="Increase table font size">A+</button>
+              </div>
+            </div>
           </form>
-          <div class="table-font-controls mt-3"
-               role="group"
-               aria-label="Table font size">
-            <span class="small text-secondary">Table font size</span>
-            <button id="decreaseTableFont"
-                    type="button"
-                    class="btn btn-outline-secondary btn-sm"
-                    aria-label="Decrease table font size">A−</button>
-            <button id="increaseTableFont"
-                    type="button"
-                    class="btn btn-outline-secondary btn-sm"
-                    aria-label="Increase table font size">A+</button>
-          </div>
         </div>
         <!-- Scrollable Table Container fills remaining height -->
         <div id="table-container" class="table-container mt-3">
@@ -826,7 +880,7 @@ document.addEventListener('DOMContentLoaded', function () {
   if (!tableBody) return;
 
   const sortableHeaders = Array.from(headerRow.cells).filter((cell) =>
-    cell.classList.contains('findings-sortable')
+    cell.classList.contains('table-sortable')
   );
 
   sortableHeaders.forEach((header) => {
@@ -1638,7 +1692,7 @@ def prepare_top_level_headers(html, sortable=False):
             else ""
         )
         return (
-            f'<th class="findings-sortable" tabindex="0" role="button" '
+            f'<th class="table-sortable" tabindex="0" role="button" '
             f'aria-sort="none"{title}{affected_entities_limit}>{label}</th>'
         )
 
@@ -1780,7 +1834,10 @@ def query(filename):
             filtered_data = data
     else:
         filtered_data = data
-    table = prepare_top_level_headers(generate_html_table(filtered_data))
+    table = prepare_top_level_headers(
+        generate_html_table(filtered_data),
+        sortable=True,
+    )
     tabs = dataset_groups()
     return render_template_string(
         HTML_TEMPLATE,
