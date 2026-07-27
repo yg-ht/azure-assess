@@ -682,6 +682,52 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             self.assertIn(str(data_dir / "azure-findings-flat.json"), body)
             self.assertIn(f"python azure-findings.py -i {data_dir}", body)
 
+    def test_every_collector_output_prefix_has_its_declared_friendly_name(self):
+        endpoints = (
+            azure_collect.AZURE_CLI_ENDPOINTS
+            + azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+        )
+
+        for endpoint in endpoints:
+            with self.subTest(endpoint=endpoint["name"]):
+                prefix = azure_collect.endpoint_output_prefix(endpoint)
+                self.assertEqual(
+                    azure_present.DATASET_NAME_MAP.get(prefix),
+                    endpoint["name"],
+                )
+
+    def test_recent_sanitised_and_explicit_output_prefixes_have_friendly_names(self):
+        expected_names = {
+            "az_resource_list_--resource-type_microsoft.web_kubeenvironments":
+                "Kubernetes Environments",
+            "az_rest_--method_get_--url_https_graph.microsoft.com_v1.0_directoryroles":
+                "Graph Directory Roles",
+            "az_functionapp_auth_show": "Function App Auth Settings",
+            "az_search_service_list": "Search Services",
+            "az_sql_server_threat-policy_show": "SQL Server Threat Policy",
+            "az_rest_--method_get_--url_subscriptions_id_providers_microsoft.security_assessments_api-version_2020-01-01":
+                "Defender Assessments",
+        }
+
+        for prefix, expected_name in expected_names.items():
+            with self.subTest(prefix=prefix):
+                self.assertEqual(
+                    azure_present.display_name_for_dataset(
+                        f"{prefix}_20260727-120000.json"
+                    ),
+                    expected_name,
+                )
+
+    def test_legacy_output_prefix_keeps_its_friendly_name(self):
+        legacy_prefix = azure_present.collect_filename_prefix(
+            "az rest --method get --url https://graph.microsoft.com/v1.0/directoryRoles"
+        )
+
+        self.assertEqual(
+            azure_present.DATASET_NAME_MAP[legacy_prefix],
+            "Graph Directory Roles",
+        )
+
 
 class ApplicationInsightsEndpointTests(unittest.TestCase):
     def test_application_insights_collection_uses_supported_component_show_command(self):

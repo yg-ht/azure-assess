@@ -1101,11 +1101,21 @@ def load_collect_endpoint_name_map():
         print(f"Warning: could not load dataset mappings from {collect_script}: {exc}")
         return endpoint_map
 
-    for endpoint in getattr(module, "AZURE_CLI_ENDPOINTS", []):
+    base_endpoints = getattr(module, "AZURE_CLI_ENDPOINTS", [])
+    parameterized_endpoints = getattr(module, "AZURE_CLI_ENDPOINTS_PARAMS", [])
+
+    # Retain legacy aliases so datasets collected before the canonical filename
+    # sanitiser was introduced continue to receive their friendly names.
+    for endpoint in base_endpoints:
         endpoint_map[collect_filename_prefix(endpoint["cli_command"])] = endpoint["name"]
 
-    for endpoint in getattr(module, "AZURE_CLI_ENDPOINTS_PARAMS", []):
+    for endpoint in parameterized_endpoints:
         endpoint_map[collect_filename_prefix(endpoint["cli_command"], parameterized=True)] = endpoint["name"]
+
+    endpoint_output_prefix = getattr(module, "endpoint_output_prefix", None)
+    if callable(endpoint_output_prefix):
+        for endpoint in base_endpoints + parameterized_endpoints:
+            endpoint_map[endpoint_output_prefix(endpoint)] = endpoint["name"]
 
     endpoint_map["role_enriched"] = "Role Assignments Enriched"
     return endpoint_map
