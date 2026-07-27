@@ -316,6 +316,21 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         )
         self.assertIn("definition", prepared)
 
+    def test_affected_entities_display_is_limited_to_first_eight_without_disclosure(self):
+        entities = [f"account-{index}" for index in range(10)]
+        prepared = azure_present.prepare_findings_rows([
+            {"affected_entities": entities}
+        ])
+
+        html = azure_present.generate_html_table(prepared)
+
+        self.assertEqual(
+            prepared[0]["affected_entities"],
+            entities[:azure_present.AFFECTED_ENTITIES_DISPLAY_LIMIT],
+        )
+        self.assertNotIn("<details", html)
+        self.assertEqual(html.count("<li>"), azure_present.AFFECTED_ENTITIES_DISPLAY_LIMIT)
+
     def test_findings_header_tooltips_explain_metadata_columns(self):
         row = {
             "definition": {},
@@ -332,10 +347,33 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         for name, tooltip in azure_present.FINDINGS_HEADER_TOOLTIPS.items():
             self.assertIn(
-                f'<th title="{tooltip}">{name}</th>',
+                f'aria-sort="none" title="{tooltip}">{name}</th>',
                 annotated,
             )
-        self.assertIn("<th>Affected entities</th>", annotated)
+        self.assertIn(
+            'aria-sort="none">Affected entities</th>',
+            annotated,
+        )
+
+    def test_findings_data_headers_are_sortable_but_json_action_source_is_not(self):
+        html = azure_present.generate_html_table([
+            {"title": "Example", "count": 1}
+        ])
+
+        annotated = azure_present.add_findings_header_tooltips(html)
+
+        self.assertIn("<th>json_string</th>", annotated)
+        self.assertIn(
+            '<th class="findings-sortable" tabindex="0" role="button" '
+            'aria-sort="none">title</th>',
+            annotated,
+        )
+        self.assertIn(
+            '<th class="findings-sortable" tabindex="0" role="button" '
+            'aria-sort="none">count</th>',
+            annotated,
+        )
+        self.assertNotIn('aria-sort="none">json_string</th>', annotated)
 
     def test_duplicate_links_are_removed_before_collapse_threshold_is_applied(self):
         unique_links = [

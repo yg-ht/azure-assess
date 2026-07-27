@@ -75,6 +75,7 @@ FINDINGS_PRIMARY_COLUMNS = (
     "affected_entities",
 )
 FINDINGS_LINK_COLUMNS = ("viewer_links", "azure_portal_links")
+AFFECTED_ENTITIES_DISPLAY_LIMIT = 8
 FINDINGS_HEADER_TOOLTIPS = {
     "definition": "What the check is and why it exists.",
     "reporting": "Affected assets, observations and provenance.",
@@ -168,6 +169,26 @@ HTML_TEMPLATE = """
         top: 0;
         background: var(--table-bg);
         z-index: 1;
+      }
+      table thead th.findings-sortable {
+        cursor: pointer;
+        user-select: none;
+      }
+      table thead th.findings-sortable::after {
+        content: " ↕";
+        opacity: 0.55;
+      }
+      table thead th.findings-sortable[aria-sort="ascending"]::after {
+        content: " ↑";
+        opacity: 1;
+      }
+      table thead th.findings-sortable[aria-sort="descending"]::after {
+        content: " ↓";
+        opacity: 1;
+      }
+      table thead th.findings-sortable:focus-visible {
+        outline: 2px solid var(--link-color);
+        outline-offset: -2px;
       }
       /* Nested sub-tables: hide them and add margin-top */
       table table {
@@ -690,6 +711,60 @@ document.addEventListener('DOMContentLoaded', function () {
 
     toggleCell.appendChild(toggleBtn);
   }
+
+  const tableBody = table.tBodies[0];
+  if (!tableBody) return;
+
+  const sortableHeaders = Array.from(headerRow.cells).filter((cell) =>
+    cell.classList.contains('findings-sortable')
+  );
+
+  sortableHeaders.forEach((header) => {
+    const columnIndex = header.cellIndex;
+    Array.from(tableBody.rows).forEach((row) => {
+      const cell = row.cells[columnIndex];
+      if (cell) {
+        cell.dataset.findingsSortValue = cell.textContent.trim();
+      }
+    });
+
+    const sortColumn = () => {
+      const direction = header.getAttribute('aria-sort') === 'ascending'
+        ? 'descending'
+        : 'ascending';
+      sortableHeaders.forEach((candidate) => candidate.setAttribute('aria-sort', 'none'));
+      header.setAttribute('aria-sort', direction);
+
+      const rows = Array.from(tableBody.rows).map((row, index) => ({row, index}));
+      rows.sort((left, right) => {
+        const leftCell = left.row.cells[columnIndex];
+        const rightCell = right.row.cells[columnIndex];
+        const leftValue = leftCell?.dataset.findingsSortValue || '';
+        const rightValue = rightCell?.dataset.findingsSortValue || '';
+        const leftNumber = Number(leftValue.replace(/,/g, ''));
+        const rightNumber = Number(rightValue.replace(/,/g, ''));
+        const bothNumeric = leftValue !== '' && rightValue !== ''
+          && Number.isFinite(leftNumber) && Number.isFinite(rightNumber);
+        const comparison = bothNumeric
+          ? leftNumber - rightNumber
+          : leftValue.localeCompare(rightValue, undefined, {
+              numeric: true,
+              sensitivity: 'base'
+            });
+        if (comparison === 0) return left.index - right.index;
+        return direction === 'ascending' ? comparison : -comparison;
+      });
+      rows.forEach(({row}) => tableBody.appendChild(row));
+    };
+
+    header.addEventListener('click', sortColumn);
+    header.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        sortColumn();
+      }
+    });
+  });
 });
 </script>
 
@@ -1107,8 +1182,12 @@ def prepare_findings_rows(data):
             values = row.get(column)
             if isinstance(values, list):
                 row[column] = unique_non_empty_strings(values)
-        if "affected_entities" not in row:
-            row["affected_entities"] = affected_entity_labels(row)
+        entities = row.get("affected_entities")
+        if not isinstance(entities, list):
+            entities = affected_entity_labels(row)
+        row["affected_entities"] = unique_non_empty_strings(
+            entities
+        )[:AFFECTED_ENTITIES_DISPLAY_LIMIT]
 
         ordered = OrderedDict()
         for column in FINDINGS_PRIMARY_COLUMNS:
@@ -1363,21 +1442,30 @@ def collapse_findings_link_cells(
 
 
 def add_findings_header_tooltips(html):
-    """Add native tooltips to the top-level findings metadata headers."""
+    """Add sorting controls and native tooltips to top-level findings headers."""
     header_start = html.find("<thead>")
     header_end = html.find("</thead>", header_start)
     if header_start == -1 or header_end == -1:
         return html
 
     header = html[header_start:header_end]
-    for name, tooltip in FINDINGS_HEADER_TOOLTIPS.items():
-        header = header.replace(
-            f"<th>{name}</th>",
-            f'<th title="{escape(tooltip, quote=True)}">{name}</th>',
+
+    def prepare_header(match):
+        name = match.group("name")
+        if name == "json_string":
+            return match.group(0)
+        label = "Affected entities" if name == "affected_entities" else name
+        tooltip = FINDINGS_HEADER_TOOLTIPS.get(name)
+        title = f' title="{escape(tooltip, quote=True)}"' if tooltip else ""
+        return (
+            f'<th class="findings-sortable" tabindex="0" role="button" '
+            f'aria-sort="none"{title}>{label}</th>'
         )
-    header = header.replace(
-        "<th>affected_entities</th>",
-        "<th>Affected entities</th>",
+
+    header = re.sub(
+        r"<th>(?P<name>[^<]+)</th>",
+        prepare_header,
+        header,
     )
     return html[:header_start] + header + html[header_end:]
 
