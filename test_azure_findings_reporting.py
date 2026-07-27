@@ -423,6 +423,44 @@ class FindingReportingOutputTests(unittest.TestCase):
             row["reporting"]["observations"],
         )
 
+    def test_flat_output_prioritises_evidence_and_deduplicates_helper_links(self):
+        finding = example_finding([{"name": "account-one"}])
+        finding["references"]["evidence_links"] = [
+            {
+                "href": "/query/accounts.json?query=account-one",
+                "portal": "https://portal.azure.com/#account-one",
+            },
+            {
+                "href": "/query/accounts.json?query=account-one",
+                "portal": "https://portal.azure.com/#account-one",
+            },
+        ]
+
+        row = azure_findings.flat_rows([finding])[0]
+
+        self.assertEqual(
+            list(row)[:8],
+            [
+                "title",
+                "severity",
+                "status",
+                "reason",
+                "count",
+                "evidence",
+                "viewer_links",
+                "affected_entities",
+            ],
+        )
+        self.assertEqual(
+            row["viewer_links"],
+            ["/query/accounts.json?query=account-one"],
+        )
+        self.assertEqual(
+            row["azure_portal_links"],
+            ["https://portal.azure.com/#account-one"],
+        )
+        self.assertEqual(row["affected_entities"], ["account-one"])
+
 
 if __name__ == "__main__":
     unittest.main()

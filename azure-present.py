@@ -64,6 +64,26 @@ FINDING_STATUS_OPTIONS = OrderedDict(
     ]
 )
 
+FINDINGS_PRIMARY_COLUMNS = (
+    "title",
+    "severity",
+    "status",
+    "reason",
+    "count",
+    "evidence",
+    "viewer_links",
+    "affected_entities",
+)
+FINDINGS_LINK_COLUMNS = ("viewer_links", "azure_portal_links")
+FINDINGS_HEADER_TOOLTIPS = {
+    "definition": "What the check is and why it exists.",
+    "reporting": "Affected assets, observations and provenance.",
+    "context": "Relevant Azure service, subscription and engagement scope.",
+    "coverage": "How much of the eligible environment was actually assessed.",
+    "review": "Analyst decision, confidence, rationale and report inclusion.",
+    "triage": "Contextual severity, grouping, deduplication and retest status.",
+}
+
 TIMESTAMP_SUFFIX_PATTERN = re.compile(r"_(\d{8}-\d{6})$")
 
 
@@ -1051,6 +1071,56 @@ def filter_findings_by_status(data, status_filter):
     return [item for item in data if canonical_finding_status(item.get("status")) in allowed_statuses]
 
 
+def unique_non_empty_strings(values):
+    """Return non-empty strings once, preserving their first-seen order."""
+    return list(dict.fromkeys(
+        value
+        for value in values
+        if isinstance(value, str) and value
+    ))
+
+
+def affected_entity_labels(row):
+    """Return compact asset labels from a flat finding row."""
+    reporting = row.get("reporting")
+    assets = reporting.get("assets", []) if isinstance(reporting, dict) else []
+    return unique_non_empty_strings(
+        asset.get("name") or asset.get("identifier")
+        for asset in assets
+        if isinstance(asset, dict)
+    )
+
+
+def prepare_findings_rows(data):
+    """Normalise findings for display while retaining all source columns."""
+    if not isinstance(data, list):
+        return data
+
+    prepared = []
+    for item in data:
+        if not isinstance(item, dict):
+            prepared.append(item)
+            continue
+
+        row = dict(item)
+        for column in FINDINGS_LINK_COLUMNS:
+            values = row.get(column)
+            if isinstance(values, list):
+                row[column] = unique_non_empty_strings(values)
+        if "affected_entities" not in row:
+            row["affected_entities"] = affected_entity_labels(row)
+
+        ordered = OrderedDict()
+        for column in FINDINGS_PRIMARY_COLUMNS:
+            if column in row:
+                ordered[column] = row[column]
+        for column, value in row.items():
+            if column not in ordered:
+                ordered[column] = value
+        prepared.append(ordered)
+    return prepared
+
+
 def contains_nested_list_of_dicts(obj):
     if isinstance(obj, list):
         return any(
@@ -1292,6 +1362,26 @@ def collapse_findings_link_cells(
     return FINDINGS_LINK_LIST_PATTERN.sub(replace_link_list, html)
 
 
+def add_findings_header_tooltips(html):
+    """Add native tooltips to the top-level findings metadata headers."""
+    header_start = html.find("<thead>")
+    header_end = html.find("</thead>", header_start)
+    if header_start == -1 or header_end == -1:
+        return html
+
+    header = html[header_start:header_end]
+    for name, tooltip in FINDINGS_HEADER_TOOLTIPS.items():
+        header = header.replace(
+            f"<th>{name}</th>",
+            f'<th title="{escape(tooltip, quote=True)}">{name}</th>',
+        )
+    header = header.replace(
+        "<th>affected_entities</th>",
+        "<th>Affected entities</th>",
+    )
+    return html[:header_start] + header + html[header_end:]
+
+
 @app.route('/')
 def dashboard():
     if not DATA_DIR.exists():
@@ -1368,7 +1458,10 @@ def findings():
     else:
         filtered_data = data
 
-    table = collapse_findings_link_cells(generate_html_table(filtered_data))
+    display_data = prepare_findings_rows(filtered_data)
+    table = add_findings_header_tooltips(
+        collapse_findings_link_cells(generate_html_table(display_data))
+    )
     tabs = [{
         "name": "Findings",
         "filename": FINDINGS_FLAT_FILENAME,

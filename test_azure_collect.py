@@ -274,6 +274,85 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         disclosure_html = disclosure_html.split("</details>", 1)[0]
         self.assertEqual(disclosure_html.count("<a "), 11)
 
+    def test_findings_rows_prioritise_actionable_columns_and_add_entities(self):
+        row = {
+            "finding_id": "example_finding",
+            "definition": {},
+            "reporting": {
+                "assets": [
+                    {"name": "account-one", "identifier": "/accounts/one"},
+                    {"name": "account-one", "identifier": "/accounts/one"},
+                    {"name": None, "identifier": "/accounts/two"},
+                ]
+            },
+            "title": "Example finding",
+            "severity": "medium",
+            "status": "found",
+            "reason": "Regression test",
+            "count": 2,
+            "evidence": [{"name": "account-one"}],
+            "viewer_links": ["/query/one.json", "/query/one.json"],
+        }
+
+        prepared = azure_present.prepare_findings_rows([row])[0]
+
+        self.assertEqual(
+            list(prepared)[:8],
+            [
+                "title",
+                "severity",
+                "status",
+                "reason",
+                "count",
+                "evidence",
+                "viewer_links",
+                "affected_entities",
+            ],
+        )
+        self.assertEqual(prepared["viewer_links"], ["/query/one.json"])
+        self.assertEqual(
+            prepared["affected_entities"],
+            ["account-one", "/accounts/two"],
+        )
+        self.assertIn("definition", prepared)
+
+    def test_findings_header_tooltips_explain_metadata_columns(self):
+        row = {
+            "definition": {},
+            "reporting": {},
+            "context": {},
+            "coverage": {},
+            "review": {},
+            "triage": {},
+            "affected_entities": [],
+        }
+        html = azure_present.generate_html_table([row])
+
+        annotated = azure_present.add_findings_header_tooltips(html)
+
+        for name, tooltip in azure_present.FINDINGS_HEADER_TOOLTIPS.items():
+            self.assertIn(
+                f'<th title="{tooltip}">{name}</th>',
+                annotated,
+            )
+        self.assertIn("<th>Affected entities</th>", annotated)
+
+    def test_duplicate_links_are_removed_before_collapse_threshold_is_applied(self):
+        unique_links = [
+            f"/query/file-{index}.json?query=resource-{index}"
+            for index in range(10)
+        ]
+        prepared = azure_present.prepare_findings_rows([
+            {"viewer_links": unique_links + [unique_links[0]]}
+        ])
+        html = azure_present.generate_html_table(prepared)
+
+        collapsed_html = azure_present.collapse_findings_link_cells(html)
+
+        self.assertEqual(prepared[0]["viewer_links"], unique_links)
+        self.assertNotIn("<details", collapsed_html)
+        self.assertEqual(collapsed_html.count("<li>"), 10)
+
     def test_findings_link_cell_does_not_collapse_unrelated_links(self):
         links = "".join(
             f'<li><a href="https://example.com/{index}">Link {index}</a></li>'

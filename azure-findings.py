@@ -561,6 +561,25 @@ def attach_references(finding, source_files):
     return finding
 
 
+def unique_non_empty_strings(values):
+    """Return non-empty strings once, preserving their first-seen order."""
+    return list(dict.fromkeys(
+        value
+        for value in values
+        if isinstance(value, str) and value
+    ))
+
+
+def affected_entity_labels(reporting):
+    """Return compact labels for the assets represented by a finding."""
+    assets = reporting.get("assets", []) if isinstance(reporting, dict) else []
+    return unique_non_empty_strings(
+        asset.get("name") or asset.get("identifier")
+        for asset in assets
+        if isinstance(asset, dict)
+    )
+
+
 def flat_rows(findings):
     rows = []
     for finding in findings:
@@ -570,7 +589,20 @@ def flat_rows(findings):
         ensure_finding_coverage(finding)
         ensure_finding_review(finding)
         ensure_finding_triage(finding)
+        evidence_links = finding.get("references", {}).get("evidence_links", [])
         row = {
+            "title": finding["title"],
+            "severity": finding["severity"],
+            "status": finding["status"],
+            "reason": finding["reason"],
+            "count": finding["evidence_count"],
+            "evidence": finding["evidence"] if finding["evidence"] else [],
+            "viewer_links": unique_non_empty_strings(
+                item.get("href")
+                for item in evidence_links
+                if isinstance(item, dict)
+            ),
+            "affected_entities": affected_entity_labels(finding["reporting"]),
             "finding_id": finding["finding_id"],
             "definition": finding["definition"],
             "reporting": finding["reporting"],
@@ -578,15 +610,12 @@ def flat_rows(findings):
             "coverage": finding["coverage"],
             "review": finding["review"],
             "triage": finding["triage"],
-            "title": finding["title"],
-            "severity": finding["severity"],
-            "status": finding["status"],
-            "reason": finding["reason"],
-            "count": finding["evidence_count"],
-            "evidence": finding["evidence"] if finding["evidence"] else [],
-            "viewer_links": [item.get("href") for item in finding.get("references", {}).get("evidence_links", []) if item.get("href")],
             "source_file": finding.get("references", {}).get("source_files", []),
-            "azure_portal_links": [item.get("portal") for item in finding.get("references", {}).get("evidence_links", []) if item.get("portal")],
+            "azure_portal_links": unique_non_empty_strings(
+                item.get("portal")
+                for item in evidence_links
+                if isinstance(item, dict)
+            ),
         }
         rows.append(row)
     return rows
