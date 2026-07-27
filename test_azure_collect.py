@@ -243,7 +243,8 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         linked_html = azure_present.linkify_rendered_urls(html)
 
-        self.assertIn(">Az Resource List: storageAccounts/storage-one</a>", linked_html)
+        self.assertIn(">Resources: storageAccounts/storage-one</a>", linked_html)
+        self.assertNotIn(">Az Resource List", linked_html)
         self.assertNotIn(">/query/", linked_html)
         self.assertIn('href="/query/az_resource_list_20260705-000000.json?', linked_html)
 
@@ -315,8 +316,9 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             ["account-one", "/accounts/two"],
         )
         self.assertIn("definition", prepared)
+        self.assertEqual(list(prepared)[-1], "finding_id")
 
-    def test_affected_entities_display_is_limited_to_first_eight_without_disclosure(self):
+    def test_affected_entities_remain_complete_for_expandable_display(self):
         entities = [f"account-{index}" for index in range(10)]
         prepared = azure_present.prepare_findings_rows([
             {"affected_entities": entities}
@@ -326,10 +328,10 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         self.assertEqual(
             prepared[0]["affected_entities"],
-            entities[:azure_present.AFFECTED_ENTITIES_DISPLAY_LIMIT],
+            entities,
         )
         self.assertNotIn("<details", html)
-        self.assertEqual(html.count("<li>"), azure_present.AFFECTED_ENTITIES_DISPLAY_LIMIT)
+        self.assertEqual(html.count("<li>"), len(entities))
 
     def test_findings_header_tooltips_explain_metadata_columns(self):
         row = {
@@ -347,11 +349,13 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         for name, tooltip in azure_present.FINDINGS_HEADER_TOOLTIPS.items():
             self.assertIn(
-                f'aria-sort="none" title="{tooltip}">{name}</th>',
+                f'aria-sort="none" title="{tooltip}">'
+                f'{azure_present.title_case_column_heading(name)}</th>',
                 annotated,
             )
         self.assertIn(
-            'aria-sort="none">Affected entities</th>',
+            f'data-initial-visible-count="{azure_present.AFFECTED_ENTITIES_DISPLAY_LIMIT}">'
+            "Affected Entities</th>",
             annotated,
         )
 
@@ -365,15 +369,31 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("<th>json_string</th>", annotated)
         self.assertIn(
             '<th class="findings-sortable" tabindex="0" role="button" '
-            'aria-sort="none">title</th>',
+            'aria-sort="none">Title</th>',
             annotated,
         )
         self.assertIn(
             '<th class="findings-sortable" tabindex="0" role="button" '
-            'aria-sort="none">count</th>',
+            'aria-sort="none">Count</th>',
             annotated,
         )
         self.assertNotIn('aria-sort="none">json_string</th>', annotated)
+
+    def test_dataset_headers_are_title_cased_without_changing_nested_keys(self):
+        html = azure_present.generate_html_table([
+            {
+                "resourceGroup": "rg-one",
+                "subscription_id": "sub-one",
+                "details": {"finding_id": "nested-id"},
+            }
+        ])
+
+        prepared = azure_present.prepare_top_level_headers(html)
+
+        self.assertIn("<th>Resource Group</th>", prepared)
+        self.assertIn("<th>Subscription ID</th>", prepared)
+        self.assertIn("<th>Details</th>", prepared)
+        self.assertIn("<th>finding_id</th>", prepared)
 
     def test_duplicate_links_are_removed_before_collapse_threshold_is_applied(self):
         unique_links = [
@@ -470,6 +490,13 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('id="table-content" class="table-content-pending"', body)
         self.assertIn("content.classList.remove('table-content-pending')", body)
         self.assertIn("loading.hidden = true", body)
+        self.assertIn('id="decreaseTableFont"', body)
+        self.assertIn('id="increaseTableFont"', body)
+        self.assertIn("white-space: nowrap", body)
+        self.assertIn("Show ${hiddenItems.length} more", body)
+        self.assertIn("'Show fewer'", body)
+        self.assertIn('data-initial-visible-count="8"', body)
+        self.assertIn("font-size: var(--table-font-size, 0.8rem)", body)
 
     def test_dataset_query_route_uses_the_same_loading_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -486,6 +513,9 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('id="data-table-loading"', body)
         self.assertIn('progress-bar-animated', body)
         self.assertIn('id="table-content" class="table-content-pending"', body)
+        self.assertIn('id="decreaseTableFont"', body)
+        self.assertIn('id="increaseTableFont"', body)
+        self.assertIn("<th>Name</th>", body)
 
     def test_dataset_groups_default_does_not_load_record_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:

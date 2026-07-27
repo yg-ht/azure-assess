@@ -76,6 +76,18 @@ FINDINGS_PRIMARY_COLUMNS = (
 )
 FINDINGS_LINK_COLUMNS = ("viewer_links", "azure_portal_links")
 AFFECTED_ENTITIES_DISPLAY_LIMIT = 8
+COLUMN_HEADING_ACRONYMS = {
+    "api": "API",
+    "id": "ID",
+    "ip": "IP",
+    "json": "JSON",
+    "mfa": "MFA",
+    "nsg": "NSG",
+    "sql": "SQL",
+    "tls": "TLS",
+    "url": "URL",
+    "vm": "VM",
+}
 FINDINGS_HEADER_TOOLTIPS = {
     "definition": "What the check is and why it exists.",
     "reporting": "Affected assets, observations and provenance.",
@@ -154,6 +166,9 @@ HTML_TEMPLATE = """
         border-collapse: collapse;
         background-color: var(--table-bg);
       }
+      .table-container table {
+        font-size: var(--table-font-size, 0.8rem);
+      }
       table th, table td {
         border: 1px solid var(--table-border);
         padding: 8px;
@@ -174,6 +189,7 @@ HTML_TEMPLATE = """
       table thead th.findings-sortable {
         cursor: pointer;
         user-select: none;
+        white-space: nowrap;
       }
       table thead th.findings-sortable::after {
         content: " ↕";
@@ -263,6 +279,16 @@ HTML_TEMPLATE = """
       }
       .table-loading-progress {
         height: 0.75rem;
+      }
+      .table-font-controls {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .affected-entities-toggle {
+        display: block;
+        margin-top: 0.35rem;
+        padding: 0;
       }
       /* Data view container takes remaining height */
       .data-view {
@@ -455,6 +481,19 @@ HTML_TEMPLATE = """
             <button type="submit" class="btn btn-primary">Search</button>
             <a href="{{ reset_action }}" class="btn btn-secondary">Reset Search</a>
           </form>
+          <div class="table-font-controls mt-3"
+               role="group"
+               aria-label="Table font size">
+            <span class="small text-secondary">Table font size</span>
+            <button id="decreaseTableFont"
+                    type="button"
+                    class="btn btn-outline-secondary btn-sm"
+                    aria-label="Decrease table font size">A−</button>
+            <button id="increaseTableFont"
+                    type="button"
+                    class="btn btn-outline-secondary btn-sm"
+                    aria-label="Increase table font size">A+</button>
+          </div>
         </div>
         <!-- Scrollable Table Container fills remaining height -->
         <div id="table-container" class="table-container mt-3">
@@ -696,6 +735,36 @@ HTML_TEMPLATE = """
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
+  const tableContainer = document.getElementById('table-container');
+  const decreaseButton = document.getElementById('decreaseTableFont');
+  const increaseButton = document.getElementById('increaseTableFont');
+  if (!tableContainer || !decreaseButton || !increaseButton) return;
+
+  const minimumSize = 0.6;
+  const maximumSize = 1.2;
+  const step = 0.1;
+  let currentSize = 0.8;
+
+  const applyTableFontSize = () => {
+    tableContainer.style.setProperty('--table-font-size', currentSize.toFixed(1) + 'rem');
+    decreaseButton.disabled = currentSize <= minimumSize;
+    increaseButton.disabled = currentSize >= maximumSize;
+  };
+
+  decreaseButton.addEventListener('click', function () {
+    currentSize = Math.max(minimumSize, currentSize - step);
+    applyTableFontSize();
+  });
+  increaseButton.addEventListener('click', function () {
+    currentSize = Math.min(maximumSize, currentSize + step);
+    applyTableFontSize();
+  });
+  applyTableFontSize();
+});
+</script>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
   const table = document.querySelector('table');
   if (!table) return;
 
@@ -806,6 +875,38 @@ document.addEventListener('DOMContentLoaded', function () {
       }
     });
   });
+
+  const affectedEntitiesHeader = Array.from(headerRow.cells).find((cell) =>
+    cell.dataset.initialVisibleCount
+  );
+  if (affectedEntitiesHeader) {
+    const affectedEntitiesIndex = affectedEntitiesHeader.cellIndex;
+    const visibleCount = Number(affectedEntitiesHeader.dataset.initialVisibleCount);
+    Array.from(tableBody.rows).forEach((row) => {
+      const cell = row.cells[affectedEntitiesIndex];
+      if (!cell) return;
+      const list = Array.from(cell.children).find((child) => child.tagName === 'UL');
+      if (!list) return;
+      const items = Array.from(list.children).filter((child) => child.tagName === 'LI');
+      if (items.length <= visibleCount) return;
+
+      const hiddenItems = items.slice(visibleCount);
+      hiddenItems.forEach((item) => { item.hidden = true; });
+
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'btn btn-link btn-sm affected-entities-toggle';
+      toggle.setAttribute('aria-expanded', 'false');
+      toggle.textContent = `Show ${hiddenItems.length} more`;
+      toggle.addEventListener('click', function () {
+        const expanded = toggle.getAttribute('aria-expanded') === 'true';
+        hiddenItems.forEach((item) => { item.hidden = expanded; });
+        toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        toggle.textContent = expanded ? `Show ${hiddenItems.length} more` : 'Show fewer';
+      });
+      cell.appendChild(toggle);
+    });
+  }
 });
 </script>
 
@@ -1243,9 +1344,9 @@ def prepare_findings_rows(data):
         entities = row.get("affected_entities")
         if not isinstance(entities, list):
             entities = affected_entity_labels(row)
-        row["affected_entities"] = unique_non_empty_strings(
-            entities
-        )[:AFFECTED_ENTITIES_DISPLAY_LIMIT]
+        row["affected_entities"] = unique_non_empty_strings(entities)
+        has_finding_id = "finding_id" in row
+        finding_id = row.pop("finding_id", None)
 
         ordered = OrderedDict()
         for column in FINDINGS_PRIMARY_COLUMNS:
@@ -1254,6 +1355,8 @@ def prepare_findings_rows(data):
         for column, value in row.items():
             if column not in ordered:
                 ordered[column] = value
+        if has_finding_id:
+            ordered["finding_id"] = finding_id
         prepared.append(ordered)
     return prepared
 
@@ -1431,12 +1534,12 @@ def portal_link_label(url):
 def viewer_link_label(url):
     parsed = urlparse(url)
     filename = Path(unquote(parsed.path).removeprefix("/query/")).stem
-    dataset = dataset_key_for_filename(filename).replace("_", " ").strip().title()
+    service = display_name_for_dataset(filename)
     query = parse_qs(parsed.query).get("query", [""])[0]
     query_label = resource_label_from_id(query) or query
     if query_label:
-        return f"{dataset}: {query_label}"
-    return dataset or "Data Viewer"
+        return f"{service}: {query_label}"
+    return service or "Data Viewer"
 
 
 def label_for_url(url):
@@ -1499,8 +1602,19 @@ def collapse_findings_link_cells(
     return FINDINGS_LINK_LIST_PATTERN.sub(replace_link_list, html)
 
 
-def add_findings_header_tooltips(html):
-    """Add sorting controls and native tooltips to top-level findings headers."""
+def title_case_column_heading(name):
+    """Convert a JSON field name to a compact title-cased table heading."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(name))
+    words = re.split(r"[_\-\s]+", spaced.strip("_ -"))
+    return " ".join(
+        COLUMN_HEADING_ACRONYMS.get(word.lower(), word.capitalize())
+        for word in words
+        if word
+    )
+
+
+def prepare_top_level_headers(html, sortable=False):
+    """Title-case top-level headers and optionally attach findings controls."""
     header_start = html.find("<thead>")
     header_end = html.find("</thead>", header_start)
     if header_start == -1 or header_end == -1:
@@ -1512,12 +1626,20 @@ def add_findings_header_tooltips(html):
         name = match.group("name")
         if name == "json_string":
             return match.group(0)
-        label = "Affected entities" if name == "affected_entities" else name
+        label = title_case_column_heading(name)
+        if not sortable:
+            return f"<th>{label}</th>"
+
         tooltip = FINDINGS_HEADER_TOOLTIPS.get(name)
         title = f' title="{escape(tooltip, quote=True)}"' if tooltip else ""
+        affected_entities_limit = (
+            f' data-initial-visible-count="{AFFECTED_ENTITIES_DISPLAY_LIMIT}"'
+            if name == "affected_entities"
+            else ""
+        )
         return (
             f'<th class="findings-sortable" tabindex="0" role="button" '
-            f'aria-sort="none"{title}>{label}</th>'
+            f'aria-sort="none"{title}{affected_entities_limit}>{label}</th>'
         )
 
     header = re.sub(
@@ -1526,6 +1648,11 @@ def add_findings_header_tooltips(html):
         header,
     )
     return html[:header_start] + header + html[header_end:]
+
+
+def add_findings_header_tooltips(html):
+    """Add title casing, sorting controls and tooltips to findings headers."""
+    return prepare_top_level_headers(html, sortable=True)
 
 
 @app.route('/')
@@ -1653,7 +1780,7 @@ def query(filename):
             filtered_data = data
     else:
         filtered_data = data
-    table = generate_html_table(filtered_data)
+    table = prepare_top_level_headers(generate_html_table(filtered_data))
     tabs = dataset_groups()
     return render_template_string(
         HTML_TEMPLATE,

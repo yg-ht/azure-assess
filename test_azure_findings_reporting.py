@@ -460,6 +460,7 @@ class FindingReportingOutputTests(unittest.TestCase):
             ["https://portal.azure.com/#account-one"],
         )
         self.assertEqual(row["affected_entities"], ["account-one"])
+        self.assertEqual(list(row)[-1], "finding_id")
 
 
 if __name__ == "__main__":

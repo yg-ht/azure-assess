@@ -603,7 +603,6 @@ def flat_rows(findings):
                 if isinstance(item, dict)
             ),
             "affected_entities": affected_entity_labels(finding["reporting"]),
-            "finding_id": finding["finding_id"],
             "definition": finding["definition"],
             "reporting": finding["reporting"],
             "context": finding["context"],
@@ -616,6 +615,7 @@ def flat_rows(findings):
                 for item in evidence_links
                 if isinstance(item, dict)
             ),
+            "finding_id": finding["finding_id"],
         }
         rows.append(row)
     return rows
