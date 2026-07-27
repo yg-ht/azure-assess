@@ -654,6 +654,41 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             self.assertIn("Loading...", body)
             loader.assert_not_called()
 
+    def test_dashboard_colours_follow_light_and_dark_themes(self):
+        findings_rows = {
+            "rows": [
+                {"status": "found"},
+                {"status": "not_found"},
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            findings_path = data_dir / azure_present.FINDINGS_FLAT_FILENAME
+            findings_path.write_text(json.dumps(findings_rows), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                response = client.get("/")
+
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("--dashboard-muted-text: #5c636a", body)
+        self.assertIn("--dashboard-muted-text: #b8c0c8", body)
+        self.assertIn("--dashboard-card-border: #6c757d", body)
+        self.assertIn("--dashboard-card-border: #69737d", body)
+        self.assertIn("dashboard-summary-card", body)
+        self.assertIn("dashboard-muted", body)
+        self.assertNotIn("text-secondary", body)
+        self.assertIn(
+            "window.dispatchEvent(new Event('azure-theme-change'))",
+            body,
+        )
+        self.assertIn(
+            "window.addEventListener('azure-theme-change', drawPieChart)",
+            body,
+        )
+
     def test_dataset_group_lookup_does_not_load_json_payloads(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)

@@ -133,6 +133,8 @@ HTML_TEMPLATE = """
         --table-border: #dee2e6;
         --row-even-bg: #f8f8f8;
         --row-odd-bg: #ffffff;
+        --dashboard-muted-text: #5c636a;
+        --dashboard-card-border: #6c757d;
       }
       /* Dark theme overrides when .dark-mode is applied */
       .dark-mode {
@@ -142,6 +144,8 @@ HTML_TEMPLATE = """
         --table-border: #444444;
         --row-even-bg: #1e1e1e;
         --row-odd-bg: #121212;
+        --dashboard-muted-text: #b8c0c8;
+        --dashboard-card-border: #69737d;
       }
       /* Apply theme variables */
       body {
@@ -355,7 +359,15 @@ HTML_TEMPLATE = """
       }
       .dashboard-chart-card {
         background-color: transparent;
-        border: 1px solid var(--table-border);
+        border: 1px solid var(--dashboard-card-border);
+        color: var(--text-color);
+      }
+      .dashboard-summary-card {
+        border-color: var(--dashboard-card-border) !important;
+        color: var(--text-color);
+      }
+      .dashboard-muted {
+        color: var(--dashboard-muted-text);
       }
       .dashboard-chart-wrap {
         position: relative;
@@ -376,6 +388,7 @@ HTML_TEMPLATE = """
         display: inline-flex;
         align-items: center;
         gap: 8px;
+        color: var(--text-color);
       }
       .chart-legend-swatch {
         width: 12px;
@@ -401,21 +414,21 @@ HTML_TEMPLATE = """
       
       {% if dashboard %}
       <!-- DASHBOARD PAGE -->
-      <div class="mt-4">
+      <div class="mt-4 dashboard-page">
         <h2>Dashboard</h2>
         {% if summary_cards %}
         <div class="row g-3 mb-4">
           {% for card in summary_cards %}
           <div class="col-12 col-md-6 col-xl-3">
-            <div class="card h-100 bg-transparent border-secondary">
+            <div class="card h-100 bg-transparent dashboard-summary-card">
               <div class="card-body">
-                <h3 class="h6 text-uppercase text-secondary">{{ card.label }}</h3>
+                <h3 class="h6 text-uppercase dashboard-muted">{{ card.label }}</h3>
                 <div class="fs-3 fw-bold"
                      {% if card.count_filenames %}
                      data-summary-count-filenames="{{ card.count_filenames|join(',') }}"
                      {% endif %}>{{ card.value }}</div>
                 {% if card.detail %}
-                <div class="small text-secondary">{{ card.detail }}</div>
+                <div class="small dashboard-muted">{{ card.detail }}</div>
                 {% endif %}
               </div>
             </div>
@@ -427,7 +440,7 @@ HTML_TEMPLATE = """
         <div class="card dashboard-chart-card">
           <div class="card-body">
             <h3 class="h5">Findings Overview</h3>
-            <p class="text-secondary mb-3">Current distribution of findings, clear checks, and checks with no data to assess.</p>
+            <p class="dashboard-muted mb-3">Current distribution of findings, clear checks, and checks with no data to assess.</p>
             <div class="dashboard-chart-wrap">
               <canvas id="findingsPieChart" class="dashboard-chart-canvas"></canvas>
             </div>
@@ -579,6 +592,7 @@ HTML_TEMPLATE = """
     <script>
       document.getElementById('darkModeToggle').addEventListener('click', function() {
         document.body.classList.toggle('dark-mode');
+        window.dispatchEvent(new Event('azure-theme-change'));
       });
     </script>
 
@@ -746,6 +760,7 @@ HTML_TEMPLATE = """
 
         drawPieChart();
         window.addEventListener('resize', drawPieChart);
+        window.addEventListener('azure-theme-change', drawPieChart);
       })();
     </script>
     {% endif %}
