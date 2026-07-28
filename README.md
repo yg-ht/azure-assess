@@ -4,11 +4,12 @@ Python tooling to collect Azure configuration data, evaluate it for known findin
 
 ## Overview
 
-This repository currently has three main Python entry points:
+This repository currently has three main Python entry points and one customer helper script:
 
 - `azure-collect.py`: connects to Azure through the Azure CLI and writes collected JSON datasets to disk.
 - `azure-findings.py`: reads the collected JSON and evaluates it against a library of predefined checks, then writes findings output.
 - `azure-present.py`: starts a local Flask dashboard for browsing collected datasets and findings.
+- `Azure-Graph-Collect-App.ps1`: creates a certificate-authenticated Microsoft Graph application for authorised Azure and Microsoft 365 assessment collection.
 
 The normal workflow is:
 
@@ -72,6 +73,61 @@ echo "[OK] Azure CLI extensions reinstalled cleanly and az ml loads"
 '```
 
 ## Script Reference
+
+### `Azure-Graph-Collect-App.ps1`
+
+Purpose:
+Create a temporary, single-tenant Microsoft Entra application and service principal that can authenticate to Microsoft Graph using an X.509 certificate. The script configures application permissions from predefined collection profiles and can grant those permissions with administrator consent.
+
+This is a customer helper intended to be run by a tenant administrator. It configures Microsoft Graph access only. It does not assign Azure RBAC roles, configure Azure CLI authentication, or make the resulting identity sufficient for Azure Resource Manager collection by `azure-collect.py`.
+
+Prerequisites:
+
+- Windows PowerShell 5.1 or PowerShell 7.
+- The `Microsoft.Graph.Authentication` and `Microsoft.Graph.Applications` modules. Install the Microsoft Graph module for the current user with `Install-Module Microsoft.Graph -Scope CurrentUser`.
+- A tenant administrator account. Privileged Role Administrator is the recommended role.
+- Delegated `Application.ReadWrite.All` and `AppRoleAssignment.ReadWrite.All` scopes for the administrator running the script.
+- An X.509 public certificate in a format such as `.cer`, `.crt`, or `.pem`. Keep the matching private key on the authorised collector host; do not give the script a `.pfx` or `.p12` file.
+
+Typical usage:
+
+```powershell
+.\Azure-Graph-Collect-App.ps1 `
+  -TenantId "11111111-2222-3333-4444-555555555555" `
+  -CertificatePath ".\collector-public.cer" `
+  -Profiles IdentityBaseline,PIM
+```
+
+Permission profiles:
+
+- `IdentityBaseline`: directory, application, policy, audit, reporting, authentication-method, entitlement-management, and identity-risk baseline data.
+- `PIM`: privileged access data for Entra roles, groups, and Azure resources.
+- `M365Audit`: Microsoft 365 audit-query and service-activity data, including Exchange, OneDrive, SharePoint, Teams, and Microsoft 365 web activity.
+- `EndpointIntune`: BitLocker, Intune configuration, and managed-device data.
+- `DefenderHunting`: Defender identity health and sensors, security incidents, and advanced hunting.
+- `All`: all of the profiles above.
+
+Parameters:
+
+- `-DisplayName`: application display name. Defaults to a dated YGHT Azure Assessment collector name.
+- `-TenantId`: tenant to connect to. When omitted, Microsoft Graph prompts for tenant selection during sign-in.
+- `-CertificatePath`: required path to the public certificate. Private-key containers with `.pfx` or `.p12` extensions are rejected.
+- `-Profiles`: one or more predefined permission profiles. Default: `IdentityBaseline`.
+- `-AdditionalApplicationPermissions`: additional Microsoft Graph application-permission names to request.
+- `-NoGrant`: configure the requested API permissions without creating app-role assignments. The script prints an administrator-consent URL instead.
+- `-AllowDuplicateDisplayName`: allow creation when an application with the same display name already exists.
+- `-WhatIf`: show the proposed application-registration creation without changing the tenant.
+
+Important behaviour:
+
+- Without `-NoGrant`, application-permission grants take effect immediately. Review the selected profiles before approving the operation.
+- The script validates every requested permission against the enabled Microsoft Graph application roles exposed by the tenant before creating the application. Availability can vary by cloud and workload; review the current [Microsoft Graph permissions reference](https://learn.microsoft.com/graph/permissions-reference).
+- Only the certificate's public bytes are uploaded. The private key is neither read from a public certificate nor written to the output.
+- The generated `<display-name>.connection-details.json` file contains tenant, application, service-principal, certificate, profile, and permission identifiers, plus an example `Connect-MgGraph` command. It does not contain a client secret or private key.
+- The generated connection details are operational engagement data and should still be stored and transferred appropriately.
+- The certificate and its private key must be available to the account running the eventual app-only `Connect-MgGraph` command.
+- If the script fails after reporting an application or service-principal object ID, inspect and remove any partially created tenant objects before retrying.
+- Remove the application registration, enterprise application, permission grants, local certificate, and generated connection details when the assessment is complete, subject to the engagement's evidence-retention requirements.
 
 ### `azure-collect.py`
 
