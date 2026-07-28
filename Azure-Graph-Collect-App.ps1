@@ -143,7 +143,6 @@ $GraphResourceAppId = "00000003-0000-0000-c000-000000000000"
 $PermissionProfiles = [ordered]@{
     IdentityBaseline = @(
         "Application.Read.All",
-        "AppCertTrustConfiguration.Read.All",
         "AuditLog.Read.All",
         "Directory.Read.All",
         "DirectoryRecommendations.Read.All",
