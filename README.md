@@ -77,29 +77,20 @@ umask 077
 mkdir -m 700 azure-assess-certificate
 cd azure-assess-certificate
 
-openssl req -x509 -newkey rsa:3072 -sha256 -days 90 \
-  -keyout collector-private-key.pem \
-  -out collector-public.crt \
-  -subj "/CN=YGHT Azure Assessment Graph Collector"
+openssl req -x509 -newkey rsa:3072 -sha256 -days 90 -keyout collector-private-key.pem -out collector-public.crt -subj "/CN=YGHT Azure Assessment Graph Collector"
 
-openssl x509 \
-  -in collector-public.crt \
-  -outform DER \
-  -out collector-public.cer
+openssl x509 -in collector-public.crt -outform DER -out collector-public.cer
 
 cat collector-private-key.pem collector-public.crt > collector-auth.pem
 chmod 600 collector-private-key.pem collector-auth.pem
 
-openssl x509 \
-  -in collector-public.crt \
-  -noout \
-  -subject \
-  -fingerprint \
-  -sha256 \
-  -dates
+openssl x509 -in collector-public.crt -noout -subject -fingerprint -sha256 -dates
+
+# Optional password and private-key integrity check; press Ctrl+C at the passphrase prompt to skip.
+openssl pkey -in collector-private-key.pem -check -noout
 ```
 
-OpenSSL prompts for a passphrase for `collector-private-key.pem`. Use a strong value and do not put it on the command line. `collector-public.crt` and `collector-public.cer` contain only the public certificate. `collector-private-key.pem` and `collector-auth.pem` contain the encrypted private key and must not leave the Linux collector host.
+OpenSSL prompts for a passphrase for `collector-private-key.pem`. Use a strong value and do not put it on the command line. The final, optional command prompts for the passphrase again and confirms that it unlocks a structurally valid private key; press Ctrl+C at that prompt to skip the check. `collector-public.crt` and `collector-public.cer` contain only the public certificate. `collector-private-key.pem` and `collector-auth.pem` contain the encrypted private key and must not leave the Linux collector host.
 
 Transfer only `collector-public.cer` to the customer administrator. The administrator runs the app-registration helper on Windows:
 
