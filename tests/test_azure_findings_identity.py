@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from azure_findings_identity import (
+from azure_assess.findings_identity import (
     analyse_application_credentials,
     analyse_privileged_non_human_identities,
     scope_level,

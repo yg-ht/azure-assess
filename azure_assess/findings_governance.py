@@ -5,7 +5,7 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from azure_findings_correlation import (
+from azure_assess.findings_correlation import (
     CorrelationResult,
     arm_parent_scopes,
     canonical_arm_id,
@@ -13,8 +13,8 @@ from azure_findings_correlation import (
     normalise_identifier,
     parse_timestamp,
 )
-from azure_findings_profiles import CRITICAL_RESOURCE_PROFILE, EXPECTED_POLICY_PROFILE
-from azure_findings_shared import assessment_resource_id, assessment_status, assessment_title
+from azure_assess.findings_profiles import CRITICAL_RESOURCE_PROFILE, EXPECTED_POLICY_PROFILE
+from azure_assess.findings_shared import assessment_resource_id, assessment_status, assessment_title
 
 
 LOCK_PROVIDER_SEGMENT = "/providers/microsoft.authorization/locks/"

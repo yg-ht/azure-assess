@@ -5,15 +5,15 @@
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 
-from azure_findings_correlation import (
+from azure_assess.findings_correlation import (
     CorrelationResult,
     canonical_object_id,
     canonical_role_definition_id,
     normalise_identifier,
     parse_timestamp,
 )
-from azure_findings_governance import nested_value
-from azure_findings_shared import flatten_permission_actions
+from azure_assess.findings_governance import nested_value
+from azure_assess.findings_shared import flatten_permission_actions
 
 
 PRIVILEGED_ROLE_NAMES = {

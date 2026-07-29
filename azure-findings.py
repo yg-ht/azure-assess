@@ -10,55 +10,55 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 
-from azure_findings_checks import *
-from azure_findings_context import (
+from azure_assess.findings_checks import *
+from azure_assess.findings_context import (
     normalise_finding_context,
     validate_finding_context,
 )
-from azure_findings_coverage import normalise_finding_coverage
-from azure_findings_definitions import (
+from azure_assess.findings_coverage import normalise_finding_coverage
+from azure_assess.findings_definitions import (
     EXISTING_FINDING_HEADLINES,
     REQUESTED_HEADLINES,
     finding_definition,
     validate_finding_definitions,
 )
-from azure_findings_shared import (
+from azure_assess.findings_shared import (
     normalize_text,
     result,
     unsupported,
 )
-from azure_findings_reporting import normalise_finding_reporting
-from azure_findings_review import (
+from azure_assess.findings_reporting import normalise_finding_reporting
+from azure_assess.findings_review import (
     apply_review_override,
     apply_review_overrides,
     load_review_overrides,
     validate_finding_review,
 )
-from azure_findings_report import build_report_ready_output
-from azure_findings_triage import (
+from azure_assess.findings_report import build_report_ready_output
+from azure_assess.findings_triage import (
     apply_findings_triage,
     load_baseline_findings,
     normalise_finding_triage,
     validate_finding_triage,
 )
-from azure_findings_correlation import (
+from azure_assess.findings_correlation import (
     AnalysisInputs,
     CorrelationResult,
     DatasetSpec,
     collection_reference_time,
     merge_correlation_results,
 )
-from azure_findings_governance import (
+from azure_assess.findings_governance import (
     analyse_advisor_defender,
     analyse_critical_resource_locks,
     analyse_expected_policy_assignments,
     analyse_policy_states,
 )
-from azure_findings_identity import (
+from azure_assess.findings_identity import (
     analyse_application_credentials,
     analyse_privileged_non_human_identities,
 )
-from azure_findings_network import (
+from azure_assess.findings_network import (
     PRIVATE_LINK_ADAPTERS,
     analyse_external_attack_paths,
     analyse_private_link_posture,

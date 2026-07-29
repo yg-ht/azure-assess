@@ -70,7 +70,7 @@ from pathlib import Path
 from time import monotonic, sleep
 from tqdm import tqdm
 
-from azure_collection_manifest import CollectionManifestRecorder, utc_timestamp
+from azure_assess.collection_manifest import CollectionManifestRecorder, utc_timestamp
 
 AUTH_CONFIG = {}
 DEBUG = False

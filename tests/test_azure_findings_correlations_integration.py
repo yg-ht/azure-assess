@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 SPEC = importlib.util.spec_from_file_location("azure_findings_correlations", MODULE_PATH)
 azure_findings = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(azure_findings)

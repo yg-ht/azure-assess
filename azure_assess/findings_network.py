@@ -6,9 +6,9 @@ import ipaddress
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from azure_findings_correlation import CorrelationResult, canonical_arm_id, normalise_identifier
-from azure_findings_governance import nested_value
-from azure_findings_shared import collection_parameters
+from azure_assess.findings_correlation import CorrelationResult, canonical_arm_id, normalise_identifier
+from azure_assess.findings_governance import nested_value
+from azure_assess.findings_shared import collection_parameters
 
 
 APPROVED_CONNECTION_STATES = {"approved"}

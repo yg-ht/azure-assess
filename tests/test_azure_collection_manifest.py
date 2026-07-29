@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from azure_collection_manifest import (
+from azure_assess.collection_manifest import (
     CollectionManifestRecorder,
     classify_execution_status,
     sha256_file,
@@ -15,7 +15,7 @@ from azure_collection_manifest import (
 )
 
 
-COLLECT_MODULE_PATH = Path(__file__).with_name("azure-collect.py")
+COLLECT_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-collect.py"
 COLLECT_SPEC = importlib.util.spec_from_file_location(
     "azure_collect_manifest_integration",
     COLLECT_MODULE_PATH,

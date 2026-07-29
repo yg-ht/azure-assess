@@ -2,7 +2,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-from azure_findings_definitions import (
+from azure_assess.findings_definitions import (
     EXISTING_FINDING_HEADLINES,
     FINDING_DEFINITION_SCHEMA_VERSION,
     FINDING_DEFINITION_VERSION,
@@ -13,7 +13,7 @@ from azure_findings_definitions import (
 )
 
 
-FINDINGS_MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+FINDINGS_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 FINDINGS_SPEC = importlib.util.spec_from_file_location(
     "azure_findings_definition_tests",
     FINDINGS_MODULE_PATH,

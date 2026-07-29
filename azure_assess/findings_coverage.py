@@ -4,7 +4,7 @@
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from azure_findings_reporting import extract_local_assets, retain_asset
+from azure_assess.findings_reporting import extract_local_assets, retain_asset
 
 
 COVERAGE_SCHEMA_VERSION = "1.0"

@@ -3,17 +3,17 @@ import json
 import unittest
 from pathlib import Path
 
-from azure_findings_context import normalise_finding_context
-from azure_findings_coverage import normalise_finding_coverage
-from azure_findings_definitions import finding_definition
-from azure_findings_report import (
+from azure_assess.findings_context import normalise_finding_context
+from azure_assess.findings_coverage import normalise_finding_coverage
+from azure_assess.findings_definitions import finding_definition
+from azure_assess.findings_report import (
     REPORT_READY_SCHEMA_VERSION,
     build_report_ready_output,
     validate_report_ready_output,
 )
-from azure_findings_reporting import normalise_finding_reporting
-from azure_findings_review import apply_review_override
-from azure_findings_triage import normalise_finding_triage
+from azure_assess.findings_reporting import normalise_finding_reporting
+from azure_assess.findings_review import apply_review_override
+from azure_assess.findings_triage import normalise_finding_triage
 
 
 STORAGE_TITLE = "Azure blob container permits public access"
@@ -22,7 +22,7 @@ RESOURCE_ID = (
     "/subscriptions/sub-one/resourceGroups/rg-one/providers/"
     "Microsoft.Storage/storageAccounts/account-one"
 )
-FINDINGS_MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+FINDINGS_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 FINDINGS_SPEC = importlib.util.spec_from_file_location(
     "azure_findings_report_tests",
     FINDINGS_MODULE_PATH,

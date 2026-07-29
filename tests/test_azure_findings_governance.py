@@ -1,6 +1,6 @@
 import unittest
 
-from azure_findings_governance import (
+from azure_assess.findings_governance import (
     analyse_advisor_defender,
     analyse_critical_resource_locks,
     analyse_expected_policy_assignments,

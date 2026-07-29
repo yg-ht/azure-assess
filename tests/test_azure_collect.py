@@ -6,17 +6,17 @@ from pathlib import Path
 from unittest import mock
 
 
-MODULE_PATH = Path(__file__).with_name("azure-collect.py")
+MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-collect.py"
 SPEC = importlib.util.spec_from_file_location("azure_collect", MODULE_PATH)
 azure_collect = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(azure_collect)
 
-FINDINGS_MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+FINDINGS_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 FINDINGS_SPEC = importlib.util.spec_from_file_location("azure_findings", FINDINGS_MODULE_PATH)
 azure_findings = importlib.util.module_from_spec(FINDINGS_SPEC)
 FINDINGS_SPEC.loader.exec_module(azure_findings)
 
-PRESENT_MODULE_PATH = Path(__file__).with_name("azure-present.py")
+PRESENT_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-present.py"
 PRESENT_SPEC = importlib.util.spec_from_file_location("azure_present", PRESENT_MODULE_PATH)
 azure_present = importlib.util.module_from_spec(PRESENT_SPEC)
 PRESENT_SPEC.loader.exec_module(azure_present)

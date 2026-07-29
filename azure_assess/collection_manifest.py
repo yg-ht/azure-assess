@@ -183,7 +183,7 @@ class CollectionManifestRecorder:
         self._observed_endpoints = set()
         self._lock = threading.Lock()
 
-        repository_dir = Path(project_dir or Path(__file__).resolve().parent)
+        repository_dir = Path(project_dir or Path(__file__).resolve().parents[1])
         self.tool = {
             "name": "azure-assess",
             "git_commit": detect_git_commit(repository_dir),

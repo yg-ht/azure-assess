@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime, timezone
 
-from azure_findings_shared import (
+from azure_assess.findings_shared import (
     ADMIN_PORTAL_APPLICATION_IDS,
     APPROVED_VM_IMAGE_PUBLISHERS,
     GLOBAL_ADMIN_ROLE_TEMPLATE_ID,

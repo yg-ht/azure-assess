@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timezone
 
-from azure_findings_correlation import (
+from azure_assess.findings_correlation import (
     AnalysisInputs,
     CorrelationResult,
     DatasetSpec,

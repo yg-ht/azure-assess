@@ -2,18 +2,18 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-from azure_findings_context import (
+from azure_assess.findings_context import (
     CONTEXT_SCHEMA_VERSION,
     MAX_OBSERVATION_DEPTH,
     azure_path_parts,
     normalise_finding_context,
     validate_finding_context,
 )
-from azure_findings_definitions import finding_definition
-from azure_findings_reporting import normalise_finding_reporting
+from azure_assess.findings_definitions import finding_definition
+from azure_assess.findings_reporting import normalise_finding_reporting
 
 
-FINDINGS_MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+FINDINGS_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 FINDINGS_SPEC = importlib.util.spec_from_file_location(
     "azure_findings_context_tests",
     FINDINGS_MODULE_PATH,

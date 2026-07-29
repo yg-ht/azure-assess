@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from azure_findings_definitions import finding_definition
-from azure_findings_review import (
+from azure_assess.findings_definitions import finding_definition
+from azure_assess.findings_review import (
     REVIEW_SCHEMA_VERSION,
     apply_review_override,
     apply_review_overrides,
@@ -15,7 +15,7 @@ from azure_findings_review import (
 )
 
 
-FINDINGS_MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+FINDINGS_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 FINDINGS_SPEC = importlib.util.spec_from_file_location(
     "azure_findings_review_tests",
     FINDINGS_MODULE_PATH,

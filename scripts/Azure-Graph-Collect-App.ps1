@@ -25,7 +25,7 @@ Required delegated Graph scopes for the administrator running this script:
 The private key is never uploaded by this script. Only the public certificate is added to the app registration.
 
 .EXAMPLE
-.\Azure-Graph-Collect-App.ps1 `
+.\scripts\Azure-Graph-Collect-App.ps1 `
   -TenantId "11111111-2222-3333-4444-555555555555" `
   -CertificatePath ".\collector-public.cer" `
   -Profiles All

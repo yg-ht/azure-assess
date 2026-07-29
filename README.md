@@ -4,13 +4,23 @@ Python tooling to collect Azure configuration data, evaluate it for known findin
 
 ## Overview
 
-This repository currently has three main Python entry points and two helper scripts:
+This repository has three main Python entry points:
 
 - `azure-collect.py`: connects to Azure through the Azure CLI and writes collected JSON datasets to disk.
 - `azure-findings.py`: reads the collected JSON and evaluates it against a library of predefined checks, then writes findings output.
 - `azure-present.py`: starts a local Flask dashboard for browsing collected datasets and findings.
-- `Azure-Graph-Collect-App.ps1`: creates a certificate-authenticated Microsoft Graph application for authorised Azure and Microsoft 365 assessment collection.
-- `install-azure-cli-extensions.sh`: cleanly reinstalls the Azure CLI extensions used by the collector.
+
+Supporting files are organised by purpose:
+
+- `azure_assess/`: internal Python modules used by the three entry points.
+- `scripts/`: customer and environment setup helpers.
+- `tests/`: the automated test suite.
+- `reference/`: version-controlled reference data used during collection.
+
+The setup helpers are:
+
+- `scripts/Azure-Graph-Collect-App.ps1`: creates a certificate-authenticated Microsoft Graph application for authorised Azure and Microsoft 365 assessment collection.
+- `scripts/install-azure-cli-extensions.sh`: cleanly reinstalls the Azure CLI extensions used by the collector.
 
 The normal workflow is:
 
@@ -33,17 +43,17 @@ pipenv install -r requirements.txt
 You may also want to pre-emptively reinstall the Azure CLI extensions used by the collector:
 
 ```bash
-./install-azure-cli-extensions.sh
+./scripts/install-azure-cli-extensions.sh
 ```
 
 ## Script Reference
 
-### `install-azure-cli-extensions.sh`
+### `scripts/install-azure-cli-extensions.sh`
 
 Purpose:
 Remove and reinstall the Azure CLI extensions used by `azure-collect.py`, then verify that the Azure Machine Learning command group loads. The script uses `.azure-cliextensions` below the current directory by default. Set `AZURE_EXTENSION_DIR` before running it to use a different dedicated extension directory.
 
-### `Azure-Graph-Collect-App.ps1`
+### `scripts/Azure-Graph-Collect-App.ps1`
 
 Purpose:
 Create a temporary, single-tenant Microsoft Entra application and service principal that can authenticate to Microsoft Graph using an X.509 certificate. The script configures application permissions from predefined collection profiles and can grant those permissions with administrator consent.
@@ -94,7 +104,7 @@ OpenSSL prompts for a passphrase for `collector-private-key.pem`. Use a strong v
 Transfer only `collector-public.cer` to the customer administrator. The administrator runs the app-registration helper on Windows:
 
 ```powershell
-.\Azure-Graph-Collect-App.ps1 `
+.\scripts\Azure-Graph-Collect-App.ps1 `
   -TenantId "11111111-2222-3333-4444-555555555555" `
   -CertificatePath ".\collector-public.cer"
 ```

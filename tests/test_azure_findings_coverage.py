@@ -2,16 +2,16 @@ import importlib.util
 import unittest
 from pathlib import Path
 
-from azure_findings_coverage import (
+from azure_assess.findings_coverage import (
     COVERAGE_SCHEMA_VERSION,
     normalise_finding_coverage,
     validate_finding_coverage,
 )
-from azure_findings_definitions import finding_definition
-from azure_findings_reporting import normalise_finding_reporting
+from azure_assess.findings_definitions import finding_definition
+from azure_assess.findings_reporting import normalise_finding_reporting
 
 
-FINDINGS_MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+FINDINGS_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 FINDINGS_SPEC = importlib.util.spec_from_file_location(
     "azure_findings_coverage_tests",
     FINDINGS_MODULE_PATH,

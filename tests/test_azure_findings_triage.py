@@ -4,12 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from azure_findings_context import normalise_finding_context
-from azure_findings_coverage import normalise_finding_coverage
-from azure_findings_definitions import finding_definition
-from azure_findings_reporting import normalise_finding_reporting
-from azure_findings_review import apply_review_override
-from azure_findings_triage import (
+from azure_assess.findings_context import normalise_finding_context
+from azure_assess.findings_coverage import normalise_finding_coverage
+from azure_assess.findings_definitions import finding_definition
+from azure_assess.findings_reporting import normalise_finding_reporting
+from azure_assess.findings_review import apply_review_override
+from azure_assess.findings_triage import (
     TRIAGE_SCHEMA_VERSION,
     apply_findings_triage,
     load_baseline_findings,
@@ -18,7 +18,7 @@ from azure_findings_triage import (
 )
 
 
-FINDINGS_MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+FINDINGS_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 FINDINGS_SPEC = importlib.util.spec_from_file_location(
     "azure_findings_triage_tests",
     FINDINGS_MODULE_PATH,

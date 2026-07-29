@@ -6,8 +6,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from azure_findings_reporting import normalise_identifier, stable_digest
-from azure_findings_review import CONTEXTUAL_SEVERITY_LEVELS
+from azure_assess.findings_reporting import normalise_identifier, stable_digest
+from azure_assess.findings_review import CONTEXTUAL_SEVERITY_LEVELS
 
 
 TRIAGE_SCHEMA_VERSION = "1.0"

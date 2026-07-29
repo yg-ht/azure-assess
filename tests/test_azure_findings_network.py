@@ -1,6 +1,6 @@
 import unittest
 
-from azure_findings_network import (
+from azure_assess.findings_network import (
     PRIVATE_LINK_ADAPTERS,
     analyse_external_attack_paths,
     analyse_private_link_posture,

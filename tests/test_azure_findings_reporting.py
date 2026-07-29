@@ -5,8 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from azure_findings_definitions import finding_definition
-from azure_findings_reporting import (
+from azure_assess.findings_definitions import finding_definition
+from azure_assess.findings_reporting import (
     REPORTING_SCHEMA_VERSION,
     normalise_finding_reporting,
     sha256_file,
@@ -14,7 +14,7 @@ from azure_findings_reporting import (
 )
 
 
-FINDINGS_MODULE_PATH = Path(__file__).with_name("azure-findings.py")
+FINDINGS_MODULE_PATH = Path(__file__).resolve().parents[1] / "azure-findings.py"
 FINDINGS_SPEC = importlib.util.spec_from_file_location(
     "azure_findings_reporting_tests",
     FINDINGS_MODULE_PATH,

@@ -3,7 +3,7 @@
 
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
-from azure_findings_reporting import collection_manifest
+from azure_assess.findings_reporting import collection_manifest
 
 
 CONTEXT_SCHEMA_VERSION = "1.0"
