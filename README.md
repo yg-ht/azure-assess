@@ -89,30 +89,120 @@ Prerequisites:
 - Delegated `Application.ReadWrite.All` and `AppRoleAssignment.ReadWrite.All` scopes for the administrator running the script.
 - An X.509 public certificate in a format such as `.cer`, `.crt`, or `.pem`. Keep the matching private key on the authorised collector host; do not give the script a `.pfx` or `.p12` file.
 
+Creating a certificate on Linux:
+
+The following commands create an encrypted private key, a 90-day self-signed certificate, the public `.cer` file supplied to the setup script, and a protected `.pfx` used to install the matching private credential for PowerShell. Run them on the authorised collector host with OpenSSL installed:
+
+```bash
+umask 077
+mkdir -m 700 azure-assess-certificate
+cd azure-assess-certificate
+
+openssl req -x509 -newkey rsa:3072 -sha256 -days 90 \
+  -keyout collector-private.pem \
+  -out collector-public.crt \
+  -subj "/CN=YGHT Azure Assessment Graph Collector"
+
+openssl x509 \
+  -in collector-public.crt \
+  -outform DER \
+  -out collector-public.cer
+
+openssl pkcs12 -export \
+  -out collector-auth.pfx \
+  -inkey collector-private.pem \
+  -in collector-public.crt \
+  -name "YGHT Azure Assessment Graph Collector"
+
+chmod 600 collector-private.pem collector-auth.pfx
+
+openssl x509 \
+  -in collector-public.crt \
+  -noout \
+  -subject \
+  -fingerprint \
+  -sha256 \
+  -dates
+```
+
+OpenSSL prompts for a passphrase for `collector-private.pem` and then an export password for `collector-auth.pfx`. Use strong, distinct values and do not put either value on the command line. In this example, `collector-public.crt` and `collector-public.cer` contain only the public certificate; `collector-private.pem` and `collector-auth.pfx` contain or protect the private key and must not leave the collector host.
+
+Install the protected private credential in the current user's PowerShell certificate store:
+
+```powershell
+using namespace System.Security.Cryptography.X509Certificates
+
+$pfxPath = (Resolve-Path "./collector-auth.pfx").Path
+$securePassword = Read-Host "PFX export password" -AsSecureString
+$plainPassword = [System.Net.NetworkCredential]::new("", $securePassword).Password
+$certificate = $null
+
+try {
+    $certificate = [X509Certificate2]::new(
+        $pfxPath,
+        $plainPassword,
+        [X509KeyStorageFlags]::PersistKeySet
+    )
+
+    $store = [X509Store]::new([StoreName]::My, [StoreLocation]::CurrentUser)
+    $store.Open([OpenFlags]::ReadWrite)
+
+    try {
+        $store.Add($certificate)
+    }
+    finally {
+        $store.Dispose()
+    }
+}
+finally {
+    if ($null -ne $certificate) {
+        $certificate.Dispose()
+    }
+
+    $plainPassword = $null
+    $securePassword = $null
+}
+```
+
+Supply only `collector-public.cer` to `Azure-Graph-Collect-App.ps1`. After the script completes, use its generated tenant ID, application client ID, and certificate thumbprint to test app-only authentication from the same Linux user account:
+
+```powershell
+Connect-MgGraph `
+  -TenantId "<tenant-id>" `
+  -ClientId "<application-client-id>" `
+  -CertificateThumbprint "<certificate-thumbprint>"
+
+Get-MgContext
+```
+
+Confirm that `Get-MgContext` reports `AuthType` as `AppOnly`. A customer certificate-authority-issued certificate may be used instead when required by organisational policy.
+
 Typical usage:
 
 ```powershell
 .\Azure-Graph-Collect-App.ps1 `
   -TenantId "11111111-2222-3333-4444-555555555555" `
-  -CertificatePath ".\collector-public.cer" `
-  -Profiles IdentityBaseline,PIM
+  -CertificatePath ".\collector-public.cer"
 ```
 
 Permission profiles:
 
-- `IdentityBaseline`: directory, application, policy, audit, reporting, authentication-method, entitlement-management, and identity-risk baseline data.
-- `PIM`: privileged access data for Entra roles, groups, and Azure resources.
-- `M365Audit`: Microsoft 365 audit-query and service-activity data, including Exchange, OneDrive, SharePoint, Teams, and Microsoft 365 web activity.
-- `EndpointIntune`: BitLocker, Intune configuration, and managed-device data.
+- `IdentityBaseline`: directory, application, policy, audit, reporting, authentication-method, entitlement-management, identity-risk, and on-premises directory-synchronisation data.
+- `PIM`: privileged access data, eligible Entra role schedules, and role-management alerts.
+- `M365Audit`: Microsoft 365 audit-query, service-activity, organisation-wide service settings, Forms settings, and SharePoint tenant settings.
+- `EndpointIntune`: BitLocker, Intune configuration, managed-device, Intune RBAC, and service-configuration data.
+- `GlobalSecureAccess`: Microsoft Entra Global Secure Access information and configuration.
 - `DefenderHunting`: Defender identity health and sensors, security incidents, and advanced hunting.
 - `All`: all of the profiles above.
+
+The default is `All`, so customers running a full penetration test do not need to select profiles. Profiles remain available for deliberately restricted assessments; for example, `-Profiles IdentityBaseline,PIM`.
 
 Parameters:
 
 - `-DisplayName`: application display name. Defaults to a dated YGHT Azure Assessment collector name.
 - `-TenantId`: tenant to connect to. When omitted, Microsoft Graph prompts for tenant selection during sign-in.
 - `-CertificatePath`: required path to the public certificate. Private-key containers with `.pfx` or `.p12` extensions are rejected.
-- `-Profiles`: one or more predefined permission profiles. Default: `IdentityBaseline`.
+- `-Profiles`: one or more predefined permission profiles. Default: `All`.
 - `-AdditionalApplicationPermissions`: additional Microsoft Graph application-permission names to request.
 - `-NoGrant`: configure the requested API permissions without creating app-role assignments. The script prints an administrator-consent URL instead.
 - `-AllowDuplicateDisplayName`: allow creation when an application with the same display name already exists.

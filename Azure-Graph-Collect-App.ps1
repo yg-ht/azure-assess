@@ -13,6 +13,7 @@ This script creates:
   5. Optional programmatic admin consent by creating app role assignments.
 
 The script is intended to be run by the tenant administrator.
+All permission profiles are selected by default. Use -Profiles only when the assessment requires a deliberately restricted permission set.
 
 Recommended administrator role:
   Privileged Role Administrator
@@ -60,10 +61,11 @@ param(
         "PIM",
         "M365Audit",
         "EndpointIntune",
+        "GlobalSecureAccess",
         "DefenderHunting",
         "All"
     )]
-    [string[]]$Profiles = @("IdentityBaseline"),
+    [string[]]$Profiles = @("All"),
 
     [Parameter(Mandatory = $false)]
     [string[]]$AdditionalApplicationPermissions = @(),
@@ -149,6 +151,7 @@ $PermissionProfiles = [ordered]@{
         "EntitlementManagement.Read.All",
         "IdentityProvider.Read.All",
         "IdentityRiskEvent.Read.All",
+        "OnPremDirectorySynchronization.Read.All",
         "Policy.Read.All",
         "Policy.Read.ConditionalAccess",
         "ProvisioningLog.Read.All",
@@ -161,7 +164,9 @@ $PermissionProfiles = [ordered]@{
     PIM = @(
         "PrivilegedAccess.Read.AzureAD",
         "PrivilegedAccess.Read.AzureADGroup",
-        "PrivilegedAccess.Read.AzureResources"
+        "PrivilegedAccess.Read.AzureResources",
+        "RoleEligibilitySchedule.Read.Directory",
+        "RoleManagementAlert.Read.Directory"
     )
 
     M365Audit = @(
@@ -173,13 +178,21 @@ $PermissionProfiles = [ordered]@{
         "ServiceActivity-Microsoft365Web.Read.All",
         "ServiceActivity-OneDrive.Read.All",
         "ServiceActivity-Teams.Read.All",
+        "OrgSettings-AppsAndServices.Read.All",
+        "OrgSettings-Forms.Read.All",
         "SharePointTenantSettings.Read.All"
     )
 
     EndpointIntune = @(
         "BitlockerKey.Read.All",
         "DeviceManagementConfiguration.Read.All",
-        "DeviceManagementManagedDevices.Read.All"
+        "DeviceManagementManagedDevices.Read.All",
+        "DeviceManagementRBAC.Read.All",
+        "DeviceManagementServiceConfig.Read.All"
+    )
+
+    GlobalSecureAccess = @(
+        "NetworkAccess.Read.All"
     )
 
     DefenderHunting = @(
