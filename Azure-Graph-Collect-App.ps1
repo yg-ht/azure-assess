@@ -443,5 +443,5 @@ Write-Host ""
 Write-Host "Complete." -ForegroundColor Green
 Write-Host "Connection details written to: $OutputPath" -ForegroundColor Green
 Write-Host ""
-Write-Host "Use this command from the collector host where the matching private certificate is installed:" -ForegroundColor Cyan
+Write-Host "Optional Windows Graph client command, if the matching private certificate is installed:" -ForegroundColor Cyan
 Write-Host $Output.AppOnlyConnectCommand -ForegroundColor Yellow

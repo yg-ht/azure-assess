@@ -4,12 +4,13 @@ Python tooling to collect Azure configuration data, evaluate it for known findin
 
 ## Overview
 
-This repository currently has three main Python entry points and one customer helper script:
+This repository currently has three main Python entry points and two helper scripts:
 
 - `azure-collect.py`: connects to Azure through the Azure CLI and writes collected JSON datasets to disk.
 - `azure-findings.py`: reads the collected JSON and evaluates it against a library of predefined checks, then writes findings output.
 - `azure-present.py`: starts a local Flask dashboard for browsing collected datasets and findings.
 - `Azure-Graph-Collect-App.ps1`: creates a certificate-authenticated Microsoft Graph application for authorised Azure and Microsoft 365 assessment collection.
+- `install-azure-cli-extensions.sh`: cleanly reinstalls the Azure CLI extensions used by the collector.
 
 The normal workflow is:
 
@@ -29,69 +30,37 @@ cd azure-assess
 pipenv install -r requirements.txt
 ```
 
-You may also want to pre-emptively install / re-install the Az CLI extensions. This can be done with:
+You may also want to pre-emptively reinstall the Azure CLI extensions used by the collector:
 
 ```bash
-AZURE_EXTENSION_DIR="$PWD/.azure-cliextensions" pipenv run bash -lc '
-set -euo pipefail
-
-EXT_DIR="${AZURE_EXTENSION_DIR:?AZURE_EXTENSION_DIR must be set}"
-EXTS=(
-  application-insights
-  bastion
-  databricks
-  datafactory
-  ml
-)
-
-echo "[*] Using Azure CLI:"
-az version --output jsonc
-
-echo "[*] Using extension dir: $EXT_DIR"
-mkdir -p "$EXT_DIR"
-
-for ext in "${EXTS[@]}"; do
-  echo "[*] Removing extension: $ext"
-  az extension remove --name "$ext" --only-show-errors >/dev/null 2>&1 || true
-  rm -rf "$EXT_DIR/$ext"
-done
-
-az config set extension.use_dynamic_install=no --only-show-errors >/dev/null
-
-for ext in "${EXTS[@]}"; do
-  echo "[*] Installing extension: $ext"
-  az extension add --name "$ext" --yes --only-show-errors
-done
-
-echo "[*] Installed extensions:"
-az extension list --query "[].{name:name,version:version,path:path}" --output table
-
-echo "[*] Verifying Azure ML command group:"
-az ml --help >/dev/null
-
-echo "[OK] Azure CLI extensions reinstalled cleanly and az ml loads"
-'```
+./install-azure-cli-extensions.sh
+```
 
 ## Script Reference
+
+### `install-azure-cli-extensions.sh`
+
+Purpose:
+Remove and reinstall the Azure CLI extensions used by `azure-collect.py`, then verify that the Azure Machine Learning command group loads. The script uses `.azure-cliextensions` below the current directory by default. Set `AZURE_EXTENSION_DIR` before running it to use a different dedicated extension directory.
 
 ### `Azure-Graph-Collect-App.ps1`
 
 Purpose:
 Create a temporary, single-tenant Microsoft Entra application and service principal that can authenticate to Microsoft Graph using an X.509 certificate. The script configures application permissions from predefined collection profiles and can grant those permissions with administrator consent.
 
-This is a customer helper intended to be run by a tenant administrator. It configures Microsoft Graph access only. It does not assign Azure RBAC roles, configure Azure CLI authentication, or make the resulting identity sufficient for Azure Resource Manager collection by `azure-collect.py`.
+This is a customer helper intended to be run by a tenant administrator on Windows. It configures Microsoft Graph access only. It does not assign Azure RBAC roles, configure Azure CLI authentication, or make the resulting identity sufficient for Azure Resource Manager collection by `azure-collect.py`.
 
 Prerequisites:
 
-- Windows PowerShell 5.1 or PowerShell 7.
+- Windows PowerShell 5.1 or PowerShell 7 on Windows.
 - The `Microsoft.Graph.Authentication` and `Microsoft.Graph.Applications` modules. Install the Microsoft Graph module for the current user with `Install-Module Microsoft.Graph -Scope CurrentUser`.
 - A tenant administrator account. Privileged Role Administrator is the recommended role.
 - Delegated `Application.ReadWrite.All` and `AppRoleAssignment.ReadWrite.All` scopes for the administrator running the script.
 - An X.509 public certificate in a format such as `.cer`, `.crt`, or `.pem`. Keep the matching private key on the authorised collector host; do not give the script a `.pfx` or `.p12` file.
 
-Creating a certificate on Linux:
+Creating the collector certificate on Linux:
 
-The following commands create an encrypted private key, a 90-day self-signed certificate, the public `.cer` file supplied to the setup script, and a protected `.pfx` used to install the matching private credential for PowerShell. Run them on the authorised collector host with OpenSSL installed:
+Run the following commands on the authorised Linux collector host with OpenSSL installed. They create an encrypted private key, a 90-day self-signed certificate, the public `.cer` file supplied to the Windows administrator, and the combined PEM credential required by Azure CLI:
 
 ```bash
 umask 077
@@ -99,7 +68,7 @@ mkdir -m 700 azure-assess-certificate
 cd azure-assess-certificate
 
 openssl req -x509 -newkey rsa:3072 -sha256 -days 90 \
-  -keyout collector-private.pem \
+  -keyout collector-private-key.pem \
   -out collector-public.crt \
   -subj "/CN=YGHT Azure Assessment Graph Collector"
 
@@ -108,13 +77,8 @@ openssl x509 \
   -outform DER \
   -out collector-public.cer
 
-openssl pkcs12 -export \
-  -out collector-auth.pfx \
-  -inkey collector-private.pem \
-  -in collector-public.crt \
-  -name "YGHT Azure Assessment Graph Collector"
-
-chmod 600 collector-private.pem collector-auth.pfx
+cat collector-private-key.pem collector-public.crt > collector-auth.pem
+chmod 600 collector-private-key.pem collector-auth.pem
 
 openssl x509 \
   -in collector-public.crt \
@@ -125,65 +89,34 @@ openssl x509 \
   -dates
 ```
 
-OpenSSL prompts for a passphrase for `collector-private.pem` and then an export password for `collector-auth.pfx`. Use strong, distinct values and do not put either value on the command line. In this example, `collector-public.crt` and `collector-public.cer` contain only the public certificate; `collector-private.pem` and `collector-auth.pfx` contain or protect the private key and must not leave the collector host.
+OpenSSL prompts for a passphrase for `collector-private-key.pem`. Use a strong value and do not put it on the command line. `collector-public.crt` and `collector-public.cer` contain only the public certificate. `collector-private-key.pem` and `collector-auth.pem` contain the encrypted private key and must not leave the Linux collector host.
 
-Install the protected private credential in the current user's PowerShell certificate store:
-
-```powershell
-using namespace System.Security.Cryptography.X509Certificates
-
-$pfxPath = (Resolve-Path "./collector-auth.pfx").Path
-$securePassword = Read-Host "PFX export password" -AsSecureString
-$plainPassword = [System.Net.NetworkCredential]::new("", $securePassword).Password
-$certificate = $null
-
-try {
-    $certificate = [X509Certificate2]::new(
-        $pfxPath,
-        $plainPassword,
-        [X509KeyStorageFlags]::PersistKeySet
-    )
-
-    $store = [X509Store]::new([StoreName]::My, [StoreLocation]::CurrentUser)
-    $store.Open([OpenFlags]::ReadWrite)
-
-    try {
-        $store.Add($certificate)
-    }
-    finally {
-        $store.Dispose()
-    }
-}
-finally {
-    if ($null -ne $certificate) {
-        $certificate.Dispose()
-    }
-
-    $plainPassword = $null
-    $securePassword = $null
-}
-```
-
-Supply only `collector-public.cer` to `Azure-Graph-Collect-App.ps1`. After the script completes, use its generated tenant ID, application client ID, and certificate thumbprint to test app-only authentication from the same Linux user account:
-
-```powershell
-Connect-MgGraph `
-  -TenantId "<tenant-id>" `
-  -ClientId "<application-client-id>" `
-  -CertificateThumbprint "<certificate-thumbprint>"
-
-Get-MgContext
-```
-
-Confirm that `Get-MgContext` reports `AuthType` as `AppOnly`. A customer certificate-authority-issued certificate may be used instead when required by organisational policy.
-
-Typical usage:
+Transfer only `collector-public.cer` to the customer administrator. The administrator runs the app-registration helper on Windows:
 
 ```powershell
 .\Azure-Graph-Collect-App.ps1 `
   -TenantId "11111111-2222-3333-4444-555555555555" `
   -CertificatePath ".\collector-public.cer"
 ```
+
+After the Windows administrator returns the generated connection details, configure the Linux collector with the tenant ID, application client ID, subscription ID, combined PEM path, and certificate passphrase:
+
+```bash
+export AZURE_TENANT_ID="<tenant-id>"
+export AZURE_CLIENT_ID="<application-client-id>"
+export AZURE_SUBSCRIPTION_ID="<subscription-id>"
+export AZURE_CLIENT_CERTIFICATE_PATH="$PWD/azure-assess-certificate/collector-auth.pem"
+
+read -rsp "Certificate passphrase: " AZURE_CLIENT_CERTIFICATE_PASSWORD
+echo
+export AZURE_CLIENT_CERTIFICATE_PASSWORD
+
+pipenv run python azure-collect.py --auth-method service-principal
+
+unset AZURE_CLIENT_CERTIFICATE_PASSWORD
+```
+
+A customer certificate-authority-issued certificate may be used instead when required by organisational policy. The same application also needs separately assigned Azure RBAC access for the subscriptions assessed; the PowerShell helper grants Microsoft Graph permissions only.
 
 Permission profiles:
 
@@ -213,9 +146,9 @@ Important behaviour:
 - Without `-NoGrant`, application-permission grants take effect immediately. Review the selected profiles before approving the operation.
 - The script validates every requested permission against the enabled Microsoft Graph application roles exposed by the tenant before creating the application. Availability can vary by cloud and workload; review the current [Microsoft Graph permissions reference](https://learn.microsoft.com/graph/permissions-reference).
 - Only the certificate's public bytes are uploaded. The private key is neither read from a public certificate nor written to the output.
-- The generated `<display-name>.connection-details.json` file contains tenant, application, service-principal, certificate, profile, and permission identifiers, plus an example `Connect-MgGraph` command. It does not contain a client secret or private key.
+- The generated `<display-name>.connection-details.json` file contains tenant, application, service-principal, certificate, profile, and permission identifiers, plus an optional `Connect-MgGraph` command for a Windows Graph client. It does not contain a client secret or private key.
 - The generated connection details are operational engagement data and should still be stored and transferred appropriately.
-- The certificate and its private key must be available to the account running the eventual app-only `Connect-MgGraph` command.
+- Linux collection uses the combined `collector-auth.pem` credential directly through Azure CLI.
 - If the script fails after reporting an application or service-principal object ID, inspect and remove any partially created tenant objects before retrying.
 - Remove the application registration, enterprise application, permission grants, local certificate, and generated connection details when the assessment is complete, subject to the engagement's evidence-retention requirements.
 
