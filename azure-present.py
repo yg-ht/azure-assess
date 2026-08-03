@@ -64,6 +64,17 @@ FINDING_STATUS_OPTIONS = OrderedDict(
     ]
 )
 
+PERMISSION_FAILURE_STATUSES = {"unauthorised", "unauthorized"}
+PERMISSION_FAILURE_MARKERS = (
+    "authorizationfailed",
+    "does not have authorization",
+    "forbidden",
+    "insufficient privileges",
+    "permission denied",
+    "unauthorised",
+    "unauthorized",
+)
+
 FINDINGS_PRIMARY_COLUMNS = (
     "title",
     "severity",
@@ -440,7 +451,7 @@ HTML_TEMPLATE = """
         <div class="card dashboard-chart-card">
           <div class="card-body">
             <h3 class="h5">Findings Overview</h3>
-            <p class="dashboard-muted mb-3">Current distribution of findings, clear checks, and checks with no data to assess.</p>
+            <p class="dashboard-muted mb-3">Current distribution of findings, clear checks, permission-blocked checks, and other checks with no data to assess.</p>
             <div class="dashboard-chart-wrap">
               <canvas id="findingsPieChart" class="dashboard-chart-canvas"></canvas>
             </div>
@@ -1253,6 +1264,45 @@ def latest_resource_object_count(tabs):
     )
 
 
+def permission_failure_text(value):
+    """Return whether diagnostic text explicitly describes a permission failure."""
+    text = str(value or "").strip().casefold()
+    return any(marker in text for marker in PERMISSION_FAILURE_MARKERS)
+
+
+def finding_blocked_by_permissions(row):
+    """Identify an inconclusive check explicitly attributed to missing permissions."""
+    if not isinstance(row, dict):
+        return False
+    if canonical_finding_status(row.get("status")) != "no_data_to_assess":
+        return False
+
+    reporting = row.get("reporting") if isinstance(row.get("reporting"), dict) else {}
+    provenance = (
+        reporting.get("provenance")
+        if isinstance(reporting.get("provenance"), dict)
+        else {}
+    )
+    source_datasets = provenance.get("source_datasets")
+    if not isinstance(source_datasets, list):
+        source_datasets = []
+    for dataset in source_datasets:
+        if not isinstance(dataset, dict):
+            continue
+        statuses = dataset.get("collection_statuses")
+        if not isinstance(statuses, list):
+            continue
+        if any(str(status).casefold() in PERMISSION_FAILURE_STATUSES for status in statuses):
+            return True
+
+    coverage = row.get("coverage") if isinstance(row.get("coverage"), dict) else {}
+    diagnostic_values = [row.get("reason")]
+    for limitations in (provenance.get("limitations"), coverage.get("limitations")):
+        if isinstance(limitations, list):
+            diagnostic_values.extend(limitations)
+    return any(permission_failure_text(value) for value in diagnostic_values)
+
+
 def findings_summary():
     filepath = findings_flat_path()
     if not filepath.exists():
@@ -1272,12 +1322,15 @@ def findings_summary():
         "found": 0,
         "not_found": 0,
         "no_data_to_assess": 0,
+        "permission_blocked": 0,
         "not_implemented": 0,
     }
     for row in rows:
         status = canonical_finding_status(row.get("status") if isinstance(row, dict) else None)
         if status in counts:
             counts[status] += 1
+        if finding_blocked_by_permissions(row):
+            counts["permission_blocked"] += 1
     return counts
 
 
@@ -1313,6 +1366,11 @@ def build_dashboard_summary_cards(tabs, findings=None):
             {"label": "Finding Checks Found", "value": findings["found"], "detail": "Status: found"},
             {"label": "Finding Checks Clear", "value": findings["not_found"], "detail": "Status: not_found"},
             {"label": "Finding Checks With No Data", "value": findings["no_data_to_assess"], "detail": "Status: no_data_to_assess"},
+            {
+                "label": "Checks Blocked By Permissions",
+                "value": findings["permission_blocked"],
+                "detail": "Subset of no-data checks with explicit permission-failure attribution",
+            },
             {"label": "Finding Checks Not Implemented", "value": findings["not_implemented"], "detail": "Status: not_implemented"},
         ])
     return cards
@@ -1742,10 +1800,15 @@ def dashboard():
     findings = findings_summary()
     findings_chart_data = None
     if findings is not None:
+        other_no_data = max(
+            findings["no_data_to_assess"] - findings["permission_blocked"],
+            0,
+        )
         findings_chart_data = [
             {"label": "Findings", "value": findings["found"], "color": "#dc3545"},
             {"label": "No Findings", "value": findings["not_found"], "color": "#198754"},
-            {"label": "No Data To Assess", "value": findings["no_data_to_assess"], "color": "#ffc107"},
+            {"label": "Permission Blocked", "value": findings["permission_blocked"], "color": "#fd7e14"},
+            {"label": "No Data To Assess", "value": other_no_data, "color": "#ffc107"},
         ]
     return render_template_string(
         HTML_TEMPLATE,

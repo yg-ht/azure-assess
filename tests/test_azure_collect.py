@@ -689,6 +689,83 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             body,
         )
 
+    def test_dashboard_counts_checks_blocked_by_permissions(self):
+        findings_rows = {
+            "rows": [
+                {
+                    "status": "no_data_to_assess",
+                    "reporting": {
+                        "provenance": {
+                            "source_datasets": [
+                                {"collection_statuses": ["unauthorised"]}
+                            ],
+                            "limitations": [],
+                        }
+                    },
+                    "coverage": {"limitations": []},
+                },
+                {
+                    "status": "no_data_to_assess",
+                    "reporting": {
+                        "provenance": {
+                            "source_datasets": [],
+                            "limitations": [],
+                        }
+                    },
+                    "coverage": {
+                        "limitations": [
+                            "Collection for applications was incomplete: unauthorised"
+                        ]
+                    },
+                },
+                {
+                    "status": "no_data_to_assess",
+                    "reason": "No storage account dataset was found.",
+                },
+                {
+                    "status": "found",
+                    "reporting": {
+                        "provenance": {
+                            "source_datasets": [
+                                {"collection_statuses": ["unauthorised"]}
+                            ]
+                        }
+                    },
+                },
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            findings_path = data_dir / azure_present.FINDINGS_FLAT_FILENAME
+            findings_path.write_text(json.dumps(findings_rows), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                summary = azure_present.findings_summary()
+                cards = azure_present.build_dashboard_summary_cards([], summary)
+                client = azure_present.app.test_client()
+                response = client.get("/")
+
+        self.assertEqual(summary["no_data_to_assess"], 3)
+        self.assertEqual(summary["permission_blocked"], 2)
+        permission_card = next(
+            card for card in cards if card["label"] == "Checks Blocked By Permissions"
+        )
+        self.assertEqual(permission_card["value"], 2)
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"label": "Permission Blocked", "value": 2', body)
+        self.assertIn('"label": "No Data To Assess", "value": 1', body)
+
+    def test_permission_word_in_a_finding_does_not_imply_collection_failure(self):
+        row = {
+            "status": "no_data_to_assess",
+            "title": "Custom role has permission to administer locks",
+            "reason": "Role definition inventory is required.",
+        }
+
+        self.assertFalse(azure_present.finding_blocked_by_permissions(row))
+
     def test_dataset_group_lookup_does_not_load_json_payloads(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)

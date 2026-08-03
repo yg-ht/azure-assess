@@ -364,6 +364,7 @@ Notes:
 - The Flask app listens on `127.0.0.1:5000`.
 - The dashboard shows the latest dataset snapshot by default and allows switching to older timestamped versions where available.
 - If `azure-findings-flat.json` exists in the input directory, findings are also available through the dashboard.
+- The dashboard reports checks blocked by missing permissions separately from other checks with no data to assess. This count is conservative and includes only `no_data_to_assess` rows with explicit `unauthorised` collection provenance or equivalent permission-failure diagnostics.
 
 ## Example End-to-End Usage
 
