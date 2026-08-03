@@ -36,7 +36,7 @@ import argparse
 import importlib.util
 import json
 import re
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from datetime import datetime
 from flask import Flask, jsonify, render_template_string, request
 from html import escape
@@ -487,9 +487,9 @@ HTML_TEMPLATE = """
       <!-- DASHBOARD PAGE -->
       <div class="mt-4 dashboard-page">
         <h2>Dashboard</h2>
-        {% if summary_cards %}
+        {% macro dashboard_card_grid(cards) %}
         <div class="row g-3 mb-4">
-          {% for card in summary_cards %}
+          {% for card in cards %}
           <div class="col-12 col-md-6 col-xl-3">
             <div class="card h-100 bg-transparent dashboard-summary-card">
               <div class="card-body">
@@ -506,16 +506,50 @@ HTML_TEMPLATE = """
           </div>
           {% endfor %}
         </div>
+        {% endmacro %}
+
+        {% if summary_cards.collection %}
+        <section class="dashboard-section" aria-labelledby="collectionSnapshotHeading">
+          <h3 id="collectionSnapshotHeading" class="h4">Collection Snapshot</h3>
+          <p class="dashboard-muted">Inventory and dataset storage information. These measures describe different aspects of the collection and are not expected to add together.</p>
+          {{ dashboard_card_grid(summary_cards.collection) }}
+        </section>
         {% endif %}
+
+        {% if summary_cards.findings %}
+        <section class="dashboard-section" aria-labelledby="findingOutcomesHeading">
+          <h3 id="findingOutcomesHeading" class="h4">Finding Outcomes</h3>
+          <p class="dashboard-muted">One mutually exclusive outcome for every assessment check.</p>
+          {{ dashboard_card_grid(summary_cards.findings) }}
         {% if findings_chart_data %}
         <div class="card dashboard-chart-card">
           <div class="card-body">
-            <h3 class="h5">Assessment Overview</h3>
-            <p class="dashboard-muted mb-3">Current distribution of finding outcomes and unsuccessful Azure collection requests.</p>
+            <h4 class="h5">Finding Outcome Distribution</h4>
+            <p class="dashboard-muted mb-3">Percentages use the total number of assessed checks as their denominator.</p>
             <div class="dashboard-chart-wrap">
               <canvas id="findingsPieChart" class="dashboard-chart-canvas"></canvas>
             </div>
             <div id="findingsPieLegend" class="chart-legend"></div>
+          </div>
+        </div>
+        {% endif %}
+        </section>
+        {% endif %}
+
+        {% if summary_cards.requests %}
+        <section class="dashboard-section mt-4" aria-labelledby="requestHealthHeading">
+          <h3 id="requestHealthHeading" class="h4">Azure Request Health</h3>
+          <p class="dashboard-muted">Direct outcomes from Azure request attempts in the latest collection manifest. Endpoint definitions that were not attempted are reported separately and excluded from the chart.</p>
+          {{ dashboard_card_grid(summary_cards.requests) }}
+        {% if request_chart_data %}
+        <div class="card dashboard-chart-card">
+          <div class="card-body">
+            <h4 class="h5">Request Attempt Distribution</h4>
+            <p class="dashboard-muted mb-3">Percentages use attempted Azure requests as their denominator.</p>
+            <div class="dashboard-chart-wrap">
+              <canvas id="requestsPieChart" class="dashboard-chart-canvas"></canvas>
+            </div>
+            <div id="requestsPieLegend" class="chart-legend"></div>
           </div>
         </div>
         {% endif %}
@@ -562,6 +596,8 @@ HTML_TEMPLATE = """
             </details>
           </div>
         </div>
+        {% endif %}
+        </section>
         {% endif %}
       </div>
 
@@ -809,18 +845,17 @@ HTML_TEMPLATE = """
     </script>
     {% endif %}
 
-    {% if dashboard and findings_chart_data %}
+    {% if dashboard and (findings_chart_data or request_chart_data) %}
     <script>
       (function() {
-        const canvas = document.getElementById('findingsPieChart');
-        const legend = document.getElementById('findingsPieLegend');
-        if (!canvas || !legend) return;
+        function renderDashboardPie(canvasId, legendId, chartData) {
+          const canvas = document.getElementById(canvasId);
+          const legend = document.getElementById(legendId);
+          if (!canvas || !legend) return;
+          const segments = chartData.filter(function(item) { return item.value > 0; });
+          if (segments.length === 0) return;
 
-        const chartData = {{ findings_chart_data|tojson }};
-        const segments = chartData.filter(function(item) { return item.value > 0; });
-        if (segments.length === 0) return;
-
-        function drawPieChart() {
+          function drawPieChart() {
           const ratio = window.devicePixelRatio || 1;
           const rect = canvas.getBoundingClientRect();
           const width = Math.max(rect.width, 320);
@@ -862,20 +897,32 @@ HTML_TEMPLATE = """
 
             startAngle = endAngle;
           });
+          }
+
+          legend.replaceChildren();
+          segments.forEach(function(segment) {
+            const item = document.createElement('div');
+            const swatch = document.createElement('span');
+            const label = document.createElement('span');
+            item.className = 'chart-legend-item';
+            swatch.className = 'chart-legend-swatch';
+            swatch.style.backgroundColor = segment.color;
+            label.textContent = segment.label + ': ' + segment.value;
+            item.append(swatch, label);
+            legend.appendChild(item);
+          });
+
+          drawPieChart();
+          window.addEventListener('resize', drawPieChart);
+          window.addEventListener('azure-theme-change', drawPieChart);
         }
 
-        legend.innerHTML = '';
-        segments.forEach(function(segment) {
-          const item = document.createElement('div');
-          item.className = 'chart-legend-item';
-          item.innerHTML = '<span class="chart-legend-swatch" style="background-color: ' + segment.color + ';"></span>' +
-            '<span>' + segment.label + ': ' + segment.value + '</span>';
-          legend.appendChild(item);
-        });
-
-        drawPieChart();
-        window.addEventListener('resize', drawPieChart);
-        window.addEventListener('azure-theme-change', drawPieChart);
+        {% if findings_chart_data %}
+        renderDashboardPie('findingsPieChart', 'findingsPieLegend', {{ findings_chart_data|tojson }});
+        {% endif %}
+        {% if request_chart_data %}
+        renderDashboardPie('requestsPieChart', 'requestsPieLegend', {{ request_chart_data|tojson }});
+        {% endif %}
       })();
     </script>
     {% endif %}
@@ -1416,15 +1463,15 @@ def latest_resource_object_count(tabs):
         if tab["dataset_key"] == "az_resource_list":
             return (
                 "Loading...",
-                "From latest Azure Resource List dataset",
+                "Objects in the latest Azure resource inventory",
                 [tab["filename"]],
             )
     if not tabs:
-        return 0, "No collected datasets found", []
+        return "Unavailable", "No collected datasets were found", []
     return (
-        "Loading...",
-        "Fallback: sum of latest dataset record counts",
-        [tab["filename"] for tab in tabs],
+        "Unavailable",
+        "The Azure resource inventory was not collected",
+        [],
     )
 
 
@@ -1444,15 +1491,21 @@ def latest_collection_manifest():
 
 
 def collection_request_summary():
-    """Summarise only requests that directly reported failed execution."""
+    """Summarise mutually exclusive request and non-attempt outcomes."""
     manifest = latest_collection_manifest()
     if manifest is None:
         return None
+    status_counts = Counter()
     failures = []
     for request_record in manifest.get("endpoint_runs", []):
         if not isinstance(request_record, dict):
             continue
+        # Local Azure CLI configuration commands do not call an Azure service
+        # endpoint and therefore do not belong in request-health statistics.
+        if str(request_record.get("category") or "") == "setup":
+            continue
         status = str(request_record.get("status") or "")
+        status_counts[status] += 1
         if status not in {"failed", "unauthorised"}:
             continue
         response_message = (
@@ -1488,11 +1541,19 @@ def collection_request_summary():
             json.dumps(item["parameter_context"], sort_keys=True, default=str),
         )
     )
+    attempted = sum(
+        status_counts[status]
+        for status in ("success", "empty", "failed", "unauthorised")
+    )
     return {
-        "failed": sum(failure["status"] == "failed" for failure in failures),
-        "unauthorised": sum(
-            failure["status"] == "unauthorised" for failure in failures
-        ),
+        "attempted": attempted,
+        "success": status_counts["success"],
+        "empty": status_counts["empty"],
+        "failed": status_counts["failed"],
+        "unauthorised": status_counts["unauthorised"],
+        "skipped": status_counts["skipped"],
+        "not_attempted": status_counts["not_attempted"],
+        "unattempted": status_counts["skipped"] + status_counts["not_attempted"],
         "failures": failures,
     }
 
@@ -1535,44 +1596,78 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
         if timestamp is not None and (latest_collection is None or timestamp > latest_collection):
             latest_collection = timestamp
 
-    cards = [
+    collection_cards = [
         {
-            "label": "Objects In Subscription",
+            "label": "Azure Resources Discovered",
             "value": object_count,
             "detail": object_detail,
             "count_filenames": object_count_filenames,
         },
-        {"label": "Dataset Types Collected", "value": len(tabs), "detail": "Logical dataset families on the dashboard"},
-        {"label": "Stored Dataset Snapshots", "value": total_versions, "detail": f"{historical_versions} older versions available"},
+        {"label": "Dataset Families", "value": len(tabs), "detail": "Distinct types of collected Azure data"},
+        {
+            "label": "Dataset Snapshots",
+            "value": total_versions,
+            "detail": f"{len(tabs)} latest and {historical_versions} earlier snapshots",
+        },
         {
             "label": "Latest Collection",
             "value": latest_collection.strftime("%Y-%m-%d %H:%M:%S") if latest_collection else "Unknown",
-            "detail": "Most recent timestamp found in collected dataset filenames",
+            "detail": "Most recent timestamp among collected datasets",
         },
     ]
 
+    finding_cards = []
     if findings is not None:
-        cards.extend([
-            {"label": "Finding Checks Executed", "value": findings["executed"], "detail": "Rows in azure-findings-flat.json"},
-            {"label": "Finding Checks Found", "value": findings["found"], "detail": "Status: found"},
-            {"label": "Finding Checks Clear", "value": findings["not_found"], "detail": "Status: not_found"},
-            {"label": "Finding Checks With No Data", "value": findings["no_data_to_assess"], "detail": "Status: no_data_to_assess"},
-            {"label": "Finding Checks Not Implemented", "value": findings["not_implemented"], "detail": "Status: not_implemented"},
+        finding_cards.extend([
+            {"label": "Checks Assessed", "value": findings["executed"], "detail": "Total assessment checks with a recorded outcome"},
+            {"label": "Findings Raised", "value": findings["found"], "detail": "Checks that identified an issue"},
+            {"label": "Checks Passed", "value": findings["not_found"], "detail": "Checks that did not identify an issue"},
+            {"label": "Checks Without Sufficient Data", "value": findings["no_data_to_assess"], "detail": "Checks that could not assess the required evidence"},
+            {"label": "Checks Not Implemented", "value": findings["not_implemented"], "detail": "Defined checks without an implemented assessment"},
         ])
+
+    request_cards = []
     if collection_requests is not None:
-        cards.extend([
+        request_cards.extend([
             {
-                "label": "Failed Azure Requests",
+                "label": "Request Attempts",
+                "value": collection_requests["attempted"],
+                "detail": "Azure requests that returned a direct outcome",
+            },
+            {
+                "label": "Requests Returning Data",
+                "value": collection_requests["success"],
+                "detail": "Successful requests with one or more returned records",
+            },
+            {
+                "label": "Requests Returning No Data",
+                "value": collection_requests["empty"],
+                "detail": "Successful requests whose response contained no records",
+            },
+            {
+                "label": "Failed Request Attempts",
                 "value": collection_requests["failed"],
                 "detail": "Non-authorisation errors returned by attempted requests",
             },
             {
-                "label": "Unauthorised Azure Requests",
+                "label": "Unauthorised Request Attempts",
                 "value": collection_requests["unauthorised"],
-                "detail": "Requests whose returned response was classified as unauthorised",
+                "detail": "Permission-related errors returned by attempted requests",
+            },
+            {
+                "label": "Endpoints Not Attempted",
+                "value": collection_requests["unattempted"],
+                "detail": (
+                    f"{collection_requests['skipped']} skipped and "
+                    f"{collection_requests['not_attempted']} otherwise not attempted"
+                ),
             },
         ])
-    return cards
+    return {
+        "collection": collection_cards,
+        "findings": finding_cards,
+        "requests": request_cards,
+    }
 
 
 def findings_flat_path():
@@ -1999,23 +2094,21 @@ def dashboard():
     findings = findings_summary()
     collection_requests = collection_request_summary()
     findings_chart_data = None
-    has_request_failures = bool(
-        collection_requests
-        and (collection_requests["failed"] or collection_requests["unauthorised"])
-    )
-    if findings is not None or has_request_failures:
-        findings_chart_data = []
     if findings is not None:
-        findings_chart_data.extend([
-            {"label": "Findings", "value": findings["found"], "color": "#dc3545"},
-            {"label": "No Findings", "value": findings["not_found"], "color": "#198754"},
-            {"label": "No Data To Assess", "value": findings["no_data_to_assess"], "color": "#ffc107"},
-        ])
-    if has_request_failures:
-        findings_chart_data.extend([
-            {"label": "Failed Azure Requests", "value": collection_requests["failed"], "color": "#fd7e14"},
-            {"label": "Unauthorised Azure Requests", "value": collection_requests["unauthorised"], "color": "#6f42c1"},
-        ])
+        findings_chart_data = [
+            {"label": "Findings Raised", "value": findings["found"], "color": "#dc3545"},
+            {"label": "Checks Passed", "value": findings["not_found"], "color": "#198754"},
+            {"label": "Insufficient Data", "value": findings["no_data_to_assess"], "color": "#ffc107"},
+            {"label": "Not Implemented", "value": findings["not_implemented"], "color": "#6c757d"},
+        ]
+    request_chart_data = None
+    if collection_requests is not None and collection_requests["attempted"]:
+        request_chart_data = [
+            {"label": "Returned Data", "value": collection_requests["success"], "color": "#198754"},
+            {"label": "Returned No Data", "value": collection_requests["empty"], "color": "#0dcaf0"},
+            {"label": "Failed", "value": collection_requests["failed"], "color": "#fd7e14"},
+            {"label": "Unauthorised", "value": collection_requests["unauthorised"], "color": "#6f42c1"},
+        ]
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
@@ -2026,6 +2119,7 @@ def dashboard():
         ),
         dashboard=True,
         findings_chart_data=findings_chart_data,
+        request_chart_data=request_chart_data,
         collection_requests=collection_requests,
         dataset_index=False,
     )

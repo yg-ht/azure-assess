@@ -650,9 +650,28 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             body = response.get_data(as_text=True)
             self.assertEqual(response.status_code, 200)
             self.assertIn(f'data-summary-count-filenames="{dataset_path.name}"', body)
-            self.assertIn("Objects In Subscription", body)
+            self.assertIn("Azure Resources Discovered", body)
             self.assertIn("Loading...", body)
             loader.assert_not_called()
+
+    def test_dashboard_does_not_treat_other_dataset_rows_as_azure_resources(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset_path = data_dir / "az_group_list_20260402-000000.json"
+            dataset_path.write_text(json.dumps([{"name": "one"}]), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                response = client.get("/")
+
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Azure Resources Discovered", body)
+        self.assertIn("The Azure resource inventory was not collected", body)
+        self.assertNotIn(
+            f'data-summary-count-filenames="{dataset_path.name}"',
+            body,
+        )
 
     def test_dashboard_colours_follow_light_and_dark_themes(self):
         findings_rows = {
@@ -722,6 +741,33 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "status": "not_attempted",
                     "returncode": None,
                 },
+                {
+                    "endpoint_name": "Skipped Endpoint",
+                    "category": "parameterised",
+                    "status": "skipped",
+                    "returncode": None,
+                },
+                {
+                    "endpoint_name": "Successful Endpoint",
+                    "category": "base",
+                    "status": "success",
+                    "returncode": 0,
+                    "result_count": 2,
+                },
+                {
+                    "endpoint_name": "Empty Endpoint",
+                    "category": "base",
+                    "status": "empty",
+                    "returncode": 0,
+                    "result_count": 0,
+                },
+                {
+                    "endpoint_name": "Azure CLI config",
+                    "category": "setup",
+                    "status": "empty",
+                    "returncode": 0,
+                    "result_count": 0,
+                },
             ]
         }
 
@@ -745,22 +791,60 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         self.assertEqual(summary["no_data_to_assess"], 3)
         self.assertNotIn("permission_blocked", summary)
+        self.assertEqual(requests["attempted"], 4)
+        self.assertEqual(requests["success"], 1)
+        self.assertEqual(requests["empty"], 1)
         self.assertEqual(requests["failed"], 1)
         self.assertEqual(requests["unauthorised"], 1)
+        self.assertEqual(requests["unattempted"], 2)
+        self.assertEqual(requests["skipped"], 1)
+        self.assertEqual(requests["not_attempted"], 1)
         failed_card = next(
-            card for card in cards if card["label"] == "Failed Azure Requests"
+            card
+            for card in cards["requests"]
+            if card["label"] == "Failed Request Attempts"
         )
         unauthorised_card = next(
-            card for card in cards if card["label"] == "Unauthorised Azure Requests"
+            card
+            for card in cards["requests"]
+            if card["label"] == "Unauthorised Request Attempts"
+        )
+        request_attempts_card = next(
+            card
+            for card in cards["requests"]
+            if card["label"] == "Request Attempts"
         )
         self.assertEqual(failed_card["value"], 1)
         self.assertEqual(unauthorised_card["value"], 1)
+        self.assertEqual(request_attempts_card["value"], 4)
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn('"label": "Permission Blocked"', body)
-        self.assertIn('"label": "No Data To Assess", "value": 3', body)
-        self.assertIn('"label": "Failed Azure Requests", "value": 1', body)
-        self.assertIn('"label": "Unauthorised Azure Requests", "value": 1', body)
+        self.assertIn("Collection Snapshot", body)
+        self.assertIn("Finding Outcomes", body)
+        self.assertIn("Azure Request Health", body)
+        self.assertIn("Checks Without Sufficient Data", body)
+        self.assertNotIn("Rows in azure-findings-flat.json", body)
+        self.assertNotIn("Status: not_found", body)
+        self.assertIn('"label": "Insufficient Data", "value": 3', body)
+        self.assertIn('"label": "Failed", "value": 1', body)
+        self.assertIn('"label": "Unauthorised", "value": 1', body)
+        self.assertIn("Finding Outcome Distribution", body)
+        self.assertIn("Request Attempt Distribution", body)
+        self.assertIn("findingsPieChart", body)
+        self.assertIn("requestsPieChart", body)
+        finding_chart_call = body.split(
+            "renderDashboardPie('findingsPieChart'",
+            1,
+        )[1].split(");", 1)[0]
+        request_chart_call = body.split(
+            "renderDashboardPie('requestsPieChart'",
+            1,
+        )[1].split(");", 1)[0]
+        self.assertNotIn("Failed", finding_chart_call)
+        self.assertNotIn("Unauthorised", finding_chart_call)
+        self.assertNotIn("Findings Raised", request_chart_call)
+        self.assertNotIn("Checks Passed", request_chart_call)
         self.assertIn("Unsuccessful Azure Requests", body)
         self.assertIn('<details class="dashboard-request-details">', body)
         self.assertNotIn('<details class="dashboard-request-details" open>', body)
@@ -775,6 +859,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Principal cannot list storage account keys.", body)
         self.assertIn("Legacy manifest error message", body)
         self.assertNotIn("Unattempted Endpoint", body)
+        self.assertNotIn("Skipped Endpoint", body)
 
     def test_dataset_group_lookup_does_not_load_json_payloads(self):
         with tempfile.TemporaryDirectory() as tmpdir:
