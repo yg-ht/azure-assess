@@ -1518,8 +1518,10 @@ def record_count_for_data(data):
     if isinstance(data, list):
         return len(data)
     if isinstance(data, dict):
-        return len(data.keys())
-    return 0
+        if isinstance(data.get("value"), list):
+            return len(data["value"])
+        return 1 if data else 0
+    return 0 if data is None else 1
 
 
 def record_count_for_file(path):
@@ -2066,6 +2068,10 @@ def ensure_horizontal_json_table_format(data, debug=False):
     log(f"Original data type: {type(data).__name__}")
     log(f"Original data preview: {repr(str(data)[:100])}")
 
+    if isinstance(data, dict) and isinstance(data.get("value"), list):
+        log("Detected: Collection response envelope — using its value records.")
+        data = data["value"]
+
     # Case 1: Already a list of dicts
     if isinstance(data, list) and all(isinstance(row, dict) for row in data):
         log("Detected: List of dictionaries — passing through unchanged.")
@@ -2073,6 +2079,8 @@ def ensure_horizontal_json_table_format(data, debug=False):
 
     # Case 2: Single dictionary
     elif isinstance(data, dict):
+        if not data:
+            return []
         log("Detected: Single dictionary — wrapping in a list.")
         return [data]
 
@@ -2098,6 +2106,9 @@ def has_consistent_keys(data, debug=False):
         if debug:
             print("[DEBUG] Input is not a list of dicts — cannot check key consistency.")
         return False
+
+    if not data:
+        return True
 
     keysets = [set(d.keys()) for d in data]
     base_keys = keysets[0]
@@ -2150,28 +2161,27 @@ def normalize_list_of_dicts(data, fill_value="n/a", debug=False):
 
 
 def generate_html_table(original_data):
-    """Convert JSON data to an HTML table using json2html."""
+    """Convert any valid JSON shape to a consistent horizontal HTML table."""
     try:
-        # If the original data is a non-empty list of dicts, process each row.
-        if len(original_data) > 0 and isinstance(original_data, list) and isinstance(original_data[0], dict):
-            horizontal_data = ensure_horizontal_json_table_format(original_data)
-            if not has_consistent_keys(horizontal_data):
-                print("[WARNING] Data has inconsistent keys... attempting to correct")
-                data_for_use = normalize_list_of_dicts(horizontal_data, 'not in data')
-            else:
-                data_for_use = horizontal_data
-            modified_data = []
-            for row in data_for_use:
-                row_json_string = str(json.dumps(row))
-                new_row = OrderedDict([("json_string", row_json_string)])
-                new_row.update(row)
-                modified_data.append(new_row)
-            data = modified_data
+        horizontal_data = ensure_horizontal_json_table_format(original_data)
+        if not horizontal_data:
+            return '<p class="data-table-empty">No records were returned.</p>'
+
+        if not has_consistent_keys(horizontal_data):
+            data_for_use = normalize_list_of_dicts(
+                horizontal_data,
+                "not in data",
+            )
         else:
-            print("[DEBUG] Working with something which is neither a list-of-dictionaries or just a dictionary")
-            # For non-list-of-dicts, simply wrap it under the "data" key.
-            data = OrderedDict([("data", original_data)])
-            print(f"This is the JSON object being sent to json2html:\n {data}")
+            data_for_use = horizontal_data
+
+        data = []
+        for row in data_for_use:
+            new_row = OrderedDict(
+                [("json_string", json.dumps(row))]
+            )
+            new_row.update(row)
+            data.append(new_row)
 
         html_table = json2html.convert(json=data)
         html_table = linkify_rendered_urls(html_table)
@@ -2469,15 +2479,15 @@ def query(filename):
     data = load_json_file(filepath)
     if data is None:
         return f"<p>Error loading data from {filename}.</p>"
+    display_rows = ensure_horizontal_json_table_format(data)
     if query_param:
-        if isinstance(data, list):
-            filtered_data = [item for item in data if query_param in json.dumps(item).lower()]
-        elif isinstance(data, dict):
-            filtered_data = {k: v for k, v in data.items() if query_param in str(v).lower()}
-        else:
-            filtered_data = data
+        filtered_data = [
+            item
+            for item in display_rows
+            if query_param in json.dumps(item).lower()
+        ]
     else:
-        filtered_data = data
+        filtered_data = display_rows
     table = prepare_top_level_headers(
         generate_html_table(filtered_data),
         sortable=True,

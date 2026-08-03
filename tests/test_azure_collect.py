@@ -222,6 +222,67 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
 
 
 class AzurePresentDatasetIndexTests(unittest.TestCase):
+    def test_singleton_graph_object_is_rendered_as_one_horizontal_row(self):
+        graph_policy = {
+            "@odata.context": (
+                "https://graph.microsoft.com/v1.0/"
+                "$metadata#policies/authorizationPolicy/$entity"
+            ),
+            "id": "authorizationPolicy",
+        }
+
+        with mock.patch("builtins.print") as printer:
+            html = azure_present.generate_html_table(graph_policy)
+
+        self.assertIn("<th>json_string</th>", html)
+        self.assertIn("<th>@odata.context</th>", html)
+        self.assertIn("<th>id</th>", html)
+        self.assertNotIn("<th>data</th>", html)
+        self.assertIn("authorizationPolicy", html)
+        self.assertNotIn("Error displaying data", html)
+        self.assertEqual(azure_present.record_count_for_data(graph_policy), 1)
+        printer.assert_not_called()
+
+    def test_empty_and_scalar_json_shapes_render_without_errors(self):
+        empty_html = azure_present.generate_html_table([])
+        scalar_html = azure_present.generate_html_table("enabled")
+
+        self.assertIn("No records were returned", empty_html)
+        self.assertNotIn("Error displaying data", empty_html)
+        self.assertIn("<th>value</th>", scalar_html)
+        self.assertIn("enabled", scalar_html)
+        self.assertNotIn("Error displaying data", scalar_html)
+        self.assertEqual(azure_present.record_count_for_data({}), 0)
+        self.assertEqual(azure_present.record_count_for_data("enabled"), 1)
+        self.assertEqual(azure_present.record_count_for_data(None), 0)
+
+    def test_flat_json_list_is_rendered_with_index_and_value_columns(self):
+        html = azure_present.generate_html_table(["one", "two"])
+
+        self.assertIn("<th>index</th>", html)
+        self.assertIn("<th>value</th>", html)
+        self.assertIn("one", html)
+        self.assertIn("two", html)
+
+    def test_graph_collection_envelope_renders_and_counts_individual_records(self):
+        graph_users = {
+            "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
+            "value": [
+                {"id": "user-one", "displayName": "Alpha"},
+                {"id": "user-two", "displayName": "Beta"},
+            ],
+        }
+
+        html = azure_present.generate_html_table(graph_users)
+
+        self.assertEqual(azure_present.record_count_for_data(graph_users), 2)
+        self.assertIn("<th>id</th>", html)
+        self.assertIn("<th>displayName</th>", html)
+        self.assertNotIn("<th>value</th>", html)
+        self.assertNotIn("<th>@odata.context</th>", html)
+        self.assertIn("Alpha", html)
+        self.assertIn("Beta", html)
+
     def test_linkify_rendered_urls_labels_azure_portal_links_by_resource(self):
         html = (
             "https://portal.azure.com/#resource/subscriptions/sub-one/resourceGroups/rg-one/"
@@ -535,6 +596,65 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('class="data-filter-controls-row"', body)
         self.assertIn('class="data-filter-actions-row"', body)
         self.assertNotIn('id="findingsStatusSelect"', body)
+
+    def test_dataset_query_route_renders_singleton_graph_object_as_table(self):
+        graph_policy = {
+            "@odata.context": (
+                "https://graph.microsoft.com/v1.0/"
+                "$metadata#policies/authorizationPolicy/$entity"
+            ),
+            "id": "authorizationPolicy",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset_path = data_dir / (
+                "az_rest_--url_graph_authorization_policy_20260803-212113.json"
+            )
+            dataset_path.write_text(json.dumps(graph_policy), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                response = azure_present.app.test_client().get(
+                    f"/query/{dataset_path.name}"
+                )
+
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            '<th class="table-sortable" tabindex="0" role="button" '
+            'aria-sort="none">@odata.context</th>',
+            body,
+        )
+        self.assertIn(
+            '<th class="table-sortable" tabindex="0" role="button" '
+            'aria-sort="none">ID</th>',
+            body,
+        )
+        self.assertNotIn("Working with something which is neither", body)
+        self.assertNotIn("Error displaying data", body)
+
+    def test_dataset_query_filters_records_inside_graph_collection_envelope(self):
+        graph_users = {
+            "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users",
+            "value": [
+                {"id": "user-one", "displayName": "Alpha"},
+                {"id": "user-two", "displayName": "Beta"},
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset_path = data_dir / "graph_users_20260803-212113.json"
+            dataset_path.write_text(json.dumps(graph_users), encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                response = azure_present.app.test_client().get(
+                    f"/query/{dataset_path.name}?query=beta"
+                )
+
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Beta", body)
+        self.assertNotIn("Alpha", body)
+        self.assertNotIn("<th>value</th>", body)
 
     def test_dataset_groups_default_does_not_load_record_counts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
