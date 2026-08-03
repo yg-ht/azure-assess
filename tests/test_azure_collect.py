@@ -917,7 +917,10 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('data-filter-mode="contains"', body)
         self.assertIn("filter.addEventListener('change', applyFilters)", body)
         self.assertIn("cellValue === query", body)
-        self.assertIn("one row is shown for each failed or unauthorised", body.lower())
+        self.assertIn(
+            "one row is shown for each failed, unauthorised or tenant-restricted",
+            body.lower(),
+        )
         self.assertIn("function applyFilters()", body)
         self.assertIn("leftValue.localeCompare", body)
         self.assertIn("Storage Account Keys", body)
@@ -926,6 +929,104 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Legacy manifest error message", body)
         self.assertNotIn("Flow Logs (legacy manifest)", body)
         self.assertNotIn("Unavailable Service", body)
+
+    def test_dashboard_separates_tenant_restrictions_and_inherited_skip_causes(self):
+        findings_rows = {
+            "rows": [
+                {
+                    "status": "no_data_to_assess",
+                    "reporting": {
+                        "provenance": {
+                            "insufficient_data": {
+                                "cause": "tenant_capability_unavailable"
+                            }
+                        }
+                    },
+                }
+            ]
+        }
+        manifest = {
+            "endpoint_runs": [
+                {
+                    "endpoint_name": "Graph Registration Details",
+                    "category": "base",
+                    "status": "unauthorised",
+                    "returncode": 1,
+                    "response_error": json.dumps(
+                        {
+                            "error": {
+                                "code": "Authentication_RequestFromNonPremiumTenantOrB2CTenant",
+                                "message": "Tenant does not have a premium licence",
+                            }
+                        }
+                    ),
+                },
+                {
+                    "endpoint_name": "Child of Unauthorised Source",
+                    "category": "parameterised",
+                    "status": "skipped",
+                    "reason_code": "upstream_source_unauthorised",
+                    "error": "Missing required parameters: name",
+                },
+                {
+                    "endpoint_name": "Child of Tenant-Restricted Source",
+                    "category": "parameterised",
+                    "status": "skipped",
+                    "reason_code": "upstream_source_tenant_unavailable",
+                    "error": "Missing required parameters: name",
+                },
+                {
+                    "endpoint_name": "Child of Empty Source",
+                    "category": "parameterised",
+                    "status": "skipped",
+                    "reason_code": "upstream_source_returned_no_data",
+                    "error": "Missing required parameters: name",
+                },
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / azure_present.FINDINGS_FLAT_FILENAME).write_text(
+                json.dumps(findings_rows), encoding="utf-8"
+            )
+            (data_dir / "azure-collection-manifest_20260803-120000.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                findings = azure_present.findings_summary()
+                requests = azure_present.collection_request_summary()
+                cards = azure_present.build_dashboard_summary_cards(
+                    [], findings, requests
+                )
+                response = azure_present.app.test_client().get("/")
+
+        self.assertEqual(requests["tenant_unavailable"], 1)
+        self.assertEqual(requests["unauthorised"], 0)
+        self.assertEqual(
+            requests["skipped_reason_counts"]["upstream_source_unauthorised"],
+            1,
+        )
+        self.assertEqual(
+            requests["skipped_reason_counts"][
+                "upstream_source_tenant_unavailable"
+            ],
+            1,
+        )
+        card_values = {card["label"]: card["value"] for card in cards["requests"]}
+        self.assertEqual(
+            card_values["Licence or Tenant Capability Restrictions"], 1
+        )
+        self.assertEqual(card_values["Skipped — Unauthorised Prerequisite"], 1)
+        self.assertEqual(card_values["Skipped — Licence/Tenant Capability"], 1)
+        self.assertEqual(card_values["Skipped — Empty Prerequisite"], 1)
+        body = response.get_data(as_text=True)
+        self.assertIn(
+            '"label": "Insufficient Data \\u2014 Licence or Tenant Capability", "value": 1',
+            body,
+        )
+        self.assertIn("tenant_unavailable", body)
 
     def test_dataset_group_lookup_does_not_load_json_payloads(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1500,6 +1601,109 @@ class CollectDataWithParamsTests(unittest.TestCase):
         self.assertEqual(
             skipped["reason_details"]["sources"]["az_parent_list"]["collection_statuses"],
             ["empty"],
+        )
+
+    def test_tenant_capability_root_is_available_to_downstream_collectors(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            recorder = azure_collect.CollectionManifestRecorder(
+                "20260402-000000",
+                output_dir,
+                project_dir=output_dir,
+            )
+            recorder.record_execution(
+                "Graph Registration Details",
+                "base",
+                "az rest --url https://graph.microsoft.com/registrationDetails",
+                "2026-04-02T00:00:00Z",
+                0.1,
+                1,
+                None,
+                endpoint_identifier="graph_user_registration_details",
+                diagnostic_text=json.dumps(
+                    {
+                        "error": {
+                            "code": "Authentication_RequestFromNonPremiumTenantOrB2CTenant"
+                        }
+                    }
+                ),
+            )
+
+            with mock.patch.object(azure_collect, "COLLECTION_MANIFEST", recorder):
+                reason, statuses, details = azure_collect.upstream_source_skip_reason(
+                    "graph_user_registration_details"
+                )
+
+        self.assertEqual(reason, "upstream_source_tenant_unavailable")
+        self.assertEqual(statuses, ["tenant_unavailable"])
+        self.assertEqual(
+            details["root_cause_endpoint_ids"],
+            ["graph_user_registration_details"],
+        )
+
+    def test_unauthorised_root_cause_survives_multiple_skipped_collectors(self):
+        endpoints = [
+            {
+                "name": "Child List",
+                "cli_command": "az child list --parent {name}",
+                "output_prefix": "az_child_list",
+                "required_params": {"name": "az_parent_list"},
+            },
+            {
+                "name": "Grandchild Details",
+                "cli_command": "az grandchild show --name {name}",
+                "required_params": {"name": "az_child_list"},
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            recorder = azure_collect.CollectionManifestRecorder(
+                "20260402-000000",
+                output_dir,
+                project_dir=output_dir,
+            )
+            recorder.record_execution(
+                "Parents",
+                "base",
+                "az parent list",
+                "2026-04-02T00:00:00Z",
+                0.1,
+                1,
+                None,
+                endpoint_identifier="az_parent_list",
+                diagnostic_text="(AuthorizationFailed) Access denied",
+            )
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "COLLECTION_MANIFEST", recorder):
+                azure_collect.collect_data_with_params(endpoints)
+
+            manifest = recorder.finish()
+
+        child = next(
+            item for item in manifest["endpoint_runs"]
+            if item["endpoint_name"] == "Child List"
+        )
+        grandchild = next(
+            item for item in manifest["endpoint_runs"]
+            if item["endpoint_name"] == "Grandchild Details"
+        )
+        self.assertEqual(child["reason_code"], "upstream_source_unauthorised")
+        self.assertEqual(
+            grandchild["reason_code"], "upstream_source_unauthorised"
+        )
+        self.assertEqual(
+            grandchild["reason_details"]["root_cause_endpoint_ids"],
+            ["az_parent_list"],
+        )
+        self.assertIn(
+            "upstream_source_unauthorised",
+            grandchild["reason_details"]["contributing_reason_codes"],
+        )
+        self.assertEqual(
+            grandchild["reason_details"]["dependency_chains"],
+            [["az_parent_list", "az_child_list", "az_grandchild_show_--name_name"]],
         )
 
     def test_filtered_upstream_records_are_classified_as_not_applicable(self):

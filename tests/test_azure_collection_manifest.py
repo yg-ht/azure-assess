@@ -129,10 +129,29 @@ class CollectionManifestContentTests(unittest.TestCase):
             )
             manifest = recorder.finish()
 
-        self.assertEqual(manifest["schema_version"], "2.2")
+        self.assertEqual(manifest["schema_version"], "2.3")
         self.assertEqual(manifest["status"], "success")
         self.assertEqual(manifest["endpoint_runs"][0]["status"], "not_applicable")
         self.assertEqual(manifest["errors"], [])
+
+    def test_non_premium_tenant_response_is_not_classified_as_unauthorised(self):
+        diagnostic = json.dumps(
+            {
+                "error": {
+                    "code": "Authentication_RequestFromNonPremiumTenantOrB2CTenant",
+                    "message": "Tenant does not have a premium licence",
+                }
+            }
+        )
+
+        status = classify_execution_status(
+            1,
+            None,
+            error_message="Azure CLI request failed with return code 1",
+            diagnostic_text=diagnostic,
+        )
+
+        self.assertEqual(status, "tenant_unavailable")
 
     def test_azure_error_codes_are_extracted_from_direct_response_formats(self):
         self.assertEqual(

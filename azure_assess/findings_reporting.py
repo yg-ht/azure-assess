@@ -7,9 +7,11 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
+from azure_assess.collection_manifest import is_tenant_unavailable_error
 
-REPORTING_SCHEMA_VERSION = "1.1"
-SUPPORTED_REPORTING_SCHEMA_VERSIONS = {"1.0", REPORTING_SCHEMA_VERSION}
+
+REPORTING_SCHEMA_VERSION = "1.2"
+SUPPORTED_REPORTING_SCHEMA_VERSIONS = {"1.0", "1.1", REPORTING_SCHEMA_VERSION}
 ASSET_ID_RE = re.compile(r"^asset_[a-f0-9]{24}$")
 OBSERVATION_ID_RE = re.compile(r"^obs_[a-f0-9]{24}$")
 AZURE_IDENTIFIER_KEYS = {
@@ -41,6 +43,7 @@ NAMED_ASSET_KEYS = (
 SOURCE_HASH_CACHE: Dict[Tuple[str, int, int], str] = {}
 INSUFFICIENT_DATA_CAUSE_LABELS = {
     "unauthorised_source": "Unauthorised Source",
+    "tenant_capability_unavailable": "Licence or Tenant Capability",
     "failed_request": "Failed Request",
     "collection_incomplete": "Interrupted or Unrecorded Collection",
     "skipped_prerequisite": "Skipped Prerequisite",
@@ -397,7 +400,7 @@ def source_dataset_records(
                 f"Dataset provenance for {filename}: {record['integrity_status']}"
             )
         incomplete_statuses = set(record["collection_statuses"]).intersection(
-            {"failed", "unauthorised", "not_attempted"}
+            {"failed", "unauthorised", "tenant_unavailable", "not_attempted"}
         )
         if incomplete_statuses:
             limitations.append(
@@ -489,20 +492,72 @@ def required_endpoint_records(
                 "category": endpoint_run.get("category") or "Unknown",
                 "statuses": set(),
                 "reason_codes": set(),
+                "root_cause_endpoint_ids": set(),
+                "dependency_chains": [],
             },
         )
         if endpoint_run.get("status"):
-            group["statuses"].add(str(endpoint_run["status"]))
+            status = str(endpoint_run["status"])
+            response_message = endpoint_run.get("response_error") or endpoint_run.get(
+                "error"
+            )
+            if status in {"failed", "unauthorised"} and is_tenant_unavailable_error(
+                endpoint_run.get("error_code") or response_message
+            ):
+                status = "tenant_unavailable"
+            group["statuses"].add(status)
         if endpoint_run.get("reason_code"):
             group["reason_codes"].add(str(endpoint_run["reason_code"]))
-    return [
-        {
-            **group,
-            "statuses": sorted(group["statuses"]),
-            "reason_codes": sorted(group["reason_codes"]),
+        reason_details = endpoint_run.get("reason_details")
+        if isinstance(reason_details, Mapping):
+            group["reason_codes"].update(
+                str(reason)
+                for reason in reason_details.get("contributing_reason_codes", [])
+                if reason
+            )
+            group["root_cause_endpoint_ids"].update(
+                str(endpoint_id)
+                for endpoint_id in reason_details.get("root_cause_endpoint_ids", [])
+                if endpoint_id
+            )
+            group["dependency_chains"].extend(
+                list(chain)
+                for chain in reason_details.get("dependency_chains", [])
+                if isinstance(chain, list) and chain
+            )
+    records = []
+    for group in sorted(groups.values(), key=lambda item: item["endpoint_id"]):
+        causal_statuses = {
+            "empty",
+            "failed",
+            "unauthorised",
+            "tenant_unavailable",
+            "not_applicable",
+            "skipped",
+            "not_attempted",
         }
-        for group in sorted(groups.values(), key=lambda item: item["endpoint_id"])
-    ]
+        if (
+            not group["root_cause_endpoint_ids"]
+            and causal_statuses.intersection(group["statuses"])
+        ):
+            group["root_cause_endpoint_ids"].add(group["endpoint_id"])
+        records.append(
+            {
+                **group,
+                "statuses": sorted(group["statuses"]),
+                "reason_codes": sorted(group["reason_codes"]),
+                "root_cause_endpoint_ids": sorted(
+                    group["root_cause_endpoint_ids"]
+                ),
+                "dependency_chains": [
+                    list(chain)
+                    for chain in dict.fromkeys(
+                        tuple(chain) for chain in group["dependency_chains"]
+                    )
+                ],
+            }
+        )
+    return records
 
 
 def insufficient_data_attribution(
@@ -525,6 +580,11 @@ def insufficient_data_attribution(
     }
     if "unauthorised" in statuses or "upstream_source_unauthorised" in reason_codes:
         cause = "unauthorised_source"
+    elif (
+        "tenant_unavailable" in statuses
+        or "upstream_source_tenant_unavailable" in reason_codes
+    ):
+        cause = "tenant_capability_unavailable"
     elif "failed" in statuses or "upstream_source_failed" in reason_codes:
         cause = "failed_request"
     elif statuses.intersection({"not_attempted"}) or reason_codes.intersection(
@@ -542,6 +602,51 @@ def insufficient_data_attribution(
         cause = "empty_source"
     else:
         cause = "missing_or_unattributed_source"
+
+    def contributes_to_primary_cause(endpoint: Mapping[str, Any]) -> bool:
+        endpoint_statuses = set(endpoint.get("statuses", []))
+        endpoint_reasons = set(endpoint.get("reason_codes", []))
+        if cause == "unauthorised_source":
+            return bool(
+                "unauthorised" in endpoint_statuses
+                or "upstream_source_unauthorised" in endpoint_reasons
+            )
+        if cause == "tenant_capability_unavailable":
+            return bool(
+                "tenant_unavailable" in endpoint_statuses
+                or "upstream_source_tenant_unavailable" in endpoint_reasons
+            )
+        if cause == "failed_request":
+            return bool(
+                "failed" in endpoint_statuses
+                or "upstream_source_failed" in endpoint_reasons
+            )
+        if cause == "collection_incomplete":
+            return bool(
+                endpoint_statuses.intersection({"not_attempted"})
+                or endpoint_reasons.intersection(
+                    {
+                        "collection_interrupted",
+                        "collection_terminated_by_exception",
+                        "collector_outcome_not_recorded",
+                        "upstream_source_not_attempted",
+                    }
+                )
+            )
+        if cause == "skipped_prerequisite":
+            return "skipped" in endpoint_statuses
+        if cause == "empty_source":
+            return bool(
+                "empty" in endpoint_statuses
+                or "upstream_source_returned_no_data" in endpoint_reasons
+            )
+        return True
+
+    primary_cause_endpoints = [
+        endpoint
+        for endpoint in required_endpoints
+        if contributes_to_primary_cause(endpoint)
+    ]
     return {
         "cause": cause,
         "label": INSUFFICIENT_DATA_CAUSE_LABELS[cause],
@@ -555,6 +660,14 @@ def insufficient_data_attribution(
             for endpoint in required_endpoints
             if endpoint.get("endpoint_id")
         ],
+        "root_cause_endpoint_ids": sorted(
+            {
+                endpoint_id
+                for endpoint in primary_cause_endpoints
+                for endpoint_id in endpoint.get("root_cause_endpoint_ids", [])
+                if endpoint_id
+            }
+        ),
     }
 
 
@@ -717,9 +830,14 @@ def validate_finding_reporting(finding: Mapping[str, Any]) -> None:
         raise ValueError("Unsupported finding provenance attribution precision")
     if not isinstance(provenance.get("source_datasets"), list):
         raise ValueError("Finding provenance source datasets must be a list")
-    if reporting_schema_version == REPORTING_SCHEMA_VERSION:
+    if reporting_schema_version in {"1.1", REPORTING_SCHEMA_VERSION}:
         if not isinstance(provenance.get("required_endpoints"), list):
             raise ValueError("Finding provenance required endpoints must be a list")
+        if any(
+            not isinstance(endpoint, Mapping)
+            for endpoint in provenance["required_endpoints"]
+        ):
+            raise ValueError("Finding provenance required endpoints must be objects")
         insufficient_data = provenance.get("insufficient_data")
         if finding.get("status") == "no_data_to_assess":
             if not isinstance(insufficient_data, Mapping):
@@ -728,5 +846,21 @@ def validate_finding_reporting(finding: Mapping[str, Any]) -> None:
                 raise ValueError("Inconclusive finding has an invalid insufficient-data cause")
         elif insufficient_data is not None:
             raise ValueError("Conclusive finding cannot have insufficient-data attribution")
+        if reporting_schema_version == REPORTING_SCHEMA_VERSION:
+            for endpoint in provenance["required_endpoints"]:
+                if not isinstance(endpoint.get("root_cause_endpoint_ids"), list):
+                    raise ValueError(
+                        "Finding required endpoint root causes must be a list"
+                    )
+                if not isinstance(endpoint.get("dependency_chains"), list):
+                    raise ValueError(
+                        "Finding required endpoint dependency chains must be a list"
+                    )
+            if insufficient_data is not None and not isinstance(
+                insufficient_data.get("root_cause_endpoint_ids"), list
+            ):
+                raise ValueError(
+                    "Finding insufficient-data root causes must be a list"
+                )
     if not isinstance(provenance.get("limitations"), list):
         raise ValueError("Finding provenance limitations must be a list")

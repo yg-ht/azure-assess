@@ -47,6 +47,7 @@ from urllib.parse import unquote, urlparse, parse_qs
 from azure_assess.collection_manifest import (
     extract_azure_error_code,
     is_not_applicable_error,
+    is_tenant_unavailable_error,
 )
 
 app = Flask(__name__)
@@ -73,6 +74,7 @@ FINDING_STATUS_OPTIONS = OrderedDict(
 OMISSION_REASON_LABELS = {
     "upstream_source_failed": "Upstream source collection failed",
     "upstream_source_unauthorised": "Upstream source was unauthorised",
+    "upstream_source_tenant_unavailable": "Upstream tenant licence or capability was unavailable",
     "upstream_source_not_attempted": "Upstream source was not attempted",
     "upstream_source_skipped": "Upstream source was skipped",
     "upstream_source_returned_no_data": "Upstream source returned no records",
@@ -93,6 +95,7 @@ OMISSION_REASON_LABELS = {
 INSUFFICIENT_DATA_CAUSES = OrderedDict(
     [
         ("unauthorised_source", ("Unauthorised Source", "#6f42c1")),
+        ("tenant_capability_unavailable", ("Licence or Tenant Capability", "#795548")),
         ("failed_request", ("Failed Request", "#fd7e14")),
         ("collection_incomplete", ("Interrupted or Unrecorded Collection", "#d63384")),
         ("skipped_prerequisite", ("Skipped Prerequisite", "#ffc107")),
@@ -637,7 +640,7 @@ HTML_TEMPLATE = """
           <div class="card-body">
             <details class="dashboard-request-details">
             <summary><span class="h5">Unsuccessful Azure Requests</span></summary>
-            <p class="dashboard-muted my-3">One row is shown for each failed or unauthorised logical execution in the latest collection manifest. Successful, empty and not-applicable outcomes are excluded.</p>
+            <p class="dashboard-muted my-3">One row is shown for each failed, unauthorised or tenant-restricted logical execution in the latest collection manifest. Successful, empty and not-applicable outcomes are excluded.</p>
             <div class="table-responsive">
               <table id="failedAzureRequestsTable" class="table table-striped align-middle dashboard-request-table dashboard-filterable-table">
                 <thead>
@@ -1678,10 +1681,14 @@ def collection_request_summary():
         # presentation without modifying the retained evidence.
         if status == "failed" and is_not_applicable_error(response_message):
             status = "not_applicable"
+        if status in {"failed", "unauthorised"} and is_tenant_unavailable_error(
+            request_record.get("error_code") or response_message
+        ):
+            status = "tenant_unavailable"
         status_counts[status] += 1
         if status in {"skipped", "not_attempted"}:
             omissions.append(request_record)
-        if status not in {"failed", "unauthorised"}:
+        if status not in {"failed", "unauthorised", "tenant_unavailable"}:
             continue
         failures.append(
             {
@@ -1719,6 +1726,7 @@ def collection_request_summary():
             "empty",
             "failed",
             "unauthorised",
+            "tenant_unavailable",
             "not_applicable",
         )
     )
@@ -1728,12 +1736,18 @@ def collection_request_summary():
         "empty": status_counts["empty"],
         "failed": status_counts["failed"],
         "unauthorised": status_counts["unauthorised"],
+        "tenant_unavailable": status_counts["tenant_unavailable"],
         "not_applicable": status_counts["not_applicable"],
         "skipped": status_counts["skipped"],
         "not_attempted": status_counts["not_attempted"],
         "unattempted": status_counts["skipped"] + status_counts["not_attempted"],
         "failures": failures,
         "omission_groups": grouped_endpoint_omissions(omissions),
+        "skipped_reason_counts": Counter(
+            endpoint_omission_reason(record)[0]
+            for record in omissions
+            if record.get("status") == "skipped"
+        ),
     }
 
 
@@ -1822,6 +1836,17 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
 
     request_cards = []
     if collection_requests is not None:
+        skipped_reasons = collection_requests["skipped_reason_counts"]
+        skipped_unauthorised = skipped_reasons["upstream_source_unauthorised"]
+        skipped_tenant = skipped_reasons["upstream_source_tenant_unavailable"]
+        skipped_empty = skipped_reasons["upstream_source_returned_no_data"]
+        skipped_other = max(
+            0,
+            collection_requests["skipped"]
+            - skipped_unauthorised
+            - skipped_tenant
+            - skipped_empty,
+        )
         request_cards.extend([
             {
                 "label": "Request Attempts",
@@ -1849,6 +1874,11 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
                 "detail": "Permission-related errors returned by attempted requests",
             },
             {
+                "label": "Licence or Tenant Capability Restrictions",
+                "value": collection_requests["tenant_unavailable"],
+                "detail": "Requests blocked by tenant licensing or service capability",
+            },
+            {
                 "label": "Not Applicable Request Attempts",
                 "value": collection_requests["not_applicable"],
                 "detail": "Azure reported that the requested service or scope was not applicable",
@@ -1857,6 +1887,26 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
                 "label": "Endpoint Definitions Skipped",
                 "value": collection_requests["skipped"],
                 "detail": "Deliberately omitted because a recorded prerequisite was unavailable or unusable",
+            },
+            {
+                "label": "Skipped — Unauthorised Prerequisite",
+                "value": skipped_unauthorised,
+                "detail": "Endpoint definitions omitted because an upstream request was unauthorised",
+            },
+            {
+                "label": "Skipped — Licence/Tenant Capability",
+                "value": skipped_tenant,
+                "detail": "Endpoint definitions omitted because an upstream tenant capability was unavailable",
+            },
+            {
+                "label": "Skipped — Empty Prerequisite",
+                "value": skipped_empty,
+                "detail": "Endpoint definitions omitted because an upstream request returned no records",
+            },
+            {
+                "label": "Skipped — Other Reasons",
+                "value": skipped_other,
+                "detail": "Endpoint definitions omitted for all other recorded reasons",
             },
             {
                 "label": "Endpoint Outcomes Not Recorded",

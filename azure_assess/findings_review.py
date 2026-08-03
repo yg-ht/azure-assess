@@ -80,7 +80,7 @@ def automated_confidence(finding: Mapping[str, Any]) -> Dict[str, Any]:
         {"mismatch", "source_unavailable", "not_recorded"}
     )
     severe_collection = collection_statuses.intersection(
-        {"failed", "unauthorised", "not_attempted"}
+        {"failed", "unauthorised", "tenant_unavailable", "not_attempted"}
     )
     if not observations:
         return {

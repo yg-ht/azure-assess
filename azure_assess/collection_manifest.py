@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
-MANIFEST_SCHEMA_VERSION = "2.2"
-SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {"2.0", "2.1", MANIFEST_SCHEMA_VERSION}
+MANIFEST_SCHEMA_VERSION = "2.3"
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {"2.0", "2.1", "2.2", MANIFEST_SCHEMA_VERSION}
 MANIFEST_FILENAME_PREFIX = "azure-collection-manifest"
 MAX_ERROR_MESSAGE_CHARS = 1000
 VALID_RUN_STATUSES = {"running", "success", "partial", "failed"}
@@ -26,14 +26,19 @@ VALID_ENDPOINT_STATUSES = {
     "empty",
     "failed",
     "unauthorised",
+    "tenant_unavailable",
     "not_applicable",
     "skipped",
     "not_attempted",
 }
-LEGACY_ENDPOINT_STATUSES = VALID_ENDPOINT_STATUSES - {"not_applicable"}
+LEGACY_ENDPOINT_STATUSES = VALID_ENDPOINT_STATUSES - {
+    "not_applicable",
+    "tenant_unavailable",
+}
 VALID_SKIPPED_REASON_CODES = {
     "upstream_source_failed",
     "upstream_source_unauthorised",
+    "upstream_source_tenant_unavailable",
     "upstream_source_not_attempted",
     "upstream_source_skipped",
     "upstream_source_returned_no_data",
@@ -50,9 +55,16 @@ VALID_NOT_ATTEMPTED_REASON_CODES = {
     "collection_terminated_by_exception",
     "collector_outcome_not_recorded",
 }
+PRE_23_ENDPOINT_STATUSES = VALID_ENDPOINT_STATUSES - {"tenant_unavailable"}
+PRE_23_SKIPPED_REASON_CODES = VALID_SKIPPED_REASON_CODES - {
+    "upstream_source_tenant_unavailable"
+}
 NOT_APPLICABLE_ERROR_MARKERS = (
     "network watcher is not enabled for region",
 )
+TENANT_UNAVAILABLE_ERROR_CODES = {
+    "authenticationrequestfromnonpremiumtenantorb2ctenant",
+}
 AZURE_ERROR_CODE_PATTERNS = (
     re.compile(
         r"(?im)^\s*(?:ERROR:\s*)?\((?P<code>[A-Za-z][A-Za-z0-9_.-]+)\)"
@@ -121,6 +133,15 @@ def is_not_applicable_error(value: Any) -> bool:
     """Return whether Azure explicitly reported a known inapplicable scope."""
     text = str(value or "").strip().lower()
     return bool(text) and any(marker in text for marker in NOT_APPLICABLE_ERROR_MARKERS)
+
+
+def is_tenant_unavailable_error(value: Any) -> bool:
+    """Return whether Azure reported a tenant licence or capability restriction."""
+    error_code = extract_azure_error_code(value)
+    normalised_error_code = re.sub(
+        r"[^a-z0-9]", "", str(error_code or value or "").lower()
+    )
+    return normalised_error_code in TENANT_UNAVAILABLE_ERROR_CODES
 
 
 def result_item_count(data: Any) -> int:
@@ -192,6 +213,8 @@ def classify_execution_status(
     if error_message or returncode not in (None, 0):
         if is_not_applicable_error(combined_error):
             return "not_applicable"
+        if is_tenant_unavailable_error(diagnostic_text or error_message):
+            return "tenant_unavailable"
         if any(code in normalised_error_code for code in permission_error_codes):
             return "unauthorised"
         permission_markers = (
@@ -238,21 +261,33 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
         raise ValueError("Collection manifest endpoint_runs must be a list")
     if not isinstance(payload.get("datasets"), list):
         raise ValueError("Collection manifest datasets must be a list")
-    valid_endpoint_statuses = (
-        LEGACY_ENDPOINT_STATUSES
-        if schema_version == "2.0"
-        else VALID_ENDPOINT_STATUSES
-    )
+    if schema_version == "2.0":
+        valid_endpoint_statuses = LEGACY_ENDPOINT_STATUSES
+    elif schema_version in {"2.1", "2.2"}:
+        valid_endpoint_statuses = PRE_23_ENDPOINT_STATUSES
+    else:
+        valid_endpoint_statuses = VALID_ENDPOINT_STATUSES
     for endpoint_run in payload["endpoint_runs"]:
         endpoint_status = endpoint_run.get("status")
         if endpoint_status not in valid_endpoint_statuses:
             raise ValueError(
                 f"Invalid endpoint execution status: {endpoint_status}"
             )
-        if schema_version == MANIFEST_SCHEMA_VERSION and endpoint_status == "skipped":
-            if endpoint_run.get("reason_code") not in VALID_SKIPPED_REASON_CODES:
+        if (
+            schema_version in {"2.2", MANIFEST_SCHEMA_VERSION}
+            and endpoint_status == "skipped"
+        ):
+            valid_reason_codes = (
+                PRE_23_SKIPPED_REASON_CODES
+                if schema_version == "2.2"
+                else VALID_SKIPPED_REASON_CODES
+            )
+            if endpoint_run.get("reason_code") not in valid_reason_codes:
                 raise ValueError("Skipped endpoint is missing a valid reason code")
-        if schema_version == MANIFEST_SCHEMA_VERSION and endpoint_status == "not_attempted":
+        if (
+            schema_version in {"2.2", MANIFEST_SCHEMA_VERSION}
+            and endpoint_status == "not_attempted"
+        ):
             if endpoint_run.get("reason_code") not in VALID_NOT_ATTEMPTED_REASON_CODES:
                 raise ValueError("Unattempted endpoint is missing a valid reason code")
     for dataset in payload["datasets"]:
@@ -332,6 +367,18 @@ class CollectionManifestRecorder:
                 }
             )
 
+    def endpoint_outcomes(self, endpoint_identifier: str) -> List[Dict[str, Any]]:
+        """Return complete observed outcomes for one stable endpoint identifier."""
+        wanted = endpoint_id(endpoint_identifier)
+        with self._lock:
+            return deepcopy(
+                [
+                    record
+                    for record in self.endpoint_runs
+                    if record.get("endpoint_id") == wanted
+                ]
+            )
+
     def record_execution(
         self,
         endpoint_name: str,
@@ -378,7 +425,7 @@ class CollectionManifestRecorder:
         with self._lock:
             self.endpoint_runs.append(record)
             self._observed_endpoints.add((record["category"], record["endpoint_name"]))
-            if status in {"failed", "unauthorised"}:
+            if status in {"failed", "unauthorised", "tenant_unavailable"}:
                 self.errors.append(
                     {
                         "endpoint_name": record["endpoint_name"],
@@ -512,7 +559,9 @@ class CollectionManifestRecorder:
                 )
 
             statuses = {item["status"] for item in self.endpoint_runs}
-            failures = statuses.intersection({"failed", "unauthorised", "not_attempted"})
+            failures = statuses.intersection(
+                {"failed", "unauthorised", "tenant_unavailable", "not_attempted"}
+            )
             successes = statuses.intersection({"success", "empty"})
             if not execution_successful and not successes:
                 self.status = "failed"

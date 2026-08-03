@@ -21,7 +21,13 @@ CONCLUSION_SUPPORT = {
     "positive_only",
     "inconclusive",
 }
-INCOMPLETE_ENDPOINT_STATUSES = {"failed", "unauthorised", "not_attempted", "skipped"}
+INCOMPLETE_ENDPOINT_STATUSES = {
+    "failed",
+    "unauthorised",
+    "tenant_unavailable",
+    "not_attempted",
+    "skipped",
+}
 
 
 def normalise_identifier(value: Any) -> str:

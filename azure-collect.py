@@ -72,6 +72,7 @@ from tqdm import tqdm
 
 from azure_assess.collection_manifest import (
     CollectionManifestRecorder,
+    endpoint_id,
     is_not_applicable_error,
     utc_timestamp,
 )
@@ -2579,25 +2580,73 @@ def load_current_dataset(prefix):
 
 
 def upstream_source_skip_reason(source):
-    """Classify why a parameter source supplied no records in this run."""
-    statuses = (
-        COLLECTION_MANIFEST.endpoint_statuses(source)
+    """Classify and preserve why a parameter source supplied no records."""
+    outcomes = (
+        COLLECTION_MANIFEST.endpoint_outcomes(source)
         if COLLECTION_MANIFEST is not None
         else []
     )
-    priority = (
+    statuses = sorted(
+        {
+            str(outcome.get("status"))
+            for outcome in outcomes
+            if outcome.get("status")
+        }
+    )
+    status_reasons = (
         ("unauthorised", "upstream_source_unauthorised"),
+        ("tenant_unavailable", "upstream_source_tenant_unavailable"),
         ("failed", "upstream_source_failed"),
         ("not_attempted", "upstream_source_not_attempted"),
-        ("skipped", "upstream_source_skipped"),
         ("empty", "upstream_source_returned_no_data"),
         ("not_applicable", "upstream_source_not_applicable"),
+        ("skipped", "upstream_source_skipped"),
     )
-    reason_code = next(
-        (code for status, code in priority if status in statuses),
+    reason_priority = tuple(reason for _, reason in status_reasons) + (
         "upstream_source_unavailable",
     )
-    return reason_code, statuses
+    contributing_reason_codes = {
+        reason
+        for status, reason in status_reasons
+        if status in statuses
+    }
+    root_cause_endpoint_ids = set()
+    dependency_chains = []
+    source_id = endpoint_id(source)
+    for outcome in outcomes:
+        details = outcome.get("reason_details")
+        if not isinstance(details, dict):
+            details = {}
+        inherited_reasons = details.get("contributing_reason_codes") or []
+        contributing_reason_codes.update(
+            str(reason) for reason in inherited_reasons if reason
+        )
+        if outcome.get("reason_code"):
+            contributing_reason_codes.add(str(outcome["reason_code"]))
+        inherited_roots = details.get("root_cause_endpoint_ids") or []
+        root_cause_endpoint_ids.update(
+            endpoint_id(root) for root in inherited_roots if root
+        )
+        inherited_chains = details.get("dependency_chains") or []
+        for chain in inherited_chains:
+            if isinstance(chain, list) and chain:
+                normalised_chain = [endpoint_id(item) for item in chain if item]
+                if normalised_chain:
+                    dependency_chains.append(normalised_chain)
+
+    if not root_cause_endpoint_ids:
+        root_cause_endpoint_ids.add(source_id)
+    if not dependency_chains:
+        dependency_chains.append([source_id])
+    reason_code = next(
+        (code for code in reason_priority if code in contributing_reason_codes),
+        "upstream_source_unavailable",
+    )
+    return reason_code, statuses, {
+        "contributing_reason_codes": sorted(contributing_reason_codes),
+        "root_cause_endpoint_ids": sorted(root_cause_endpoint_ids),
+        "dependency_chains": dependency_chains,
+    }
 
 
 def record_parameter_endpoint_skip(endpoint, reason_code, reason, reason_details=None):
@@ -3012,11 +3061,17 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
             )
             source_diagnostics = {}
             reason_codes = []
+            contributing_reason_codes = set()
+            root_cause_endpoint_ids = set()
+            dependency_chains = []
             for source in missing_sources:
                 if not raw_source_records.get(source):
-                    reason_code, statuses = upstream_source_skip_reason(source)
+                    reason_code, statuses, cause_details = upstream_source_skip_reason(
+                        source
+                    )
                 elif not source_records.get(source):
                     reason_code = "no_applicable_source_records"
+                    cause_details = {}
                     statuses = (
                         COLLECTION_MANIFEST.endpoint_statuses(source)
                         if COLLECTION_MANIFEST is not None
@@ -3024,25 +3079,38 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
                     )
                 else:
                     reason_code = "required_parameter_missing"
+                    cause_details = {}
                     statuses = (
                         COLLECTION_MANIFEST.endpoint_statuses(source)
                         if COLLECTION_MANIFEST is not None
                         else []
                     )
                 reason_codes.append(reason_code)
+                contributing_reason_codes.add(reason_code)
+                contributing_reason_codes.update(
+                    cause_details.get("contributing_reason_codes", [])
+                )
+                root_cause_endpoint_ids.update(
+                    cause_details.get("root_cause_endpoint_ids", [])
+                )
+                dependency_chains.extend(
+                    cause_details.get("dependency_chains", [])
+                )
                 source_diagnostics[source] = {
                     "collection_statuses": statuses,
                     "raw_record_count": len(raw_source_records.get(source, [])),
                     "applicable_record_count": len(source_records.get(source, [])),
+                    **cause_details,
                 }
 
             reason_priority = (
                 "upstream_source_unauthorised",
+                "upstream_source_tenant_unavailable",
                 "upstream_source_failed",
                 "upstream_source_not_attempted",
-                "upstream_source_skipped",
                 "upstream_source_returned_no_data",
                 "upstream_source_not_applicable",
+                "upstream_source_skipped",
                 "upstream_source_unavailable",
                 "no_applicable_source_records",
                 "required_parameter_missing",
@@ -3058,7 +3126,22 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
                 {
                     "parameters": missing_params,
                     "sources": source_diagnostics,
-                    "contributing_reason_codes": sorted(set(reason_codes)),
+                    "contributing_reason_codes": sorted(contributing_reason_codes),
+                    "immediate_upstream_endpoint_ids": [
+                        endpoint_id(source) for source in missing_sources
+                    ],
+                    "root_cause_endpoint_ids": sorted(root_cause_endpoint_ids),
+                    "dependency_chains": [
+                        list(chain)
+                        for chain in dict.fromkeys(
+                            tuple(
+                                dict.fromkeys(
+                                    list(chain) + [endpoint_output_prefix(endpoint)]
+                                )
+                            )
+                            for chain in dependency_chains
+                        )
+                    ],
                 },
             )
             continue

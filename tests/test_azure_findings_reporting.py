@@ -244,8 +244,19 @@ class FindingProvenanceTests(unittest.TestCase):
                 },
                 "skipped_prerequisite",
             ),
+            (
+                {
+                    "statuses": ["skipped"],
+                    "reason_codes": ["upstream_source_unauthorised"],
+                },
+                "unauthorised_source",
+            ),
             ({"statuses": ["not_attempted"]}, "collection_incomplete"),
             ({"statuses": ["failed", "empty"]}, "failed_request"),
+            (
+                {"statuses": ["tenant_unavailable"]},
+                "tenant_capability_unavailable",
+            ),
             ({"statuses": ["unauthorised", "failed"]}, "unauthorised_source"),
         ]
 
@@ -288,6 +299,81 @@ class FindingProvenanceTests(unittest.TestCase):
         self.assertEqual(
             provenance["insufficient_data"]["cause"],
             "unauthorised_source",
+        )
+
+    def test_transitive_unauthorised_reason_and_root_are_retained(self):
+        finding = example_finding([])
+        finding["status"] = "no_data_to_assess"
+        finding["references"]["required_endpoint_ids"] = ["az_grandchild_show"]
+        catalog = self.manifest_only_catalog(
+            [
+                {
+                    "endpoint_id": "az_grandchild_show",
+                    "endpoint_name": "Grandchild Details",
+                    "category": "parameterised",
+                    "status": "skipped",
+                    "reason_code": "upstream_source_skipped",
+                    "reason_details": {
+                        "contributing_reason_codes": [
+                            "upstream_source_unauthorised"
+                        ],
+                        "root_cause_endpoint_ids": ["az_parent_list"],
+                        "dependency_chains": [
+                            [
+                                "az_parent_list",
+                                "az_child_list",
+                                "az_grandchild_show",
+                            ]
+                        ],
+                    },
+                }
+            ]
+        )
+
+        normalise_finding_reporting(finding, catalog=catalog)
+
+        provenance = finding["reporting"]["provenance"]
+        self.assertEqual(
+            provenance["insufficient_data"]["cause"],
+            "unauthorised_source",
+        )
+        self.assertEqual(
+            provenance["insufficient_data"]["root_cause_endpoint_ids"],
+            ["az_parent_list"],
+        )
+
+    def test_legacy_non_premium_response_is_attributed_to_tenant_capability(self):
+        finding = example_finding([])
+        finding["status"] = "no_data_to_assess"
+        finding["references"]["required_endpoint_ids"] = [
+            "graph_user_registration_details"
+        ]
+        catalog = self.manifest_only_catalog(
+            [
+                {
+                    "endpoint_id": "graph_user_registration_details",
+                    "endpoint_name": "Graph User Registration Details",
+                    "category": "base",
+                    "status": "unauthorised",
+                    "response_error": json.dumps(
+                        {
+                            "error": {
+                                "code": "Authentication_RequestFromNonPremiumTenantOrB2CTenant",
+                                "message": "Tenant does not have a premium licence",
+                            }
+                        }
+                    ),
+                }
+            ]
+        )
+
+        normalise_finding_reporting(finding, catalog=catalog)
+
+        insufficient_data = finding["reporting"]["provenance"][
+            "insufficient_data"
+        ]
+        self.assertEqual(
+            insufficient_data["cause"], "tenant_capability_unavailable"
         )
 
     def test_required_endpoint_patterns_match_when_no_dataset_was_written(self):
@@ -345,6 +431,18 @@ class FindingProvenanceTests(unittest.TestCase):
         finding["reporting"]["schema_version"] = "1.0"
         finding["reporting"]["provenance"].pop("required_endpoints")
         finding["reporting"]["provenance"].pop("insufficient_data")
+
+        validate_finding_reporting(finding)
+
+    def test_reporting_schema_1_1_remains_valid_without_causal_chain_fields(self):
+        finding = example_finding([])
+        finding["status"] = "no_data_to_assess"
+        normalise_finding_reporting(finding)
+        finding["reporting"]["schema_version"] = "1.1"
+        insufficient_data = finding["reporting"]["provenance"][
+            "insufficient_data"
+        ]
+        insufficient_data.pop("root_cause_endpoint_ids")
 
         validate_finding_reporting(finding)
 
