@@ -745,17 +745,31 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         self.assertEqual(summary["no_data_to_assess"], 3)
         self.assertNotIn("permission_blocked", summary)
-        self.assertEqual(requests["failed"], 2)
+        self.assertEqual(requests["failed"], 1)
         self.assertEqual(requests["unauthorised"], 1)
         failed_card = next(
             card for card in cards if card["label"] == "Failed Azure Requests"
         )
-        self.assertEqual(failed_card["value"], 2)
+        unauthorised_card = next(
+            card for card in cards if card["label"] == "Unauthorised Azure Requests"
+        )
+        self.assertEqual(failed_card["value"], 1)
+        self.assertEqual(unauthorised_card["value"], 1)
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn('"label": "Permission Blocked"', body)
         self.assertIn('"label": "No Data To Assess", "value": 3', body)
-        self.assertIn("Failed Azure Requests", body)
+        self.assertIn('"label": "Failed Azure Requests", "value": 1', body)
+        self.assertIn('"label": "Unauthorised Azure Requests", "value": 1', body)
+        self.assertIn("Unsuccessful Azure Requests", body)
+        self.assertIn('<details class="dashboard-request-details">', body)
+        self.assertNotIn('<details class="dashboard-request-details" open>', body)
+        self.assertIn("dashboard-request-table", body)
+        self.assertIn("--bs-table-color: var(--text-color)", body)
+        self.assertEqual(body.count('class="dashboard-sort-button"'), 7)
+        self.assertEqual(body.count('class="dashboard-column-filter"'), 7)
+        self.assertIn("function applyFilters()", body)
+        self.assertIn("leftValue.localeCompare", body)
         self.assertIn("Storage Account Keys", body)
         self.assertIn("AuthorizationFailed", body)
         self.assertIn("Principal cannot list storage account keys.", body)
@@ -1343,6 +1357,78 @@ class CollectDataWithParamsTests(unittest.TestCase):
             ["az apim show --name apim-one --resource-group apim-rg"],
         )
         self.assertEqual(len(saved_payloads), 1)
+
+    def test_service_tags_use_one_physical_region_and_ignore_logical_locations(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Azure Network Resources"
+        )
+        commands_run = []
+        saved_payloads = []
+
+        def fake_run_az_cli(cmd):
+            commands_run.append(cmd)
+            return {
+                "json": {"values": [{"name": "AzureCloud"}]},
+                "success": True,
+                "stdout": "{}",
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            source_file = output_dir / "az_account_list-locations_20260402-000000.json"
+            source_file.write_text(
+                json.dumps(
+                    [
+                        {
+                            "name": "asia",
+                            "type": "Region",
+                            "metadata": {"regionType": "Logical"},
+                        },
+                        {
+                            "name": "uksouth",
+                            "type": "Region",
+                            "metadata": {"regionType": "Physical"},
+                        },
+                        {
+                            "name": "ukwest",
+                            "type": "Region",
+                            "metadata": {"regionType": "Physical"},
+                        },
+                        {
+                            "name": "edge-one",
+                            "type": "EdgeZone",
+                            "metadata": {"regionType": "Physical"},
+                        },
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
+                with mock.patch.object(
+                    azure_collect,
+                    "save_json",
+                    side_effect=lambda data, filename, append=False: saved_payloads.append(
+                        (data, filename)
+                    ),
+                ):
+                    azure_collect.collect_data_with_params([endpoint])
+
+        self.assertEqual(
+            commands_run,
+            ["az network list-service-tags --location uksouth"],
+        )
+        self.assertEqual(len(saved_payloads), 1)
+
+    def test_customer_collection_does_not_request_provider_cross_connections(self):
+        endpoint_names = {endpoint["name"] for endpoint in azure_collect.AZURE_CLI_ENDPOINTS}
+        endpoint_commands = {endpoint["cli_command"] for endpoint in azure_collect.AZURE_CLI_ENDPOINTS}
+
+        self.assertNotIn("Peering Services", endpoint_names)
+        self.assertNotIn("az network cross-connection list", endpoint_commands)
 
     def test_app_service_environment_details_can_resolve_name_from_resource_id(self):
         endpoint = next(

@@ -577,7 +577,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "NAT Gateways", "cli_command": "az network nat gateway list", "needs_pagination": False},
     {"name": "Network Interfaces", "cli_command": "az network nic list", "needs_pagination": False},
     {"name": "NSGs", "cli_command": "az network nsg list", "needs_pagination": False},
-    {"name": "Peering Services", "cli_command": "az network cross-connection list", "needs_pagination": False},
     {"name": "Policy Assignments", "cli_command": "az policy assignment list", "needs_pagination": True},
     {"name": "Policy Definitions", "cli_command": "az policy definition list --filter \"policyType eq 'Custom '\"", "needs_pagination": True},
     {"name": "Policy Set Definitions", "cli_command": "az policy set-definition list", "needs_pagination": True},
@@ -680,7 +679,16 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     {
         "name": "Azure Network Resources",
         "cli_command": "az network list-service-tags --location {name}",
-        "required_params": {"name": "az_account_list-locations"}
+        "required_params": {"name": "az_account_list-locations"},
+        "required_source_values": {
+            "az_account_list-locations": {
+                "type": {"Region"},
+                "metadata.regionType": {"Physical"},
+            }
+        },
+        # The location selects the service-tag release version; it does not
+        # filter the returned tags. One physical region is therefore enough.
+        "max_parameter_sets": 1,
     },
     {
         "name": "Virtual Networks",
@@ -2665,19 +2673,38 @@ def record_resource_type(item):
 
 
 def filter_source_records_for_endpoint(endpoint, source, records):
-    """Filter parameter-source records to the Azure resource types an endpoint accepts."""
+    """Filter parameter-source records to the values an endpoint accepts."""
     required_source_types = endpoint.get("required_source_types", {})
     allowed_types = required_source_types.get(source)
-    if not allowed_types:
-        return records
+    required_values = endpoint.get("required_source_values", {}).get(source, {})
 
-    allowed_types = {resource_type.lower() for resource_type in allowed_types}
+    if allowed_types:
+        allowed_types = {resource_type.lower() for resource_type in allowed_types}
+
+    def nested_value(item, field_path):
+        value = item
+        for field in field_path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(field)
+        return value
+
+    normalised_required_values = {
+        field_path: {str(value).strip().lower() for value in values}
+        for field_path, values in required_values.items()
+    }
     filtered_records = []
     for item in records:
         # Generic fields such as `name` are only safe when the source record is
         # known to describe the resource type that the follow-on command targets.
-        if record_resource_type(item) in allowed_types:
-            filtered_records.append(item)
+        if allowed_types and record_resource_type(item) not in allowed_types:
+            continue
+        if any(
+            str(nested_value(item, field_path) or "").strip().lower() not in allowed_values
+            for field_path, allowed_values in normalised_required_values.items()
+        ):
+            continue
+        filtered_records.append(item)
     return filtered_records
 
 
@@ -3003,6 +3030,10 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
             for d in combo:
                 merged.update(d)
             param_combinations.append(merged)
+
+        max_parameter_sets = endpoint.get("max_parameter_sets")
+        if max_parameter_sets is not None:
+            param_combinations = param_combinations[:max(0, int(max_parameter_sets))]
 
         if DEBUG:
             print(f"[DEBUG] Hybrid-aligned param combinations: {param_combinations}")

@@ -406,6 +406,67 @@ HTML_TEMPLATE = """
         overflow-wrap: anywhere;
         color: var(--text-color);
       }
+      .dashboard-request-details summary {
+        cursor: pointer;
+      }
+      .dashboard-request-details summary .h5 {
+        display: inline;
+      }
+      .dashboard-request-table {
+        --bs-table-color: var(--text-color);
+        --bs-table-bg: var(--table-bg);
+        --bs-table-striped-color: var(--text-color);
+        --bs-table-striped-bg: var(--row-even-bg);
+        color: var(--text-color);
+      }
+      .dashboard-request-table th,
+      .dashboard-request-table td,
+      .dashboard-request-table code {
+        color: var(--text-color);
+      }
+      .dashboard-column-heading {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+        white-space: nowrap;
+      }
+      .dashboard-sort-button {
+        border: 0;
+        padding: 0;
+        cursor: pointer;
+        color: inherit;
+        background: transparent;
+        font: inherit;
+        font-weight: 600;
+      }
+      .dashboard-sort-button::after {
+        content: " ↕";
+        opacity: 0.55;
+      }
+      th[aria-sort="ascending"] .dashboard-sort-button::after {
+        content: " ↑";
+        opacity: 1;
+      }
+      th[aria-sort="descending"] .dashboard-sort-button::after {
+        content: " ↓";
+        opacity: 1;
+      }
+      .dashboard-column-filter {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 7rem;
+        margin-top: 0.35rem;
+        border: 1px solid var(--table-border);
+        border-radius: 0.25rem;
+        padding: 0.2rem 0.35rem;
+        color: var(--text-color);
+        background: var(--table-bg);
+        font-size: 0.75rem;
+      }
+      .dashboard-column-filter::placeholder {
+        color: var(--dashboard-muted-text);
+        opacity: 1;
+      }
     </style>
   </head>
   <!-- Dark mode enabled by default via the dark-mode class -->
@@ -449,8 +510,8 @@ HTML_TEMPLATE = """
         {% if findings_chart_data %}
         <div class="card dashboard-chart-card">
           <div class="card-body">
-            <h3 class="h5">Findings Overview</h3>
-            <p class="dashboard-muted mb-3">Current distribution of findings, clear checks, and checks with no data to assess.</p>
+            <h3 class="h5">Assessment Overview</h3>
+            <p class="dashboard-muted mb-3">Current distribution of finding outcomes and unsuccessful Azure collection requests.</p>
             <div class="dashboard-chart-wrap">
               <canvas id="findingsPieChart" class="dashboard-chart-canvas"></canvas>
             </div>
@@ -461,19 +522,21 @@ HTML_TEMPLATE = """
         {% if collection_requests and collection_requests.failures %}
         <div class="card dashboard-chart-card mt-4">
           <div class="card-body">
-            <h3 class="h5">Failed Azure Requests</h3>
-            <p class="dashboard-muted mb-3">Direct errors returned by attempted Azure collection requests in the latest collection manifest.</p>
+            <details class="dashboard-request-details">
+            <summary><span class="h5">Unsuccessful Azure Requests</span></summary>
+            <p class="dashboard-muted my-3">Direct errors returned by attempted Azure collection requests in the latest collection manifest.</p>
             <div class="table-responsive">
-              <table class="table table-striped align-middle">
+              <table id="failedAzureRequestsTable" class="table table-striped align-middle dashboard-request-table">
                 <thead>
                   <tr>
-                    <th>Endpoint</th>
-                    <th>Category</th>
-                    <th>Status</th>
-                    <th>Azure Error Code</th>
-                    <th>CLI Return Code</th>
-                    <th>Parameters</th>
-                    <th>Returned Error</th>
+                    {% for heading in ["Endpoint", "Category", "Status", "Azure Error Code", "CLI Return Code", "Parameters", "Returned Error"] %}
+                    <th aria-sort="none">
+                      <div class="dashboard-column-heading">
+                        <button type="button" class="dashboard-sort-button" data-column-index="{{ loop.index0 }}" aria-label="Sort by {{ heading }}">{{ heading }}</button>
+                      </div>
+                      <input class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" type="search" aria-label="Filter {{ heading }}" placeholder="Filter">
+                    </th>
+                    {% endfor %}
                   </tr>
                 </thead>
                 <tbody>
@@ -496,6 +559,7 @@ HTML_TEMPLATE = """
                 </tbody>
               </table>
             </div>
+            </details>
           </div>
         </div>
         {% endif %}
@@ -812,6 +876,66 @@ HTML_TEMPLATE = """
         drawPieChart();
         window.addEventListener('resize', drawPieChart);
         window.addEventListener('azure-theme-change', drawPieChart);
+      })();
+    </script>
+    {% endif %}
+
+    {% if dashboard and collection_requests and collection_requests.failures %}
+    <script>
+      (function() {
+        const table = document.getElementById('failedAzureRequestsTable');
+        if (!table || !table.tBodies.length) return;
+        const body = table.tBodies[0];
+        const headers = Array.from(table.tHead.rows[0].cells);
+        const filters = Array.from(table.querySelectorAll('.dashboard-column-filter'));
+
+        function applyFilters() {
+          Array.from(body.rows).forEach(function(row) {
+            const visible = filters.every(function(filter) {
+              const query = filter.value.trim().toLocaleLowerCase();
+              if (!query) return true;
+              const cell = row.cells[Number(filter.dataset.columnIndex)];
+              return (cell?.textContent || '').toLocaleLowerCase().includes(query);
+            });
+            row.hidden = !visible;
+          });
+        }
+
+        filters.forEach(function(filter) {
+          filter.addEventListener('input', applyFilters);
+          filter.addEventListener('click', function(event) { event.stopPropagation(); });
+        });
+
+        table.querySelectorAll('.dashboard-sort-button').forEach(function(button) {
+          button.addEventListener('click', function() {
+            const columnIndex = Number(button.dataset.columnIndex);
+            const header = headers[columnIndex];
+            const direction = header.getAttribute('aria-sort') === 'ascending'
+              ? 'descending'
+              : 'ascending';
+            headers.forEach(function(candidate) { candidate.setAttribute('aria-sort', 'none'); });
+            header.setAttribute('aria-sort', direction);
+
+            const rows = Array.from(body.rows).map(function(row, index) {
+              return {row: row, index: index};
+            });
+            rows.sort(function(left, right) {
+              const leftValue = (left.row.cells[columnIndex]?.textContent || '').trim();
+              const rightValue = (right.row.cells[columnIndex]?.textContent || '').trim();
+              const leftNumber = Number(leftValue.replace(/,/g, ''));
+              const rightNumber = Number(rightValue.replace(/,/g, ''));
+              const bothNumeric = leftValue !== '' && rightValue !== ''
+                && Number.isFinite(leftNumber) && Number.isFinite(rightNumber);
+              const comparison = bothNumeric
+                ? leftNumber - rightNumber
+                : leftValue.localeCompare(rightValue, undefined, {numeric: true, sensitivity: 'base'});
+              if (comparison === 0) return left.index - right.index;
+              return direction === 'ascending' ? comparison : -comparison;
+            });
+            rows.forEach(function(item) { body.appendChild(item.row); });
+            applyFilters();
+          });
+        });
       })();
     </script>
     {% endif %}
@@ -1365,7 +1489,7 @@ def collection_request_summary():
         )
     )
     return {
-        "failed": len(failures),
+        "failed": sum(failure["status"] == "failed" for failure in failures),
         "unauthorised": sum(
             failure["status"] == "unauthorised" for failure in failures
         ),
@@ -1440,7 +1564,7 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
             {
                 "label": "Failed Azure Requests",
                 "value": collection_requests["failed"],
-                "detail": "Attempted requests with failed or unauthorised status",
+                "detail": "Non-authorisation errors returned by attempted requests",
             },
             {
                 "label": "Unauthorised Azure Requests",
@@ -1875,12 +1999,23 @@ def dashboard():
     findings = findings_summary()
     collection_requests = collection_request_summary()
     findings_chart_data = None
+    has_request_failures = bool(
+        collection_requests
+        and (collection_requests["failed"] or collection_requests["unauthorised"])
+    )
+    if findings is not None or has_request_failures:
+        findings_chart_data = []
     if findings is not None:
-        findings_chart_data = [
+        findings_chart_data.extend([
             {"label": "Findings", "value": findings["found"], "color": "#dc3545"},
             {"label": "No Findings", "value": findings["not_found"], "color": "#198754"},
             {"label": "No Data To Assess", "value": findings["no_data_to_assess"], "color": "#ffc107"},
-        ]
+        ])
+    if has_request_failures:
+        findings_chart_data.extend([
+            {"label": "Failed Azure Requests", "value": collection_requests["failed"], "color": "#fd7e14"},
+            {"label": "Unauthorised Azure Requests", "value": collection_requests["unauthorised"], "color": "#6f42c1"},
+        ])
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
