@@ -42,7 +42,7 @@ from flask import Flask, jsonify, render_template_string, request
 from html import escape
 from json2html import json2html
 from pathlib import Path
-from urllib.parse import unquote, urlparse, parse_qs
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from azure_assess.collection_manifest import (
     extract_azure_error_code,
@@ -1210,7 +1210,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     toggleBtn.addEventListener('click', () => {
       try {
-        const rawText = jsonCell.textContent.trim();
+        const rawText = decodeURIComponent(jsonCell.textContent.trim());
         const pretty = JSON.stringify(JSON.parse(rawText), null, 2);
         document.getElementById('jsonModalLabel').textContent = `Record #${i}`;
         document.getElementById('jsonModalContent').textContent = pretty;
@@ -2160,6 +2160,11 @@ def normalize_list_of_dicts(data, fill_value="n/a", debug=False):
     return normalized
 
 
+def encode_json_action_payload(row):
+    """Encode one source record so HTML linkification cannot alter its JSON."""
+    return quote(json.dumps(row), safe="")
+
+
 def generate_html_table(original_data):
     """Convert any valid JSON shape to a consistent horizontal HTML table."""
     try:
@@ -2178,7 +2183,7 @@ def generate_html_table(original_data):
         data = []
         for row in data_for_use:
             new_row = OrderedDict(
-                [("json_string", json.dumps(row))]
+                [("json_string", encode_json_action_payload(row))]
             )
             new_row.update(row)
             data.append(new_row)

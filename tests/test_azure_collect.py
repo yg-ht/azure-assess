@@ -239,9 +239,26 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("<th>id</th>", html)
         self.assertNotIn("<th>data</th>", html)
         self.assertIn("authorizationPolicy", html)
+        hidden_json_cell = html.split("<tbody><tr><td>", 1)[1].split("</td>", 1)[0]
+        self.assertNotIn("<a ", hidden_json_cell)
+        self.assertIn('<a href="https://graph.microsoft.com/', html)
         self.assertNotIn("Error displaying data", html)
         self.assertEqual(azure_present.record_count_for_data(graph_policy), 1)
         printer.assert_not_called()
+
+    def test_view_json_payload_round_trips_urls_unicode_and_nested_values(self):
+        record = {
+            "url": "https://graph.microsoft.com/v1.0/policies/authorizationPolicy",
+            "displayName": "Sécurité",
+            "settings": {"enabled": True, "names": ["one", "two"]},
+        }
+
+        encoded = azure_present.encode_json_action_payload(record)
+        decoded = json.loads(azure_present.unquote(encoded))
+
+        self.assertEqual(decoded, record)
+        self.assertNotIn("https://", encoded)
+        self.assertNotIn('"', encoded)
 
     def test_empty_and_scalar_json_shapes_render_without_errors(self):
         empty_html = azure_present.generate_html_table([])
@@ -631,6 +648,10 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         )
         self.assertNotIn("Working with something which is neither", body)
         self.assertNotIn("Error displaying data", body)
+        self.assertIn(
+            "decodeURIComponent(jsonCell.textContent.trim())",
+            body,
+        )
 
     def test_dataset_query_filters_records_inside_graph_collection_envelope(self):
         graph_users = {
