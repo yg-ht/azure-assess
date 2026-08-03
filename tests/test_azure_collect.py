@@ -856,7 +856,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('"label": "Insufficient Data", "value": 3', body)
         self.assertIn('"label": "Failed", "value": 1', body)
         self.assertIn('"label": "Unauthorised", "value": 1', body)
-        self.assertIn('"label": "Not Applicable", "value": 2', body)
+        self.assertNotIn('"label": "Not Applicable", "value": 2', body)
         self.assertIn("Finding Outcome Distribution", body)
         self.assertIn("Request Attempt Distribution", body)
         self.assertIn("findingsPieChart", body)

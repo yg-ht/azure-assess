@@ -2155,7 +2155,6 @@ def dashboard():
             {"label": "Returned No Data", "value": collection_requests["empty"], "color": "#0dcaf0"},
             {"label": "Failed", "value": collection_requests["failed"], "color": "#fd7e14"},
             {"label": "Unauthorised", "value": collection_requests["unauthorised"], "color": "#6f42c1"},
-            {"label": "Not Applicable", "value": collection_requests["not_applicable"], "color": "#6c757d"},
         ]
     return render_template_string(
         HTML_TEMPLATE,
