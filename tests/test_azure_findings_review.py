@@ -122,6 +122,32 @@ class FindingReviewDefaultTests(unittest.TestCase):
         self.assertEqual(confidence["level"], "high")
         self.assertEqual(confidence["source"], "automated")
 
+    def test_not_applicable_request_does_not_reduce_verified_confidence(self):
+        finding = review_finding(
+            integrity_status="verified",
+            run_status="success",
+        )
+        finding["reporting"]["provenance"]["source_datasets"][0][
+            "collection_statuses"
+        ] = ["success", "not_applicable"]
+
+        confidence = automated_confidence(finding)
+
+        self.assertEqual(confidence["level"], "high")
+
+    def test_only_not_applicable_requests_do_not_establish_high_confidence(self):
+        finding = review_finding(
+            integrity_status="verified",
+            run_status="success",
+        )
+        finding["reporting"]["provenance"]["source_datasets"][0][
+            "collection_statuses"
+        ] = ["not_applicable"]
+
+        confidence = automated_confidence(finding)
+
+        self.assertEqual(confidence["level"], "medium")
+
     def test_missing_manifest_has_medium_automated_confidence(self):
         confidence = automated_confidence(review_finding())
 

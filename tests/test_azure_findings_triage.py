@@ -273,6 +273,39 @@ class FindingRetestTests(unittest.TestCase):
             [baseline["reporting"]["assets"][0]["asset_id"]],
         )
 
+    def test_not_applicable_request_does_not_make_retest_inconclusive(self):
+        baseline = triage_finding(run_id="run-baseline")
+        current = triage_finding(
+            status="not_found",
+            run_id="run-current",
+            verified=True,
+        )
+        current["reporting"]["provenance"]["source_datasets"][0][
+            "collection_statuses"
+        ] = ["success", "not_applicable"]
+
+        normalise_finding_triage(current, baseline=baseline)
+
+        self.assertEqual(
+            current["triage"]["retest"]["outcome"],
+            "potentially_resolved",
+        )
+
+    def test_only_not_applicable_requests_make_retest_inconclusive(self):
+        baseline = triage_finding(run_id="run-baseline")
+        current = triage_finding(
+            status="not_found",
+            run_id="run-current",
+            verified=True,
+        )
+        current["reporting"]["provenance"]["source_datasets"][0][
+            "collection_statuses"
+        ] = ["not_applicable"]
+
+        normalise_finding_triage(current, baseline=baseline)
+
+        self.assertEqual(current["triage"]["retest"]["outcome"], "inconclusive")
+
     def test_incomplete_non_detection_is_inconclusive(self):
         baseline = triage_finding(run_id="run-baseline")
         current = triage_finding(

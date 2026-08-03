@@ -70,7 +70,11 @@ from pathlib import Path
 from time import monotonic, sleep
 from tqdm import tqdm
 
-from azure_assess.collection_manifest import CollectionManifestRecorder, utc_timestamp
+from azure_assess.collection_manifest import (
+    CollectionManifestRecorder,
+    is_not_applicable_error,
+    utc_timestamp,
+)
 
 AUTH_CONFIG = {}
 DEBUG = False
@@ -1077,8 +1081,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Flow Logs (by location)",
-        "cli_command": "az network watcher flow-log list --location {name}",
-        "required_params": {"name": "az_account_list-locations"},
+        "cli_command": "az network watcher flow-log list --location {location}",
+        "required_params": {"location": "az_network_watcher_list"},
+        "output_prefix": "az_network_watcher_flow-log_list",
     },
     {
         "name": "Container Registry Private Endpoint Connections",
@@ -2374,11 +2379,14 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
             # Keep a concise classification alongside the command output. The
             # manifest recorder combines both and applies its error-length limit.
             result["collection_error"] = error_message
-            record_collection_error(cmd, error_message, result, endpoint_name=endpoint_name, category=category)
             context = endpoint_name or cmd
-            print(f"[!] Recorded command error for {context}: {error_message}")
-            if not result or not result.get("returncode"):
-                sleep(1)
+            if is_not_applicable_error(result.get("stdout")):
+                print(f"[~] Request not applicable for {context}")
+            else:
+                record_collection_error(cmd, error_message, result, endpoint_name=endpoint_name, category=category)
+                print(f"[!] Recorded command error for {context}: {error_message}")
+                if not result or not result.get("returncode"):
+                    sleep(1)
 
         # return result - with or without nested JSON object
         return result

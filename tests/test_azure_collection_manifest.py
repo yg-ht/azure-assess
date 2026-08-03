@@ -95,6 +95,45 @@ class CollectionManifestContentTests(unittest.TestCase):
 
         self.assertEqual(coded_status, "unauthorised")
 
+    def test_explicitly_unavailable_service_scope_is_not_applicable(self):
+        status = classify_execution_status(
+            1,
+            None,
+            error_message="Azure CLI request failed with return code 1",
+            diagnostic_text=(
+                "ERROR: network watcher is not enabled for region spaincentral."
+            ),
+        )
+
+        self.assertEqual(status, "not_applicable")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-not-applicable",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            recorder.record_execution(
+                "Flow Logs (by location)",
+                "parameterised",
+                "az network watcher flow-log list --location {location}",
+                "2026-08-03T12:00:00Z",
+                0.1,
+                1,
+                None,
+                parameter_context={"location": "spaincentral"},
+                error_message="Azure CLI request failed with return code 1",
+                diagnostic_text=(
+                    "ERROR: network watcher is not enabled for region spaincentral."
+                ),
+            )
+            manifest = recorder.finish()
+
+        self.assertEqual(manifest["schema_version"], "2.1")
+        self.assertEqual(manifest["status"], "success")
+        self.assertEqual(manifest["endpoint_runs"][0]["status"], "not_applicable")
+        self.assertEqual(manifest["errors"], [])
+
     def test_azure_error_codes_are_extracted_from_direct_response_formats(self):
         self.assertEqual(
             extract_azure_error_code(
@@ -254,6 +293,22 @@ class CollectionManifestRecorderTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "Invalid endpoint execution status"):
                 validate_manifest(manifest)
+
+    def test_manifest_validation_keeps_schema_2_0_readable_without_new_status(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-legacy",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            manifest = recorder.finish()
+
+        manifest["schema_version"] = "2.0"
+        validate_manifest(manifest)
+
+        manifest["endpoint_runs"] = [{"status": "not_applicable"}]
+        with self.assertRaisesRegex(ValueError, "Invalid endpoint execution status"):
+            validate_manifest(manifest)
 
     def test_concurrent_execution_records_are_not_lost(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -311,7 +311,9 @@ def collection_supports_resolution(finding: Mapping[str, Any]) -> Tuple[bool, Li
     }
     if not collection_statuses:
         reasons.append("No current endpoint collection status was attributable")
-    elif not collection_statuses.issubset({"success", "empty"}):
+    elif not collection_statuses.intersection({"success", "empty"}):
+        reasons.append("No applicable endpoint collection completed")
+    elif not collection_statuses.issubset({"success", "empty", "not_applicable"}):
         reasons.append("Current endpoint collection was incomplete")
     return not reasons, reasons
 

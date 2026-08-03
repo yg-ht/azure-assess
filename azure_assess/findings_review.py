@@ -112,7 +112,8 @@ def automated_confidence(finding: Mapping[str, Any]) -> Dict[str, Any]:
         source_datasets
         and integrity_statuses == {"verified"}
         and collection_statuses
-        and collection_statuses.issubset({"success", "empty"})
+        and collection_statuses.intersection({"success", "empty"})
+        and collection_statuses.issubset({"success", "empty", "not_applicable"})
         and run_status == "success"
     ):
         return {

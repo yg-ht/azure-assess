@@ -44,7 +44,10 @@ from json2html import json2html
 from pathlib import Path
 from urllib.parse import unquote, urlparse, parse_qs
 
-from azure_assess.collection_manifest import extract_azure_error_code
+from azure_assess.collection_manifest import (
+    extract_azure_error_code,
+    is_not_applicable_error,
+)
 
 app = Flask(__name__)
 DATA_DIR = Path("azure-collect")
@@ -558,7 +561,7 @@ HTML_TEMPLATE = """
           <div class="card-body">
             <details class="dashboard-request-details">
             <summary><span class="h5">Unsuccessful Azure Requests</span></summary>
-            <p class="dashboard-muted my-3">Direct errors returned by attempted Azure collection requests in the latest collection manifest.</p>
+            <p class="dashboard-muted my-3">One row is shown for each failed or unauthorised logical execution in the latest collection manifest. Successful, empty and not-applicable outcomes are excluded.</p>
             <div class="table-responsive">
               <table id="failedAzureRequestsTable" class="table table-striped align-middle dashboard-request-table">
                 <thead>
@@ -568,7 +571,13 @@ HTML_TEMPLATE = """
                       <div class="dashboard-column-heading">
                         <button type="button" class="dashboard-sort-button" data-column-index="{{ loop.index0 }}" aria-label="Sort by {{ heading }}">{{ heading }}</button>
                       </div>
-                      <input class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" type="search" aria-label="Filter {{ heading }}" placeholder="Filter">
+                      {% if loop.index0 < 5 %}
+                      <select class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" data-filter-mode="exact" aria-label="Filter {{ heading }}">
+                        <option value="">All</option>
+                      </select>
+                      {% else %}
+                      <input class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" data-filter-mode="contains" type="search" aria-label="Filter {{ heading }}" placeholder="Filter">
+                      {% endif %}
                     </th>
                     {% endfor %}
                   </tr>
@@ -942,14 +951,35 @@ HTML_TEMPLATE = """
               const query = filter.value.trim().toLocaleLowerCase();
               if (!query) return true;
               const cell = row.cells[Number(filter.dataset.columnIndex)];
-              return (cell?.textContent || '').toLocaleLowerCase().includes(query);
+              const cellValue = (cell?.textContent || '').trim().toLocaleLowerCase();
+              return filter.dataset.filterMode === 'exact'
+                ? cellValue === query
+                : cellValue.includes(query);
             });
             row.hidden = !visible;
           });
         }
 
         filters.forEach(function(filter) {
-          filter.addEventListener('input', applyFilters);
+          if (filter.tagName === 'SELECT') {
+            const columnIndex = Number(filter.dataset.columnIndex);
+            const values = Array.from(body.rows)
+              .map(function(row) { return (row.cells[columnIndex]?.textContent || '').trim(); })
+              .filter(Boolean)
+              .filter(function(value, index, items) { return items.indexOf(value) === index; })
+              .sort(function(left, right) {
+                return left.localeCompare(right, undefined, {numeric: true, sensitivity: 'base'});
+              });
+            values.forEach(function(value) {
+              const option = document.createElement('option');
+              option.value = value;
+              option.textContent = value;
+              filter.appendChild(option);
+            });
+            filter.addEventListener('change', applyFilters);
+          } else {
+            filter.addEventListener('input', applyFilters);
+          }
           filter.addEventListener('click', function(event) { event.stopPropagation(); });
         });
 
@@ -1505,13 +1535,18 @@ def collection_request_summary():
         if str(request_record.get("category") or "") == "setup":
             continue
         status = str(request_record.get("status") or "")
-        status_counts[status] += 1
-        if status not in {"failed", "unauthorised"}:
-            continue
         response_message = (
             request_record.get("response_error")
             or request_record.get("error")
         )
+        # Manifests written before schema 2.1 classified this explicit Azure
+        # applicability response as a generic failure. Reclassify it for
+        # presentation without modifying the retained evidence.
+        if status == "failed" and is_not_applicable_error(response_message):
+            status = "not_applicable"
+        status_counts[status] += 1
+        if status not in {"failed", "unauthorised"}:
+            continue
         failures.append(
             {
                 "endpoint_name": request_record.get("endpoint_name") or "Unknown",
@@ -1543,7 +1578,13 @@ def collection_request_summary():
     )
     attempted = sum(
         status_counts[status]
-        for status in ("success", "empty", "failed", "unauthorised")
+        for status in (
+            "success",
+            "empty",
+            "failed",
+            "unauthorised",
+            "not_applicable",
+        )
     )
     return {
         "attempted": attempted,
@@ -1551,6 +1592,7 @@ def collection_request_summary():
         "empty": status_counts["empty"],
         "failed": status_counts["failed"],
         "unauthorised": status_counts["unauthorised"],
+        "not_applicable": status_counts["not_applicable"],
         "skipped": status_counts["skipped"],
         "not_attempted": status_counts["not_attempted"],
         "unattempted": status_counts["skipped"] + status_counts["not_attempted"],
@@ -1653,6 +1695,11 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
                 "label": "Unauthorised Request Attempts",
                 "value": collection_requests["unauthorised"],
                 "detail": "Permission-related errors returned by attempted requests",
+            },
+            {
+                "label": "Not Applicable Request Attempts",
+                "value": collection_requests["not_applicable"],
+                "detail": "Azure reported that the requested service or scope was not applicable",
             },
             {
                 "label": "Endpoints Not Attempted",
@@ -2108,6 +2155,7 @@ def dashboard():
             {"label": "Returned No Data", "value": collection_requests["empty"], "color": "#0dcaf0"},
             {"label": "Failed", "value": collection_requests["failed"], "color": "#fd7e14"},
             {"label": "Unauthorised", "value": collection_requests["unauthorised"], "color": "#6f42c1"},
+            {"label": "Not Applicable", "value": collection_requests["not_applicable"], "color": "#6c757d"},
         ]
     return render_template_string(
         HTML_TEMPLATE,

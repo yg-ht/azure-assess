@@ -768,6 +768,26 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "returncode": 0,
                     "result_count": 0,
                 },
+                {
+                    "endpoint_name": "Flow Logs (legacy manifest)",
+                    "category": "parameterised",
+                    "status": "failed",
+                    "returncode": 1,
+                    "parameter_context": {"name": "spaincentral"},
+                    "error": "Azure CLI request failed with return code 1",
+                    "response_error": (
+                        "ERROR: network watcher is not enabled for region "
+                        "spaincentral."
+                    ),
+                },
+                {
+                    "endpoint_name": "Unavailable Service",
+                    "category": "parameterised",
+                    "status": "not_applicable",
+                    "returncode": 1,
+                    "parameter_context": {"location": "region-one"},
+                    "response_error": "Service is explicitly unavailable for this scope.",
+                },
             ]
         }
 
@@ -791,11 +811,12 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         self.assertEqual(summary["no_data_to_assess"], 3)
         self.assertNotIn("permission_blocked", summary)
-        self.assertEqual(requests["attempted"], 4)
+        self.assertEqual(requests["attempted"], 6)
         self.assertEqual(requests["success"], 1)
         self.assertEqual(requests["empty"], 1)
         self.assertEqual(requests["failed"], 1)
         self.assertEqual(requests["unauthorised"], 1)
+        self.assertEqual(requests["not_applicable"], 2)
         self.assertEqual(requests["unattempted"], 2)
         self.assertEqual(requests["skipped"], 1)
         self.assertEqual(requests["not_attempted"], 1)
@@ -814,9 +835,15 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             for card in cards["requests"]
             if card["label"] == "Request Attempts"
         )
+        not_applicable_card = next(
+            card
+            for card in cards["requests"]
+            if card["label"] == "Not Applicable Request Attempts"
+        )
         self.assertEqual(failed_card["value"], 1)
         self.assertEqual(unauthorised_card["value"], 1)
-        self.assertEqual(request_attempts_card["value"], 4)
+        self.assertEqual(request_attempts_card["value"], 6)
+        self.assertEqual(not_applicable_card["value"], 2)
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn('"label": "Permission Blocked"', body)
@@ -829,6 +856,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('"label": "Insufficient Data", "value": 3', body)
         self.assertIn('"label": "Failed", "value": 1', body)
         self.assertIn('"label": "Unauthorised", "value": 1', body)
+        self.assertIn('"label": "Not Applicable", "value": 2', body)
         self.assertIn("Finding Outcome Distribution", body)
         self.assertIn("Request Attempt Distribution", body)
         self.assertIn("findingsPieChart", body)
@@ -852,6 +880,19 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("--bs-table-color: var(--text-color)", body)
         self.assertEqual(body.count('class="dashboard-sort-button"'), 7)
         self.assertEqual(body.count('class="dashboard-column-filter"'), 7)
+        self.assertEqual(
+            body.count('<select class="dashboard-column-filter"'),
+            5,
+        )
+        self.assertEqual(
+            body.count('<input class="dashboard-column-filter"'),
+            2,
+        )
+        self.assertIn('data-filter-mode="exact"', body)
+        self.assertIn('data-filter-mode="contains"', body)
+        self.assertIn("filter.addEventListener('change', applyFilters)", body)
+        self.assertIn("cellValue === query", body)
+        self.assertIn("one row is shown for each failed or unauthorised", body.lower())
         self.assertIn("function applyFilters()", body)
         self.assertIn("leftValue.localeCompare", body)
         self.assertIn("Storage Account Keys", body)
@@ -860,6 +901,8 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Legacy manifest error message", body)
         self.assertNotIn("Unattempted Endpoint", body)
         self.assertNotIn("Skipped Endpoint", body)
+        self.assertNotIn("Flow Logs (legacy manifest)", body)
+        self.assertNotIn("Unavailable Service", body)
 
     def test_dataset_group_lookup_does_not_load_json_payloads(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1508,6 +1551,57 @@ class CollectDataWithParamsTests(unittest.TestCase):
         )
         self.assertEqual(len(saved_payloads), 1)
 
+    def test_flow_logs_only_query_locations_with_enabled_network_watchers(self):
+        endpoint = next(
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] == "Flow Logs (by location)"
+        )
+        commands_run = []
+        saved_payloads = []
+
+        def fake_run_az_cli(cmd):
+            commands_run.append(cmd)
+            return {
+                "json": [{"name": "flow-log-one"}],
+                "success": True,
+                "stdout": "[]",
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            source_file = output_dir / "az_network_watcher_list_20260402-000000.json"
+            source_file.write_text(
+                json.dumps(
+                    [
+                        {"name": "NetworkWatcher_uksouth", "location": "uksouth"},
+                        {"name": "NetworkWatcher_ukwest", "location": "ukwest"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "run_az_cli", side_effect=fake_run_az_cli):
+                with mock.patch.object(
+                    azure_collect,
+                    "save_json",
+                    side_effect=lambda data, filename, append=False: saved_payloads.append(
+                        (data, filename)
+                    ),
+                ):
+                    azure_collect.collect_data_with_params([endpoint])
+
+        self.assertEqual(
+            commands_run,
+            [
+                "az network watcher flow-log list --location uksouth",
+                "az network watcher flow-log list --location ukwest",
+            ],
+        )
+        self.assertEqual(len(saved_payloads), 1)
+        self.assertTrue(saved_payloads[0][1].startswith("az_network_watcher_flow-log_list_"))
+
     def test_customer_collection_does_not_request_provider_cross_connections(self):
         endpoint_names = {endpoint["name"] for endpoint in azure_collect.AZURE_CLI_ENDPOINTS}
         endpoint_commands = {endpoint["cli_command"] for endpoint in azure_collect.AZURE_CLI_ENDPOINTS}
@@ -1918,6 +2012,28 @@ class AzureCliCollectionErrorTests(unittest.TestCase):
             azure_collect.COLLECTION_ERRORS[0]["process_output"],
             output,
         )
+
+    def test_not_applicable_azure_request_is_not_recorded_as_collection_error(self):
+        output = "ERROR: network watcher is not enabled for region spaincentral."
+
+        with mock.patch.object(
+            azure_collect.subprocess,
+            "Popen",
+            return_value=FakeAzProcess(1, output),
+        ):
+            result = azure_collect.run_az_cli(
+                "az network watcher flow-log list --location spaincentral",
+                endpoint_name="Flow Logs (by location)",
+                category="parameterised",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["returncode"], 1)
+        self.assertEqual(
+            result["collection_error"],
+            "Azure CLI request failed with return code 1",
+        )
+        self.assertEqual(azure_collect.COLLECTION_ERRORS, [])
 
     def test_base_collection_continues_and_accumulates_multiple_command_errors(self):
         endpoints = [

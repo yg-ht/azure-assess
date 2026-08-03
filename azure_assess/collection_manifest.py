@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
-MANIFEST_SCHEMA_VERSION = "2.0"
+MANIFEST_SCHEMA_VERSION = "2.1"
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {"2.0", MANIFEST_SCHEMA_VERSION}
 MANIFEST_FILENAME_PREFIX = "azure-collection-manifest"
 MAX_ERROR_MESSAGE_CHARS = 1000
 VALID_RUN_STATUSES = {"running", "success", "partial", "failed"}
@@ -25,9 +26,14 @@ VALID_ENDPOINT_STATUSES = {
     "empty",
     "failed",
     "unauthorised",
+    "not_applicable",
     "skipped",
     "not_attempted",
 }
+LEGACY_ENDPOINT_STATUSES = VALID_ENDPOINT_STATUSES - {"not_applicable"}
+NOT_APPLICABLE_ERROR_MARKERS = (
+    "network watcher is not enabled for region",
+)
 AZURE_ERROR_CODE_PATTERNS = (
     re.compile(
         r"(?im)^\s*(?:ERROR:\s*)?\((?P<code>[A-Za-z][A-Za-z0-9_.-]+)\)"
@@ -90,6 +96,12 @@ def extract_azure_error_code(value: Any) -> Optional[str]:
         if match:
             return match.group("code")
     return None
+
+
+def is_not_applicable_error(value: Any) -> bool:
+    """Return whether Azure explicitly reported a known inapplicable scope."""
+    text = str(value or "").strip().lower()
+    return bool(text) and any(marker in text for marker in NOT_APPLICABLE_ERROR_MARKERS)
 
 
 def result_item_count(data: Any) -> int:
@@ -159,6 +171,8 @@ def classify_execution_status(
         for item in (error_message, diagnostic_text)
     )
     if error_message or returncode not in (None, 0):
+        if is_not_applicable_error(combined_error):
+            return "not_applicable"
         if any(code in normalised_error_code for code in permission_error_codes):
             return "unauthorised"
         permission_markers = (
@@ -196,7 +210,8 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
     missing_keys = sorted(required_keys - set(payload.keys()))
     if missing_keys:
         raise ValueError(f"Collection manifest is missing required keys: {', '.join(missing_keys)}")
-    if payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+    schema_version = payload.get("schema_version")
+    if schema_version not in SUPPORTED_MANIFEST_SCHEMA_VERSIONS:
         raise ValueError("Collection manifest schema version is not supported")
     if payload.get("status") not in VALID_RUN_STATUSES:
         raise ValueError(f"Invalid collection manifest status: {payload.get('status')}")
@@ -204,8 +219,13 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
         raise ValueError("Collection manifest endpoint_runs must be a list")
     if not isinstance(payload.get("datasets"), list):
         raise ValueError("Collection manifest datasets must be a list")
+    valid_endpoint_statuses = (
+        LEGACY_ENDPOINT_STATUSES
+        if schema_version == "2.0"
+        else VALID_ENDPOINT_STATUSES
+    )
     for endpoint_run in payload["endpoint_runs"]:
-        if endpoint_run.get("status") not in VALID_ENDPOINT_STATUSES:
+        if endpoint_run.get("status") not in valid_endpoint_statuses:
             raise ValueError(
                 f"Invalid endpoint execution status: {endpoint_run.get('status')}"
             )
