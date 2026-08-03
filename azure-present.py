@@ -585,8 +585,16 @@ HTML_TEMPLATE = """
         {% if summary_cards.requests %}
         <section class="dashboard-section mt-4" aria-labelledby="requestHealthHeading">
           <h3 id="requestHealthHeading" class="h4">Azure Request Health</h3>
-          <p class="dashboard-muted">Direct outcomes from Azure request attempts and explicit reasons why selected endpoint definitions were omitted. These counts describe collection activity and use a different denominator from assessment checks.</p>
-          {{ dashboard_card_grid(summary_cards.requests) }}
+          <p class="dashboard-muted">Collection activity is separated into attempted requests, deliberately skipped endpoint definitions and endpoint definitions with no recorded outcome. These populations use a different denominator from assessment checks.</p>
+          <h4 class="h5 mt-4">Request Attempt Outcomes</h4>
+          <p class="dashboard-muted">Each attempted request has one mutually exclusive outcome. The outcome cards below add up to Total Attempts.</p>
+          {{ dashboard_card_grid(summary_cards.requests.attempts) }}
+          <h4 class="h5 mt-4">Skipped Endpoint Definitions</h4>
+          <p class="dashboard-muted">These endpoint definitions were deliberately not attempted. Each has one primary prerequisite or recorded skip cause, and the cause cards below add up to Total Skipped.</p>
+          {{ dashboard_card_grid(summary_cards.requests.skipped) }}
+          <h4 class="h5 mt-4">Unrecorded Endpoint Definitions</h4>
+          <p class="dashboard-muted">These planned endpoint definitions have neither a request outcome nor a deliberate skip outcome. They are an accounting gap and are not included in Total Skipped.</p>
+          {{ dashboard_card_grid(summary_cards.requests.unrecorded) }}
         {% if collection_requests and collection_requests.omission_groups %}
         <div class="card dashboard-chart-card mt-4">
           <div class="card-body">
@@ -1845,7 +1853,7 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
             {"label": "Checks Not Implemented", "value": findings["not_implemented"], "detail": "Defined checks without an implemented assessment"},
         ])
 
-    request_cards = []
+    request_cards = None
     if collection_requests is not None:
         skipped_reasons = collection_requests["skipped_reason_counts"]
         skipped_unauthorised = skipped_reasons["upstream_source_unauthorised"]
@@ -1858,73 +1866,79 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
             - skipped_tenant
             - skipped_empty,
         )
-        request_cards.extend([
-            {
-                "label": "Request Attempts",
-                "value": collection_requests["attempted"],
-                "detail": "Azure requests that returned a direct outcome",
-            },
-            {
-                "label": "Requests Returning Data",
-                "value": collection_requests["success"],
-                "detail": "Successful requests with one or more returned records",
-            },
-            {
-                "label": "Requests Returning No Data",
-                "value": collection_requests["empty"],
-                "detail": "Successful requests whose response contained no records",
-            },
-            {
-                "label": "Failed Request Attempts",
-                "value": collection_requests["failed"],
-                "detail": "Non-authorisation errors returned by attempted requests",
-            },
-            {
-                "label": "Unauthorised Request Attempts",
-                "value": collection_requests["unauthorised"],
-                "detail": "Permission-related errors returned by attempted requests",
-            },
-            {
-                "label": "Licence or Tenant Capability Restrictions",
-                "value": collection_requests["tenant_unavailable"],
-                "detail": "Requests blocked by tenant licensing or service capability",
-            },
-            {
-                "label": "Not Applicable Request Attempts",
-                "value": collection_requests["not_applicable"],
-                "detail": "Azure reported that the requested service or scope was not applicable",
-            },
-            {
-                "label": "Endpoint Definitions Skipped",
-                "value": collection_requests["skipped"],
-                "detail": "Deliberately omitted because a recorded prerequisite was unavailable or unusable",
-            },
-            {
-                "label": "Skipped — Unauthorised Prerequisite",
-                "value": skipped_unauthorised,
-                "detail": "Endpoint definitions omitted because an upstream request was unauthorised",
-            },
-            {
-                "label": "Skipped — Licence/Tenant Capability",
-                "value": skipped_tenant,
-                "detail": "Endpoint definitions omitted because an upstream tenant capability was unavailable",
-            },
-            {
-                "label": "Skipped — Empty Prerequisite",
-                "value": skipped_empty,
-                "detail": "Endpoint definitions omitted because an upstream request returned no records",
-            },
-            {
-                "label": "Skipped — Other Reasons",
-                "value": skipped_other,
-                "detail": "Endpoint definitions omitted for all other recorded reasons",
-            },
-            {
-                "label": "Endpoint Outcomes Not Recorded",
-                "value": collection_requests["not_attempted"],
-                "detail": "Planned endpoints for which collection recorded no execution or deliberate skip outcome",
-            },
-        ])
+        request_cards = {
+            "attempts": [
+                {
+                    "label": "Total Attempts",
+                    "value": collection_requests["attempted"],
+                    "detail": "Requests made to Azure or Microsoft Graph with a recorded outcome",
+                },
+                {
+                    "label": "Returned Data",
+                    "value": collection_requests["success"],
+                    "detail": "Requests completed successfully and returned one or more records",
+                },
+                {
+                    "label": "Returned No Data",
+                    "value": collection_requests["empty"],
+                    "detail": "Requests completed successfully but returned no records",
+                },
+                {
+                    "label": "Failed",
+                    "value": collection_requests["failed"],
+                    "detail": "Requests returned a non-authorisation error",
+                },
+                {
+                    "label": "Unauthorised",
+                    "value": collection_requests["unauthorised"],
+                    "detail": "Requests returned a permission-related error",
+                },
+                {
+                    "label": "Tenant Capability Unavailable",
+                    "value": collection_requests["tenant_unavailable"],
+                    "detail": "Requests were blocked by tenant licensing or service capability",
+                },
+                {
+                    "label": "Not Applicable",
+                    "value": collection_requests["not_applicable"],
+                    "detail": "Azure reported that the requested service or scope was not applicable",
+                },
+            ],
+            "skipped": [
+                {
+                    "label": "Total Skipped",
+                    "value": collection_requests["skipped"],
+                    "detail": "Endpoint definitions deliberately not attempted for a recorded reason",
+                },
+                {
+                    "label": "Unauthorised Prerequisite",
+                    "value": skipped_unauthorised,
+                    "detail": "Skipped because a required upstream request was unauthorised",
+                },
+                {
+                    "label": "Tenant Capability Prerequisite",
+                    "value": skipped_tenant,
+                    "detail": "Skipped because a required upstream tenant capability was unavailable",
+                },
+                {
+                    "label": "Empty Prerequisite",
+                    "value": skipped_empty,
+                    "detail": "Skipped because a required upstream request returned no records",
+                },
+                {
+                    "label": "Other Recorded Reason",
+                    "value": skipped_other,
+                    "detail": "Skipped for another recorded reason",
+                },
+            ],
+            "unrecorded": [
+                {
+                    "label": "Total Without Recorded Outcome",
+                    "value": collection_requests["not_attempted"],
+                    "detail": "Planned endpoint definitions with no request or deliberate skip outcome",
+                },
+            ],
+        }
     return {
         "collection": collection_cards,
         "findings": finding_cards,

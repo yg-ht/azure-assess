@@ -1122,34 +1122,48 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         )
         failed_card = next(
             card
-            for card in cards["requests"]
-            if card["label"] == "Failed Request Attempts"
+            for card in cards["requests"]["attempts"]
+            if card["label"] == "Failed"
         )
         unauthorised_card = next(
             card
-            for card in cards["requests"]
-            if card["label"] == "Unauthorised Request Attempts"
+            for card in cards["requests"]["attempts"]
+            if card["label"] == "Unauthorised"
         )
         request_attempts_card = next(
             card
-            for card in cards["requests"]
-            if card["label"] == "Request Attempts"
+            for card in cards["requests"]["attempts"]
+            if card["label"] == "Total Attempts"
         )
         not_applicable_card = next(
             card
-            for card in cards["requests"]
-            if card["label"] == "Not Applicable Request Attempts"
+            for card in cards["requests"]["attempts"]
+            if card["label"] == "Not Applicable"
         )
         self.assertEqual(failed_card["value"], 1)
         self.assertEqual(unauthorised_card["value"], 1)
         self.assertEqual(request_attempts_card["value"], 6)
         self.assertEqual(not_applicable_card["value"], 2)
+        self.assertEqual(
+            cards["requests"]["unrecorded"][0],
+            {
+                "label": "Total Without Recorded Outcome",
+                "value": 1,
+                "detail": "Planned endpoint definitions with no request or deliberate skip outcome",
+            },
+        )
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
         self.assertNotIn('"label": "Permission Blocked"', body)
         self.assertIn("Collection Snapshot", body)
         self.assertIn("Finding Outcomes", body)
         self.assertIn("Azure Request Health", body)
+        self.assertIn("Request Attempt Outcomes", body)
+        self.assertIn("Skipped Endpoint Definitions", body)
+        self.assertIn("Unrecorded Endpoint Definitions", body)
+        self.assertIn("The outcome cards below add up to Total Attempts", body)
+        self.assertIn("the cause cards below add up to Total Skipped", body)
+        self.assertIn("They are an accounting gap", body)
         self.assertIn("Checks Without Sufficient Data", body)
         self.assertNotIn("Rows in azure-findings-flat.json", body)
         self.assertNotIn("Status: not_found", body)
@@ -1287,13 +1301,36 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             ],
             1,
         )
-        card_values = {card["label"]: card["value"] for card in cards["requests"]}
+        attempt_values = {
+            card["label"]: card["value"]
+            for card in cards["requests"]["attempts"]
+        }
+        skipped_values = {
+            card["label"]: card["value"]
+            for card in cards["requests"]["skipped"]
+        }
         self.assertEqual(
-            card_values["Licence or Tenant Capability Restrictions"], 1
+            attempt_values["Tenant Capability Unavailable"], 1
         )
-        self.assertEqual(card_values["Skipped — Unauthorised Prerequisite"], 1)
-        self.assertEqual(card_values["Skipped — Licence/Tenant Capability"], 1)
-        self.assertEqual(card_values["Skipped — Empty Prerequisite"], 1)
+        self.assertEqual(skipped_values["Unauthorised Prerequisite"], 1)
+        self.assertEqual(skipped_values["Tenant Capability Prerequisite"], 1)
+        self.assertEqual(skipped_values["Empty Prerequisite"], 1)
+        self.assertEqual(
+            attempt_values["Total Attempts"],
+            sum(
+                value
+                for label, value in attempt_values.items()
+                if label != "Total Attempts"
+            ),
+        )
+        self.assertEqual(
+            skipped_values["Total Skipped"],
+            sum(
+                value
+                for label, value in skipped_values.items()
+                if label != "Total Skipped"
+            ),
+        )
         body = response.get_data(as_text=True)
         self.assertIn(
             '"label": "Insufficient Data \\u2014 Licence or Tenant Capability", "value": 1',
