@@ -349,6 +349,8 @@ Report-ready export:
 Purpose:
 Run a local web interface for browsing the collected datasets and findings output. The dashboard now groups timestamped dataset versions and defaults to the latest collected snapshot for each dataset type.
 
+In the findings table, the Definition, Reporting, Context, Coverage, Review and Triage columns are concise operational summaries rather than complete schema objects. Use **View JSON** on a row to inspect the original finding, including all schema metadata, provenance, evidence relationships, rationale, identifiers and retest detail.
+
 Typical usage:
 
 ```bash

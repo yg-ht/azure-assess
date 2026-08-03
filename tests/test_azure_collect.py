@@ -396,6 +396,138 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("definition", prepared)
         self.assertEqual(list(prepared)[-1], "finding_id")
 
+    def test_findings_metadata_columns_are_concise_purpose_led_summaries(self):
+        row = {
+            "finding_id": "storage_example",
+            "title": "Storage example",
+            "severity": "Medium",
+            "status": "found",
+            "definition": {
+                "schema_version": "1.0",
+                "report_title": "Storage example",
+                "default_severity": "Medium",
+                "category": "Storage security",
+                "check_ids": ["storage_example_alias"],
+                "report": {
+                    "narrative_status": "authored",
+                    "description": "Explains the check.",
+                    "impact": "Explains why it matters.",
+                    "recommendation": "Explains what to do.",
+                },
+            },
+            "reporting": {
+                "schema_version": "1.2",
+                "assets": [{"name": "storage-one"}],
+                "observations": [{"data": {"public": True}}],
+                "provenance": {
+                    "source_datasets": [{"filename": "storage.json"}],
+                    "required_endpoints": [{"name": "Storage Accounts"}],
+                    "collection_run": {"status": "success"},
+                    "limitations": ["Example limitation"],
+                },
+            },
+            "context": {
+                "schema_version": "1.0",
+                "family": {
+                    "service_label": "Azure Storage",
+                    "control_plane": "azure_resource_manager",
+                },
+                "engagement": {
+                    "tenant_ids": ["tenant-one"],
+                    "selected_subscription_id": "sub-one",
+                    "subscriptions": [
+                        {"subscription_id": "sub-one", "name": "Production"}
+                    ],
+                },
+                "scope": {"level": "resource", "affected_asset_count": 1},
+                "limitations": [],
+            },
+            "coverage": {
+                "schema_version": "1.0",
+                "status": "proxy",
+                "denominator": {"value": 4, "unit": "assets"},
+                "affected": {"assets": 1},
+                "affected_percentage": 25.0,
+                "limitations": ["Proxy denominator"],
+            },
+            "review": {
+                "schema_version": "1.0",
+                "review_state": "unreviewed",
+                "disposition": "candidate",
+                "confidence": {
+                    "level": "high",
+                    "rationale": ["Verified source data", "Complete collection"],
+                },
+                "analyst": {"reviewer": None},
+                "report_ready": {"include": True},
+            },
+            "triage": {
+                "schema_version": "1.0",
+                "grouping": {"observation_groups": [{"group_id": "opaque"}]},
+                "severity": {"contextual": "High", "changed": True},
+                "deduplication": {
+                    "status": "duplicates_present",
+                    "duplicate_observation_count": 2,
+                },
+                "fingerprint": {"value": "findingfp_opaque"},
+                "retest": {"outcome": "persistent"},
+            },
+        }
+
+        prepared = azure_present.prepare_findings_rows([row])[0]
+
+        self.assertEqual(prepared["definition"]["Category"], "Storage Security")
+        self.assertEqual(prepared["definition"]["Narrative"], "Authored")
+        self.assertEqual(prepared["reporting"]["Assets"], 1)
+        self.assertEqual(prepared["reporting"]["Source Datasets"], 1)
+        self.assertEqual(prepared["context"]["Azure Service"], "Azure Storage")
+        self.assertEqual(prepared["context"]["Selected Subscription"], "Production")
+        self.assertEqual(prepared["coverage"]["Eligible Population"], "4 assets")
+        self.assertEqual(prepared["coverage"]["Affected Percentage"], "25.0%")
+        self.assertEqual(prepared["review"]["Report Inclusion"], "Yes")
+        self.assertEqual(
+            prepared["review"]["Confidence Basis"],
+            "Verified source data (+1 more)",
+        )
+        self.assertEqual(prepared["triage"]["Observation Groups"], 1)
+        self.assertEqual(prepared["triage"]["Duplicate Observations"], 2)
+        displayed_metadata = json.dumps(
+            {name: prepared[name] for name in azure_present.FINDINGS_METADATA_COLUMNS}
+        )
+        for internal_value in (
+            "schema_version",
+            "report_title",
+            "default_severity",
+            "findingfp_opaque",
+            '"data": {"public": true}',
+        ):
+            self.assertNotIn(internal_value, displayed_metadata)
+
+    def test_findings_view_json_retains_original_unsummarised_row(self):
+        row = {
+            "finding_id": "example_finding",
+            "definition": {"schema_version": "1.0", "report_title": "Original"},
+            "reporting": {"assets": [{"name": "account-one"}]},
+            "viewer_links": ["/query/source.json", "/query/source.json"],
+        }
+
+        prepared = azure_present.prepare_findings_rows([row])[0]
+        html = azure_present.generate_html_table([prepared])
+        hidden_json_cell = html.split("<tbody><tr><td>", 1)[1].split("</td>", 1)[0]
+
+        self.assertEqual(
+            prepared[azure_present.VIEW_JSON_SOURCE_ROW_KEY],
+            row,
+        )
+        self.assertEqual(
+            json.loads(azure_present.unquote(hidden_json_cell)),
+            row,
+        )
+        self.assertNotIn(
+            f"<th>{azure_present.VIEW_JSON_SOURCE_ROW_KEY}</th>",
+            html,
+        )
+
     def test_affected_entities_remain_complete_for_expandable_display(self):
         entities = [f"account-{index}" for index in range(10)]
         prepared = azure_present.prepare_findings_rows([

@@ -115,6 +115,15 @@ FINDINGS_PRIMARY_COLUMNS = (
     "affected_entities",
 )
 FINDINGS_LINK_COLUMNS = ("viewer_links", "azure_portal_links")
+FINDINGS_METADATA_COLUMNS = (
+    "definition",
+    "reporting",
+    "context",
+    "coverage",
+    "review",
+    "triage",
+)
+VIEW_JSON_SOURCE_ROW_KEY = "__azure_assess_view_json_source__"
 AFFECTED_ENTITIES_DISPLAY_LIMIT = 8
 COLUMN_HEADING_ACRONYMS = {
     "api": "API",
@@ -2009,8 +2018,180 @@ def affected_entity_labels(row):
     )
 
 
+def display_metadata_value(value, unavailable="Not available"):
+    """Return a compact, readable label for a findings metadata value."""
+    if value in (None, "", [], {}):
+        return unavailable
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, str):
+        return title_case_column_heading(value)
+    return value
+
+
+def first_summary_text(values):
+    """Show one rationale without expanding a potentially long rationale list."""
+    if isinstance(values, str):
+        return values
+    if not isinstance(values, list) or not values:
+        return "Not recorded"
+    first = str(values[0])
+    return first if len(values) == 1 else f"{first} (+{len(values) - 1} more)"
+
+
+def definition_display_summary(value):
+    definition = value if isinstance(value, dict) else {}
+    report = definition.get("report")
+    report = report if isinstance(report, dict) else {}
+    summary = OrderedDict(
+        [
+            ("Category", display_metadata_value(definition.get("category"))),
+            ("Check IDs", definition.get("check_ids") or []),
+            ("Narrative", display_metadata_value(report.get("narrative_status"))),
+        ]
+    )
+    for label, key in (
+        ("Description", "description"),
+        ("Impact", "impact"),
+        ("Recommendation", "recommendation"),
+    ):
+        if report.get(key):
+            summary[label] = report[key]
+    return summary
+
+
+def reporting_display_summary(value):
+    reporting = value if isinstance(value, dict) else {}
+    provenance = reporting.get("provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+    collection_run = provenance.get("collection_run")
+    collection_run = collection_run if isinstance(collection_run, dict) else {}
+    insufficient = provenance.get("insufficient_data")
+    insufficient = insufficient if isinstance(insufficient, dict) else {}
+    summary = OrderedDict(
+        [
+            ("Assets", len(reporting.get("assets") or [])),
+            ("Observations", len(reporting.get("observations") or [])),
+            ("Source Datasets", len(provenance.get("source_datasets") or [])),
+            ("Required Endpoints", len(provenance.get("required_endpoints") or [])),
+            ("Collection Run", display_metadata_value(collection_run.get("status"))),
+            ("Limitations", len(provenance.get("limitations") or [])),
+        ]
+    )
+    if insufficient:
+        summary["Insufficient Data"] = display_metadata_value(
+            insufficient.get("label") or insufficient.get("cause")
+        )
+    return summary
+
+
+def context_display_summary(value):
+    context = value if isinstance(value, dict) else {}
+    family = context.get("family")
+    family = family if isinstance(family, dict) else {}
+    engagement = context.get("engagement")
+    engagement = engagement if isinstance(engagement, dict) else {}
+    scope = context.get("scope")
+    scope = scope if isinstance(scope, dict) else {}
+    subscriptions = engagement.get("subscriptions") or []
+    selected_subscription_id = engagement.get("selected_subscription_id")
+    selected_subscription = selected_subscription_id
+    for subscription in subscriptions:
+        if not isinstance(subscription, dict):
+            continue
+        if subscription.get("subscription_id") == selected_subscription_id:
+            selected_subscription = subscription.get("name") or selected_subscription_id
+            break
+    return OrderedDict(
+        [
+            ("Azure Service", display_metadata_value(family.get("service_label"))),
+            ("Control Plane", display_metadata_value(family.get("control_plane"))),
+            ("Scope", display_metadata_value(scope.get("level"))),
+            ("Tenants", len(engagement.get("tenant_ids") or [])),
+            ("Selected Subscription", selected_subscription or "Not available"),
+            ("Subscriptions In Scope", len(scope.get("subscription_ids") or [])),
+            ("Affected Assets", scope.get("affected_asset_count", 0)),
+            ("Limitations", len(context.get("limitations") or [])),
+        ]
+    )
+
+
+def coverage_display_summary(value):
+    coverage = value if isinstance(value, dict) else {}
+    denominator = coverage.get("denominator")
+    denominator = denominator if isinstance(denominator, dict) else {}
+    affected = coverage.get("affected")
+    affected = affected if isinstance(affected, dict) else {}
+    percentage = coverage.get("affected_percentage")
+    percentage_label = "Not available" if percentage is None else f"{percentage}%"
+    eligible = denominator.get("value")
+    unit = denominator.get("unit")
+    eligible_label = "Not available" if eligible is None else f"{eligible} {unit or 'items'}"
+    return OrderedDict(
+        [
+            ("Assessment", display_metadata_value(coverage.get("status"))),
+            ("Eligible Population", eligible_label),
+            ("Affected Assets", affected.get("assets", 0)),
+            ("Affected Percentage", percentage_label),
+            ("Limitations", len(coverage.get("limitations") or [])),
+        ]
+    )
+
+
+def review_display_summary(value):
+    review = value if isinstance(value, dict) else {}
+    confidence = review.get("confidence")
+    confidence = confidence if isinstance(confidence, dict) else {}
+    analyst = review.get("analyst")
+    analyst = analyst if isinstance(analyst, dict) else {}
+    report_ready = review.get("report_ready")
+    report_ready = report_ready if isinstance(report_ready, dict) else {}
+    return OrderedDict(
+        [
+            ("Review State", display_metadata_value(review.get("review_state"))),
+            ("Disposition", display_metadata_value(review.get("disposition"))),
+            ("Confidence", display_metadata_value(confidence.get("level"))),
+            ("Confidence Basis", first_summary_text(confidence.get("rationale"))),
+            ("Reviewer", analyst.get("reviewer") or "Unassigned"),
+            ("Report Inclusion", display_metadata_value(report_ready.get("include"))),
+        ]
+    )
+
+
+def triage_display_summary(value):
+    triage = value if isinstance(value, dict) else {}
+    grouping = triage.get("grouping")
+    grouping = grouping if isinstance(grouping, dict) else {}
+    severity = triage.get("severity")
+    severity = severity if isinstance(severity, dict) else {}
+    deduplication = triage.get("deduplication")
+    deduplication = deduplication if isinstance(deduplication, dict) else {}
+    retest = triage.get("retest")
+    retest = retest if isinstance(retest, dict) else {}
+    return OrderedDict(
+        [
+            ("Contextual Severity", display_metadata_value(severity.get("contextual"))),
+            ("Severity Changed", display_metadata_value(severity.get("changed"))),
+            ("Observation Groups", len(grouping.get("observation_groups") or [])),
+            ("Deduplication", display_metadata_value(deduplication.get("status"))),
+            ("Duplicate Observations", deduplication.get("duplicate_observation_count", 0)),
+            ("Retest", display_metadata_value(retest.get("outcome"))),
+        ]
+    )
+
+
+FINDINGS_METADATA_SUMMARISERS = {
+    "definition": definition_display_summary,
+    "reporting": reporting_display_summary,
+    "context": context_display_summary,
+    "coverage": coverage_display_summary,
+    "review": review_display_summary,
+    "triage": triage_display_summary,
+}
+
+
 def prepare_findings_rows(data):
-    """Normalise findings for display while retaining all source columns."""
+    """Build concise finding rows while retaining the full source for View JSON."""
     if not isinstance(data, list):
         return data
 
@@ -2020,6 +2201,7 @@ def prepare_findings_rows(data):
             prepared.append(item)
             continue
 
+        source_row = dict(item)
         row = dict(item)
         for column in FINDINGS_LINK_COLUMNS:
             values = row.get(column)
@@ -2029,6 +2211,9 @@ def prepare_findings_rows(data):
         if not isinstance(entities, list):
             entities = affected_entity_labels(row)
         row["affected_entities"] = unique_non_empty_strings(entities)
+        for column in FINDINGS_METADATA_COLUMNS:
+            if column in row:
+                row[column] = FINDINGS_METADATA_SUMMARISERS[column](row[column])
         has_finding_id = "finding_id" in row
         finding_id = row.pop("finding_id", None)
 
@@ -2039,6 +2224,7 @@ def prepare_findings_rows(data):
         for column, value in row.items():
             if column not in ordered:
                 ordered[column] = value
+        ordered[VIEW_JSON_SOURCE_ROW_KEY] = source_row
         if has_finding_id:
             ordered["finding_id"] = finding_id
         prepared.append(ordered)
@@ -2182,10 +2368,15 @@ def generate_html_table(original_data):
 
         data = []
         for row in data_for_use:
+            source_row = row.get(VIEW_JSON_SOURCE_ROW_KEY, row)
             new_row = OrderedDict(
-                [("json_string", encode_json_action_payload(row))]
+                [("json_string", encode_json_action_payload(source_row))]
             )
-            new_row.update(row)
+            new_row.update(
+                (key, value)
+                for key, value in row.items()
+                if key != VIEW_JSON_SOURCE_ROW_KEY
+            )
             data.append(new_row)
 
         html_table = json2html.convert(json=data)
