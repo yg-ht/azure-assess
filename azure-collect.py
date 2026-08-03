@@ -2578,6 +2578,43 @@ def load_current_dataset(prefix):
     return load_source_records(prefix, current_run_only=True)
 
 
+def upstream_source_skip_reason(source):
+    """Classify why a parameter source supplied no records in this run."""
+    statuses = (
+        COLLECTION_MANIFEST.endpoint_statuses(source)
+        if COLLECTION_MANIFEST is not None
+        else []
+    )
+    priority = (
+        ("unauthorised", "upstream_source_unauthorised"),
+        ("failed", "upstream_source_failed"),
+        ("not_attempted", "upstream_source_not_attempted"),
+        ("skipped", "upstream_source_skipped"),
+        ("empty", "upstream_source_returned_no_data"),
+        ("not_applicable", "upstream_source_not_applicable"),
+    )
+    reason_code = next(
+        (code for status, code in priority if status in statuses),
+        "upstream_source_unavailable",
+    )
+    return reason_code, statuses
+
+
+def record_parameter_endpoint_skip(endpoint, reason_code, reason, reason_details=None):
+    """Record one structured reason for omitting a parameterised endpoint."""
+    if COLLECTION_MANIFEST is None:
+        return
+    COLLECTION_MANIFEST.record_skipped_endpoint(
+        endpoint["name"],
+        "parameterised",
+        endpoint["cli_command"],
+        reason,
+        endpoint_identifier=endpoint_output_prefix(endpoint),
+        reason_code=reason_code,
+        reason_details=reason_details,
+    )
+
+
 def merge_role_definition_dataset(cache_path=None):
     """Create the compatibility role-definition dataset from cached built-ins and live custom roles."""
     custom_roles = load_current_dataset("az_role_definition_custom_list")
@@ -2931,18 +2968,20 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
             print(f"[DEBUG] Processing endpoint: {name}")
             print(f"[DEBUG] Required parameters and sources: {required_param_sources}")
 
+        raw_source_records = {}
         source_records = {}
 
         sources_needed = sorted(set(required_param_sources.values()))
 
         for source in sources_needed:
+            raw_source_records[source] = load_source_records(
+                source,
+                current_run_only=current_run_only,
+            )
             source_records[source] = filter_source_records_for_endpoint(
                 endpoint,
                 source,
-                load_source_records(
-                    source,
-                    current_run_only=current_run_only,
-                ),
+                raw_source_records[source],
             )
 
             if DEBUG:
@@ -2968,14 +3007,60 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
 
         if missing_params:
             print(f"[~] Skipping {name}: Missing required parameters: {missing_params}")
-            if COLLECTION_MANIFEST is not None:
-                COLLECTION_MANIFEST.record_skipped_endpoint(
-                    name,
-                    "parameterised",
-                    cli_template,
-                    f"Missing required parameters: {', '.join(missing_params)}",
-                    endpoint_identifier=endpoint_output_prefix(endpoint),
-                )
+            missing_sources = sorted(
+                {required_param_sources[param] for param in missing_params}
+            )
+            source_diagnostics = {}
+            reason_codes = []
+            for source in missing_sources:
+                if not raw_source_records.get(source):
+                    reason_code, statuses = upstream_source_skip_reason(source)
+                elif not source_records.get(source):
+                    reason_code = "no_applicable_source_records"
+                    statuses = (
+                        COLLECTION_MANIFEST.endpoint_statuses(source)
+                        if COLLECTION_MANIFEST is not None
+                        else []
+                    )
+                else:
+                    reason_code = "required_parameter_missing"
+                    statuses = (
+                        COLLECTION_MANIFEST.endpoint_statuses(source)
+                        if COLLECTION_MANIFEST is not None
+                        else []
+                    )
+                reason_codes.append(reason_code)
+                source_diagnostics[source] = {
+                    "collection_statuses": statuses,
+                    "raw_record_count": len(raw_source_records.get(source, [])),
+                    "applicable_record_count": len(source_records.get(source, [])),
+                }
+
+            reason_priority = (
+                "upstream_source_unauthorised",
+                "upstream_source_failed",
+                "upstream_source_not_attempted",
+                "upstream_source_skipped",
+                "upstream_source_returned_no_data",
+                "upstream_source_not_applicable",
+                "upstream_source_unavailable",
+                "no_applicable_source_records",
+                "required_parameter_missing",
+            )
+            primary_reason = next(
+                (code for code in reason_priority if code in reason_codes),
+                "required_parameter_missing",
+            )
+            record_parameter_endpoint_skip(
+                endpoint,
+                primary_reason,
+                f"Missing required parameters: {', '.join(missing_params)}",
+                {
+                    "parameters": missing_params,
+                    "sources": source_diagnostics,
+                    "contributing_reason_codes": sorted(set(reason_codes)),
+                },
+            )
             continue
 
         from collections import defaultdict
@@ -3013,14 +3098,17 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
 
             if not grouped_records:
                 print(f"[~] Skipping {name}: Missing usable parameter records from source: {source}")
-                if COLLECTION_MANIFEST is not None:
-                    COLLECTION_MANIFEST.record_skipped_endpoint(
-                        name,
-                        "parameterised",
-                        cli_template,
-                        f"Missing usable parameter records from source: {source}",
-                        endpoint_identifier=endpoint_output_prefix(endpoint),
-                    )
+                record_parameter_endpoint_skip(
+                    endpoint,
+                    "no_usable_parameter_records",
+                    f"Missing usable parameter records from source: {source}",
+                    {
+                        "source": source,
+                        "parameters": params_in_group,
+                        "raw_record_count": len(raw_source_records.get(source, [])),
+                        "applicable_record_count": len(source_records.get(source, [])),
+                    },
+                )
                 zipped_groups = []
                 break
 
@@ -3038,6 +3126,23 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
             for d in combo:
                 merged.update(d)
             param_combinations.append(merged)
+
+        try:
+            cli_template.format(
+                **{param: "validation-value" for param in required_params}
+            )
+        except (KeyError, ValueError) as exc:
+            print(f"[!] Skipping {name}: Invalid parameter template: {exc}")
+            record_parameter_endpoint_skip(
+                endpoint,
+                "parameter_template_mismatch",
+                f"Invalid parameter template: {exc}",
+                {
+                    "required_parameters": required_params,
+                    "exception_type": type(exc).__name__,
+                },
+            )
+            continue
 
         max_parameter_sets = endpoint.get("max_parameter_sets")
         if max_parameter_sets is not None:
@@ -3335,13 +3440,43 @@ if __name__ == "__main__":
     )
 
     collection_successful = False
+    collection_completed = False
     manifest_written = False
+    unattempted_reason_code = None
+    unattempted_reason = None
+    unattempted_reason_details = None
     try:
         collection_successful = execute_collection(args, max_workers)
+        collection_completed = True
+    except KeyboardInterrupt:
+        unattempted_reason_code = "collection_interrupted"
+        unattempted_reason = "Collection was interrupted by the operator before this endpoint was reached"
+        unattempted_reason_details = {"termination_type": "KeyboardInterrupt"}
+        raise
+    except BaseException as exc:
+        unattempted_reason_code = "collection_terminated_by_exception"
+        unattempted_reason = (
+            "Collection terminated before this endpoint was reached: "
+            f"{type(exc).__name__}: {str(exc)[:500]}"
+        )
+        unattempted_reason_details = {"termination_type": type(exc).__name__}
+        raise
     finally:
+        if collection_completed:
+            unattempted_reason_code = "collector_outcome_not_recorded"
+            unattempted_reason = (
+                "Collector completed without recording an outcome for this endpoint"
+            )
+            unattempted_reason_details = {
+                "collection_completed": True,
+                "classification": "internal_instrumentation_defect",
+            }
         try:
             manifest_path = COLLECTION_MANIFEST.write(
-                execution_successful=collection_successful
+                execution_successful=collection_successful,
+                unattempted_reason_code=unattempted_reason_code,
+                unattempted_reason=unattempted_reason,
+                unattempted_reason_details=unattempted_reason_details,
             )
             manifest_written = True
             print(f"[+] Saved collection manifest: {manifest_path}")

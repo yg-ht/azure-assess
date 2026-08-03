@@ -70,6 +70,27 @@ FINDING_STATUS_OPTIONS = OrderedDict(
     ]
 )
 
+OMISSION_REASON_LABELS = {
+    "upstream_source_failed": "Upstream source collection failed",
+    "upstream_source_unauthorised": "Upstream source was unauthorised",
+    "upstream_source_not_attempted": "Upstream source was not attempted",
+    "upstream_source_skipped": "Upstream source was skipped",
+    "upstream_source_returned_no_data": "Upstream source returned no records",
+    "upstream_source_not_applicable": "Upstream source was not applicable",
+    "upstream_source_unavailable": "Upstream source was unavailable",
+    "required_parameter_missing": "Required field was missing from source records",
+    "no_applicable_source_records": "No source records applied to this endpoint",
+    "no_usable_parameter_records": "No usable parameter records were available",
+    "parameter_template_mismatch": "Collector parameter-template defect",
+    "skip_reason_unclassified": "Skip reason was not classified",
+    "collection_interrupted": "Collection was interrupted by the operator",
+    "collection_terminated_by_exception": "Collection terminated with an exception",
+    "collector_outcome_not_recorded": "Collector did not record an endpoint outcome",
+    "legacy_missing_required_parameters": "Required parameters were unavailable",
+    "legacy_no_usable_parameter_records": "No usable parameter records were available",
+    "legacy_reason_unavailable": "Reason unavailable in legacy manifest",
+}
+
 FINDINGS_PRIMARY_COLUMNS = (
     "title",
     "severity",
@@ -542,17 +563,62 @@ HTML_TEMPLATE = """
         {% if summary_cards.requests %}
         <section class="dashboard-section mt-4" aria-labelledby="requestHealthHeading">
           <h3 id="requestHealthHeading" class="h4">Azure Request Health</h3>
-          <p class="dashboard-muted">Direct outcomes from Azure request attempts in the latest collection manifest. Endpoint definitions that were not attempted are reported separately and excluded from the chart.</p>
+          <p class="dashboard-muted">Direct outcomes from Azure request attempts and explicit reasons why selected endpoint definitions were omitted. These counts describe collection activity and use a different denominator from assessment checks.</p>
           {{ dashboard_card_grid(summary_cards.requests) }}
-        {% if request_chart_data %}
-        <div class="card dashboard-chart-card">
+        {% if collection_requests and collection_requests.omission_groups %}
+        <div class="card dashboard-chart-card mt-4">
           <div class="card-body">
-            <h4 class="h5">Request Attempt Distribution</h4>
-            <p class="dashboard-muted mb-3">Percentages use attempted Azure requests as their denominator.</p>
-            <div class="dashboard-chart-wrap">
-              <canvas id="requestsPieChart" class="dashboard-chart-canvas"></canvas>
+            <details class="dashboard-request-details">
+            <summary><span class="h5">Endpoint Omission Reasons</span></summary>
+            <p class="dashboard-muted my-3">Selected endpoint definitions are grouped by the recorded reason they were deliberately skipped or reached finalisation without an outcome.</p>
+            <div class="table-responsive">
+              <table id="endpointOmissionsTable" class="table table-striped align-middle dashboard-request-table dashboard-filterable-table">
+                <thead>
+                  <tr>
+                    {% for heading in ["Status", "Reason", "Count", "Endpoints", "Recorded Details"] %}
+                    <th aria-sort="none">
+                      <div class="dashboard-column-heading">
+                        <button type="button" class="dashboard-sort-button" data-column-index="{{ loop.index0 }}" aria-label="Sort by {{ heading }}">{{ heading }}</button>
+                      </div>
+                      {% if loop.index0 < 3 %}
+                      <select class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" data-filter-mode="exact" aria-label="Filter {{ heading }}">
+                        <option value="">All</option>
+                      </select>
+                      {% else %}
+                      <input class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" data-filter-mode="contains" type="search" aria-label="Filter {{ heading }}" placeholder="Filter">
+                      {% endif %}
+                    </th>
+                    {% endfor %}
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for omission in collection_requests.omission_groups %}
+                  <tr>
+                    <td>{{ omission.status }}</td>
+                    <td>{{ omission.reason_label }}</td>
+                    <td>{{ omission.count }}</td>
+                    <td>
+                      <details>
+                        <summary>{{ omission.endpoints|length }} endpoints</summary>
+                        <ul>
+                          {% for endpoint in omission.endpoints %}<li>{{ endpoint }}</li>{% endfor %}
+                        </ul>
+                      </details>
+                    </td>
+                    <td>
+                      <details>
+                        <summary>{{ omission.details|length }} recorded details</summary>
+                        <ul>
+                          {% for detail in omission.details %}<li><code>{{ detail }}</code></li>{% endfor %}
+                        </ul>
+                      </details>
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
             </div>
-            <div id="requestsPieLegend" class="chart-legend"></div>
+            </details>
           </div>
         </div>
         {% endif %}
@@ -563,7 +629,7 @@ HTML_TEMPLATE = """
             <summary><span class="h5">Unsuccessful Azure Requests</span></summary>
             <p class="dashboard-muted my-3">One row is shown for each failed or unauthorised logical execution in the latest collection manifest. Successful, empty and not-applicable outcomes are excluded.</p>
             <div class="table-responsive">
-              <table id="failedAzureRequestsTable" class="table table-striped align-middle dashboard-request-table">
+              <table id="failedAzureRequestsTable" class="table table-striped align-middle dashboard-request-table dashboard-filterable-table">
                 <thead>
                   <tr>
                     {% for heading in ["Endpoint", "Category", "Status", "Azure Error Code", "CLI Return Code", "Parameters", "Returned Error"] %}
@@ -854,7 +920,7 @@ HTML_TEMPLATE = """
     </script>
     {% endif %}
 
-    {% if dashboard and (findings_chart_data or request_chart_data) %}
+    {% if dashboard and findings_chart_data %}
     <script>
       (function() {
         function renderDashboardPie(canvasId, legendId, chartData) {
@@ -929,17 +995,14 @@ HTML_TEMPLATE = """
         {% if findings_chart_data %}
         renderDashboardPie('findingsPieChart', 'findingsPieLegend', {{ findings_chart_data|tojson }});
         {% endif %}
-        {% if request_chart_data %}
-        renderDashboardPie('requestsPieChart', 'requestsPieLegend', {{ request_chart_data|tojson }});
-        {% endif %}
       })();
     </script>
     {% endif %}
 
-    {% if dashboard and collection_requests and collection_requests.failures %}
+    {% if dashboard and collection_requests and (collection_requests.failures or collection_requests.omission_groups) %}
     <script>
       (function() {
-        const table = document.getElementById('failedAzureRequestsTable');
+        function initialiseDashboardTable(table) {
         if (!table || !table.tBodies.length) return;
         const body = table.tBodies[0];
         const headers = Array.from(table.tHead.rows[0].cells);
@@ -1013,6 +1076,9 @@ HTML_TEMPLATE = """
             applyFilters();
           });
         });
+        }
+
+        document.querySelectorAll('.dashboard-filterable-table').forEach(initialiseDashboardTable);
       })();
     </script>
     {% endif %}
@@ -1520,6 +1586,63 @@ def latest_collection_manifest():
     return manifest
 
 
+def endpoint_omission_reason(request_record):
+    """Return a stable reason code and label for an omitted endpoint."""
+    reason_code = str(request_record.get("reason_code") or "")
+    if not reason_code:
+        message = str(request_record.get("error") or "")
+        if request_record.get("status") == "skipped" and message.startswith(
+            "Missing required parameters:"
+        ):
+            reason_code = "legacy_missing_required_parameters"
+        elif request_record.get("status") == "skipped" and message.startswith(
+            "Missing usable parameter records from source:"
+        ):
+            reason_code = "legacy_no_usable_parameter_records"
+        else:
+            reason_code = "legacy_reason_unavailable"
+    return reason_code, OMISSION_REASON_LABELS.get(
+        reason_code,
+        reason_code.replace("_", " ").title(),
+    )
+
+
+def grouped_endpoint_omissions(records):
+    """Group omitted endpoint definitions by their structured operational reason."""
+    groups = {}
+    for record in records:
+        reason_code, reason_label = endpoint_omission_reason(record)
+        key = (str(record.get("status") or "unknown"), reason_code)
+        group = groups.setdefault(
+            key,
+            {
+                "status": key[0],
+                "reason_code": reason_code,
+                "reason_label": reason_label,
+                "count": 0,
+                "endpoints": [],
+                "details": [],
+            },
+        )
+        group["count"] += 1
+        endpoint_name = str(record.get("endpoint_name") or "Unknown")
+        category = str(record.get("category") or "Unknown")
+        group["endpoints"].append(f"{endpoint_name} ({category})")
+        detail = str(record.get("error") or "No reason was recorded")
+        reason_details = record.get("reason_details")
+        if isinstance(reason_details, dict) and reason_details:
+            detail += f" | {json.dumps(reason_details, sort_keys=True, default=str)}"
+        group["details"].append(detail)
+
+    for group in groups.values():
+        group["endpoints"] = sorted(set(group["endpoints"]), key=str.casefold)
+        group["details"] = sorted(set(group["details"]), key=str.casefold)
+    return sorted(
+        groups.values(),
+        key=lambda item: (item["status"], item["reason_label"].casefold()),
+    )
+
+
 def collection_request_summary():
     """Summarise mutually exclusive request and non-attempt outcomes."""
     manifest = latest_collection_manifest()
@@ -1527,6 +1650,7 @@ def collection_request_summary():
         return None
     status_counts = Counter()
     failures = []
+    omissions = []
     for request_record in manifest.get("endpoint_runs", []):
         if not isinstance(request_record, dict):
             continue
@@ -1545,6 +1669,8 @@ def collection_request_summary():
         if status == "failed" and is_not_applicable_error(response_message):
             status = "not_applicable"
         status_counts[status] += 1
+        if status in {"skipped", "not_attempted"}:
+            omissions.append(request_record)
         if status not in {"failed", "unauthorised"}:
             continue
         failures.append(
@@ -1597,6 +1723,7 @@ def collection_request_summary():
         "not_attempted": status_counts["not_attempted"],
         "unattempted": status_counts["skipped"] + status_counts["not_attempted"],
         "failures": failures,
+        "omission_groups": grouped_endpoint_omissions(omissions),
     }
 
 
@@ -1702,12 +1829,14 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
                 "detail": "Azure reported that the requested service or scope was not applicable",
             },
             {
-                "label": "Endpoints Not Attempted",
-                "value": collection_requests["unattempted"],
-                "detail": (
-                    f"{collection_requests['skipped']} skipped and "
-                    f"{collection_requests['not_attempted']} otherwise not attempted"
-                ),
+                "label": "Endpoint Definitions Skipped",
+                "value": collection_requests["skipped"],
+                "detail": "Deliberately omitted because a recorded prerequisite was unavailable or unusable",
+            },
+            {
+                "label": "Endpoint Outcomes Not Recorded",
+                "value": collection_requests["not_attempted"],
+                "detail": "Planned endpoints for which collection recorded no execution or deliberate skip outcome",
             },
         ])
     return {
@@ -2148,14 +2277,6 @@ def dashboard():
             {"label": "Insufficient Data", "value": findings["no_data_to_assess"], "color": "#ffc107"},
             {"label": "Not Implemented", "value": findings["not_implemented"], "color": "#6c757d"},
         ]
-    request_chart_data = None
-    if collection_requests is not None and collection_requests["attempted"]:
-        request_chart_data = [
-            {"label": "Returned Data", "value": collection_requests["success"], "color": "#198754"},
-            {"label": "Returned No Data", "value": collection_requests["empty"], "color": "#0dcaf0"},
-            {"label": "Failed", "value": collection_requests["failed"], "color": "#fd7e14"},
-            {"label": "Unauthorised", "value": collection_requests["unauthorised"], "color": "#6f42c1"},
-        ]
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
@@ -2166,7 +2287,6 @@ def dashboard():
         ),
         dashboard=True,
         findings_chart_data=findings_chart_data,
-        request_chart_data=request_chart_data,
         collection_requests=collection_requests,
         dataset_index=False,
     )

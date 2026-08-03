@@ -129,7 +129,7 @@ class CollectionManifestContentTests(unittest.TestCase):
             )
             manifest = recorder.finish()
 
-        self.assertEqual(manifest["schema_version"], "2.1")
+        self.assertEqual(manifest["schema_version"], "2.2")
         self.assertEqual(manifest["status"], "success")
         self.assertEqual(manifest["endpoint_runs"][0]["status"], "not_applicable")
         self.assertEqual(manifest["errors"], [])
@@ -252,10 +252,42 @@ class CollectionManifestRecorderTests(unittest.TestCase):
                 "base",
             )
 
-            manifest = recorder.finish(execution_successful=False)
+            manifest = recorder.finish(
+                execution_successful=False,
+                unattempted_reason_code="collection_interrupted",
+                unattempted_reason="Collection was interrupted by the operator",
+                unattempted_reason_details={"termination_type": "KeyboardInterrupt"},
+            )
 
         self.assertEqual(manifest["status"], "failed")
         self.assertEqual(manifest["endpoint_runs"][0]["status"], "not_attempted")
+        self.assertEqual(
+            manifest["endpoint_runs"][0]["reason_code"],
+            "collection_interrupted",
+        )
+        self.assertEqual(
+            manifest["endpoint_runs"][0]["reason_details"]["termination_type"],
+            "KeyboardInterrupt",
+        )
+
+    def test_completed_collection_without_endpoint_outcome_is_flagged_as_defect(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-instrumentation-gap",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            recorder.register_endpoints(
+                [{"name": "Resources", "cli_command": "az resource list"}],
+                "base",
+            )
+
+            manifest = recorder.finish()
+
+        endpoint_run = manifest["endpoint_runs"][0]
+        self.assertEqual(endpoint_run["status"], "not_attempted")
+        self.assertEqual(endpoint_run["reason_code"], "collector_outcome_not_recorded")
+        self.assertIn("without recording", endpoint_run["error"])
 
     def test_skipped_endpoint_does_not_make_otherwise_successful_run_partial(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -265,12 +297,18 @@ class CollectionManifestRecorderTests(unittest.TestCase):
                 "parameterised",
                 "az storage account keys list --account-name {name}",
                 "No storage accounts were collected",
+                reason_code="upstream_source_returned_no_data",
+                reason_details={"source": "az_storage_account_list"},
             )
 
             manifest = recorder.finish()
 
         self.assertEqual(manifest["status"], "success")
         self.assertEqual(manifest["endpoint_runs"][0]["status"], "skipped")
+        self.assertEqual(
+            manifest["endpoint_runs"][0]["reason_code"],
+            "upstream_source_returned_no_data",
+        )
 
     def test_manifest_write_replaces_existing_file_and_leaves_no_temporary_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -308,6 +346,23 @@ class CollectionManifestRecorderTests(unittest.TestCase):
 
         manifest["endpoint_runs"] = [{"status": "not_applicable"}]
         with self.assertRaisesRegex(ValueError, "Invalid endpoint execution status"):
+            validate_manifest(manifest)
+
+    def test_manifest_validation_keeps_schema_2_1_omissions_readable_without_reasons(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-legacy-omission",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            manifest = recorder.finish()
+
+        manifest["schema_version"] = "2.1"
+        manifest["endpoint_runs"] = [{"status": "skipped"}]
+        validate_manifest(manifest)
+
+        manifest["schema_version"] = "2.2"
+        with self.assertRaisesRegex(ValueError, "valid reason code"):
             validate_manifest(manifest)
 
     def test_concurrent_execution_records_are_not_lost(self):

@@ -364,7 +364,9 @@ Notes:
 - The Flask app listens on `127.0.0.1:5000`.
 - The dashboard shows the latest dataset snapshot by default and allows switching to older timestamped versions where available.
 - If `azure-findings-flat.json` exists in the input directory, findings are also available through the dashboard.
-- The dashboard reports failed and unauthorised Azure requests directly from the latest collection manifest. Its failure table shows the endpoint, request category, parameter context, Azure error code, Azure CLI return code, and returned error message. These request statistics are independent of the permission-baseline warning and do not infer how many findings checks were affected.
+- The dashboard uses one pie chart for mutually exclusive finding-check outcomes. Azure request statistics use a different denominator and are therefore shown as cards and tables rather than mixed into that chart.
+- Failed and unauthorised Azure requests are reported directly from the latest collection manifest. The failure table shows the endpoint, request category, parameter context, Azure error code, Azure CLI return code, and returned error message. These statistics are independent of the permission-baseline warning and do not infer how many finding checks were affected.
+- A collapsed endpoint-omission table groups deliberately skipped endpoints and planned endpoints without a recorded outcome by their operational reason. New manifests distinguish upstream failures, authorisation failures, empty or unavailable source data, unusable parameters, collector configuration defects, interruptions, exceptions, and missing collector instrumentation. Older manifests remain readable and are labelled when the original reason was not recorded.
 
 ## Example End-to-End Usage
 

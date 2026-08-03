@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
-MANIFEST_SCHEMA_VERSION = "2.1"
-SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {"2.0", MANIFEST_SCHEMA_VERSION}
+MANIFEST_SCHEMA_VERSION = "2.2"
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {"2.0", "2.1", MANIFEST_SCHEMA_VERSION}
 MANIFEST_FILENAME_PREFIX = "azure-collection-manifest"
 MAX_ERROR_MESSAGE_CHARS = 1000
 VALID_RUN_STATUSES = {"running", "success", "partial", "failed"}
@@ -31,6 +31,25 @@ VALID_ENDPOINT_STATUSES = {
     "not_attempted",
 }
 LEGACY_ENDPOINT_STATUSES = VALID_ENDPOINT_STATUSES - {"not_applicable"}
+VALID_SKIPPED_REASON_CODES = {
+    "upstream_source_failed",
+    "upstream_source_unauthorised",
+    "upstream_source_not_attempted",
+    "upstream_source_skipped",
+    "upstream_source_returned_no_data",
+    "upstream_source_not_applicable",
+    "upstream_source_unavailable",
+    "required_parameter_missing",
+    "no_applicable_source_records",
+    "no_usable_parameter_records",
+    "parameter_template_mismatch",
+    "skip_reason_unclassified",
+}
+VALID_NOT_ATTEMPTED_REASON_CODES = {
+    "collection_interrupted",
+    "collection_terminated_by_exception",
+    "collector_outcome_not_recorded",
+}
 NOT_APPLICABLE_ERROR_MARKERS = (
     "network watcher is not enabled for region",
 )
@@ -225,10 +244,17 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
         else VALID_ENDPOINT_STATUSES
     )
     for endpoint_run in payload["endpoint_runs"]:
-        if endpoint_run.get("status") not in valid_endpoint_statuses:
+        endpoint_status = endpoint_run.get("status")
+        if endpoint_status not in valid_endpoint_statuses:
             raise ValueError(
-                f"Invalid endpoint execution status: {endpoint_run.get('status')}"
+                f"Invalid endpoint execution status: {endpoint_status}"
             )
+        if schema_version == MANIFEST_SCHEMA_VERSION and endpoint_status == "skipped":
+            if endpoint_run.get("reason_code") not in VALID_SKIPPED_REASON_CODES:
+                raise ValueError("Skipped endpoint is missing a valid reason code")
+        if schema_version == MANIFEST_SCHEMA_VERSION and endpoint_status == "not_attempted":
+            if endpoint_run.get("reason_code") not in VALID_NOT_ATTEMPTED_REASON_CODES:
+                raise ValueError("Unattempted endpoint is missing a valid reason code")
     for dataset in payload["datasets"]:
         if not re.fullmatch(r"[a-f0-9]{64}", str(dataset.get("sha256") or "")):
             raise ValueError(
@@ -293,6 +319,18 @@ class CollectionManifestRecorder:
         """Update run context after authentication establishes the active account."""
         with self._lock:
             self.context.update(deepcopy(dict(values)))
+
+    def endpoint_statuses(self, endpoint_identifier: str) -> List[str]:
+        """Return observed statuses for one stable endpoint identifier."""
+        wanted = endpoint_id(endpoint_identifier)
+        with self._lock:
+            return sorted(
+                {
+                    str(record.get("status"))
+                    for record in self.endpoint_runs
+                    if record.get("endpoint_id") == wanted and record.get("status")
+                }
+            )
 
     def record_execution(
         self,
@@ -363,6 +401,8 @@ class CollectionManifestRecorder:
         command_template: str,
         reason: str,
         endpoint_identifier: Optional[str] = None,
+        reason_code: str = "skip_reason_unclassified",
+        reason_details: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """Record a selected endpoint that could not be executed."""
         record = {
@@ -378,6 +418,8 @@ class CollectionManifestRecorder:
             "result_count": None,
             "attempt_count": 0,
             "error": truncate_error_text(reason),
+            "reason_code": str(reason_code),
+            "reason_details": deepcopy(dict(reason_details or {})),
         }
         with self._lock:
             self.endpoint_runs.append(record)
@@ -433,12 +475,23 @@ class CollectionManifestRecorder:
             if limitation not in self.limitations:
                 self.limitations.append(limitation)
 
-    def finish(self, execution_successful: bool = True) -> Dict[str, Any]:
+    def finish(
+        self,
+        execution_successful: bool = True,
+        unattempted_reason_code: Optional[str] = None,
+        unattempted_reason: Optional[str] = None,
+        unattempted_reason_details: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Finalise planned endpoints and derive the overall run status."""
         with self._lock:
             if self.completed_at is not None:
                 return self._as_dict_locked()
 
+            fallback_reason_code = unattempted_reason_code or "collector_outcome_not_recorded"
+            fallback_reason = unattempted_reason or (
+                "Collector completed without recording an endpoint outcome"
+            )
+            fallback_reason_details = deepcopy(dict(unattempted_reason_details or {}))
             for key, planned in self._planned_endpoints.items():
                 if key in self._observed_endpoints:
                     continue
@@ -452,7 +505,9 @@ class CollectionManifestRecorder:
                         "returncode": None,
                         "result_count": None,
                         "attempt_count": 0,
-                        "error": "Selected endpoint was not attempted",
+                        "error": truncate_error_text(fallback_reason),
+                        "reason_code": fallback_reason_code,
+                        "reason_details": fallback_reason_details,
                     }
                 )
 
@@ -518,9 +573,20 @@ class CollectionManifestRecorder:
             "limitations": sorted(self.limitations),
         }
 
-    def write(self, execution_successful: bool = True) -> Path:
+    def write(
+        self,
+        execution_successful: bool = True,
+        unattempted_reason_code: Optional[str] = None,
+        unattempted_reason: Optional[str] = None,
+        unattempted_reason_details: Optional[Mapping[str, Any]] = None,
+    ) -> Path:
         """Atomically persist the final manifest beneath the selected output directory."""
-        payload = self.finish(execution_successful=execution_successful)
+        payload = self.finish(
+            execution_successful=execution_successful,
+            unattempted_reason_code=unattempted_reason_code,
+            unattempted_reason=unattempted_reason,
+            unattempted_reason_details=unattempted_reason_details,
+        )
         validate_manifest(payload)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         destination = self.output_dir / f"{MANIFEST_FILENAME_PREFIX}_{self.run_id}.json"

@@ -740,12 +740,19 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "category": "base",
                     "status": "not_attempted",
                     "returncode": None,
+                    "error": "Selected endpoint was not attempted",
                 },
                 {
                     "endpoint_name": "Skipped Endpoint",
                     "category": "parameterised",
                     "status": "skipped",
                     "returncode": None,
+                    "reason_code": "upstream_source_returned_no_data",
+                    "reason_details": {
+                        "source": "az_storage_account_list",
+                        "collection_statuses": ["empty"],
+                    },
+                    "error": "Missing required parameters: name",
                 },
                 {
                     "endpoint_name": "Successful Endpoint",
@@ -820,6 +827,14 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertEqual(requests["unattempted"], 2)
         self.assertEqual(requests["skipped"], 1)
         self.assertEqual(requests["not_attempted"], 1)
+        self.assertEqual(len(requests["omission_groups"]), 2)
+        self.assertEqual(
+            {group["reason_label"] for group in requests["omission_groups"]},
+            {
+                "Upstream source returned no records",
+                "Reason unavailable in legacy manifest",
+            },
+        )
         failed_card = next(
             card
             for card in cards["requests"]
@@ -854,39 +869,35 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertNotIn("Rows in azure-findings-flat.json", body)
         self.assertNotIn("Status: not_found", body)
         self.assertIn('"label": "Insufficient Data", "value": 3', body)
-        self.assertIn('"label": "Failed", "value": 1', body)
-        self.assertIn('"label": "Unauthorised", "value": 1', body)
-        self.assertNotIn('"label": "Not Applicable", "value": 2', body)
         self.assertIn("Finding Outcome Distribution", body)
-        self.assertIn("Request Attempt Distribution", body)
+        self.assertNotIn("Request Attempt Distribution", body)
         self.assertIn("findingsPieChart", body)
-        self.assertIn("requestsPieChart", body)
+        self.assertNotIn("requestsPieChart", body)
         finding_chart_call = body.split(
             "renderDashboardPie('findingsPieChart'",
             1,
         )[1].split(");", 1)[0]
-        request_chart_call = body.split(
-            "renderDashboardPie('requestsPieChart'",
-            1,
-        )[1].split(");", 1)[0]
         self.assertNotIn("Failed", finding_chart_call)
         self.assertNotIn("Unauthorised", finding_chart_call)
-        self.assertNotIn("Findings Raised", request_chart_call)
-        self.assertNotIn("Checks Passed", request_chart_call)
+        self.assertIn("Endpoint Omission Reasons", body)
+        self.assertIn("Upstream source returned no records", body)
+        self.assertIn("Reason unavailable in legacy manifest", body)
+        self.assertIn("Skipped Endpoint (parameterised)", body)
+        self.assertIn("Unattempted Endpoint (base)", body)
         self.assertIn("Unsuccessful Azure Requests", body)
         self.assertIn('<details class="dashboard-request-details">', body)
         self.assertNotIn('<details class="dashboard-request-details" open>', body)
         self.assertIn("dashboard-request-table", body)
         self.assertIn("--bs-table-color: var(--text-color)", body)
-        self.assertEqual(body.count('class="dashboard-sort-button"'), 7)
-        self.assertEqual(body.count('class="dashboard-column-filter"'), 7)
+        self.assertEqual(body.count('class="dashboard-sort-button"'), 12)
+        self.assertEqual(body.count('class="dashboard-column-filter"'), 12)
         self.assertEqual(
             body.count('<select class="dashboard-column-filter"'),
-            5,
+            8,
         )
         self.assertEqual(
             body.count('<input class="dashboard-column-filter"'),
-            2,
+            4,
         )
         self.assertIn('data-filter-mode="exact"', body)
         self.assertIn('data-filter-mode="contains"', body)
@@ -899,8 +910,6 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("AuthorizationFailed", body)
         self.assertIn("Principal cannot list storage account keys.", body)
         self.assertIn("Legacy manifest error message", body)
-        self.assertNotIn("Unattempted Endpoint", body)
-        self.assertNotIn("Skipped Endpoint", body)
         self.assertNotIn("Flow Logs (legacy manifest)", body)
         self.assertNotIn("Unavailable Service", body)
 
@@ -1436,6 +1445,114 @@ class CollectDataWithParamsTests(unittest.TestCase):
         azure_collect.DEBUG = False
         azure_collect.SOURCE_RECORD_CACHE.clear()
         azure_collect.SOURCE_FILE_INDEX_CACHE.clear()
+
+    def test_empty_upstream_collection_records_structured_skip_reason(self):
+        endpoint = {
+            "name": "Child Details",
+            "cli_command": "az child show --name {name}",
+            "required_params": {"name": "az_parent_list"},
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            recorder = azure_collect.CollectionManifestRecorder(
+                "20260402-000000",
+                output_dir,
+                project_dir=output_dir,
+            )
+            recorder.record_execution(
+                "Parents",
+                "base",
+                "az parent list",
+                "2026-04-02T00:00:00Z",
+                0.1,
+                0,
+                0,
+                endpoint_identifier="az_parent_list",
+            )
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "COLLECTION_MANIFEST", recorder):
+                azure_collect.collect_data_with_params([endpoint])
+
+            manifest = recorder.finish()
+
+        skipped = next(
+            item for item in manifest["endpoint_runs"]
+            if item["endpoint_name"] == "Child Details"
+        )
+        self.assertEqual(skipped["status"], "skipped")
+        self.assertEqual(skipped["reason_code"], "upstream_source_returned_no_data")
+        self.assertEqual(
+            skipped["reason_details"]["sources"]["az_parent_list"]["collection_statuses"],
+            ["empty"],
+        )
+
+    def test_filtered_upstream_records_are_classified_as_not_applicable(self):
+        endpoint = {
+            "name": "Storage Details",
+            "cli_command": "az storage show --name {name}",
+            "required_params": {"name": "az_resource_list"},
+            "required_source_types": {
+                "az_resource_list": ["Microsoft.Storage/storageAccounts"],
+            },
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            (output_dir / "az_resource_list_20260402-000000.json").write_text(
+                json.dumps(
+                    [{"name": "vm-one", "type": "Microsoft.Compute/virtualMachines"}]
+                ),
+                encoding="utf-8",
+            )
+            recorder = azure_collect.CollectionManifestRecorder(
+                "20260402-000000",
+                output_dir,
+                project_dir=output_dir,
+            )
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "COLLECTION_MANIFEST", recorder):
+                azure_collect.collect_data_with_params([endpoint])
+
+            manifest = recorder.finish()
+
+        skipped = manifest["endpoint_runs"][0]
+        self.assertEqual(skipped["status"], "skipped")
+        self.assertEqual(skipped["reason_code"], "no_applicable_source_records")
+        source_details = skipped["reason_details"]["sources"]["az_resource_list"]
+        self.assertEqual(source_details["raw_record_count"], 1)
+        self.assertEqual(source_details["applicable_record_count"], 0)
+
+    def test_invalid_parameter_template_records_collector_defect(self):
+        endpoint = {
+            "name": "Broken Child Details",
+            "cli_command": "az child show --name {unexpected}",
+            "required_params": {"name": "az_parent_list"},
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_dir = Path(temp_dir)
+            (output_dir / "az_parent_list_20260402-000000.json").write_text(
+                json.dumps([{"name": "parent-one"}]),
+                encoding="utf-8",
+            )
+            recorder = azure_collect.CollectionManifestRecorder(
+                "20260402-000000",
+                output_dir,
+                project_dir=output_dir,
+            )
+            azure_collect.OUTPUT_DIR = output_dir
+
+            with mock.patch.object(azure_collect, "COLLECTION_MANIFEST", recorder):
+                azure_collect.collect_data_with_params([endpoint])
+
+            manifest = recorder.finish()
+
+        skipped = manifest["endpoint_runs"][0]
+        self.assertEqual(skipped["status"], "skipped")
+        self.assertEqual(skipped["reason_code"], "parameter_template_mismatch")
 
     def test_apim_details_only_uses_apim_service_source_records(self):
         endpoint = next(
