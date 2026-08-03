@@ -46,6 +46,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from azure_assess.collection_manifest import (
     extract_azure_error_code,
+    interpreted_visibility_status,
     is_not_applicable_error,
     is_tenant_unavailable_error,
 )
@@ -1710,10 +1711,9 @@ def collection_request_summary():
         status_counts[status] += 1
         if status == "empty":
             verification = request_record.get("access_verification")
-            verification_status = (
-                verification.get("status")
-                if isinstance(verification, dict)
-                else "visibility_unverified"
+            verification_status = interpreted_visibility_status(
+                manifest.get("schema_version"),
+                verification,
             )
             if verification_status not in {
                 "access_verified",

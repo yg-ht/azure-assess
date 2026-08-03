@@ -16,14 +16,16 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
-MANIFEST_SCHEMA_VERSION = "2.4"
+MANIFEST_SCHEMA_VERSION = "2.5"
 SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {
     "2.0",
     "2.1",
     "2.2",
     "2.3",
+    "2.4",
     MANIFEST_SCHEMA_VERSION,
 }
+VISIBILITY_MANIFEST_SCHEMA_VERSIONS = {"2.4", MANIFEST_SCHEMA_VERSION}
 MANIFEST_FILENAME_PREFIX = "azure-collection-manifest"
 MAX_ERROR_MESSAGE_CHARS = 1000
 VALID_RUN_STATUSES = {"running", "success", "partial", "failed"}
@@ -70,6 +72,33 @@ VALID_VISIBILITY_STATUSES = {
     "scope_restricted",
     "visibility_unverified",
     "not_evaluated",
+}
+ENDPOINT_ACCESS_VERIFICATION_KEYS = {
+    "status",
+    "plane",
+    "scope",
+    "method",
+    "reason_code",
+    "required_permissions",
+}
+COLLECTION_ACCESS_VERIFICATION_KEYS = {"arm", "graph"}
+ARM_ACCESS_VERIFICATION_KEYS = {
+    "status",
+    "scope",
+    "method",
+    "reason_code",
+    "broad_read_granted",
+    "role_assignment_count",
+    "role_definition_count",
+    "deny_assignment_count",
+    "applicable_read_deny_count",
+}
+GRAPH_ACCESS_VERIFICATION_KEYS = {
+    "status",
+    "method",
+    "reason_code",
+    "token_type",
+    "granted_permissions",
 }
 NOT_APPLICABLE_ERROR_MARKERS = (
     "network watcher is not enabled for region",
@@ -169,10 +198,21 @@ def result_item_count(data: Any) -> int:
 
 def normalise_access_verification(value: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
     """Build a bounded, non-secret verification record for one endpoint."""
+    if value is not None and not isinstance(value, Mapping):
+        raise ValueError("Endpoint access verification must be an object")
     source = dict(value or {})
+    unknown_keys = sorted(set(source) - ENDPOINT_ACCESS_VERIFICATION_KEYS)
+    if unknown_keys:
+        raise ValueError(
+            "Endpoint access verification contains unsupported fields: "
+            + ", ".join(unknown_keys)
+        )
     status = str(source.get("status") or "not_evaluated")
     if status not in VALID_VISIBILITY_STATUSES:
         raise ValueError(f"Invalid endpoint visibility status: {status}")
+    required_permissions = source.get("required_permissions") or []
+    if not isinstance(required_permissions, (list, tuple, set)):
+        raise ValueError("Endpoint required permissions must be a list")
     return {
         "status": status,
         "plane": str(source.get("plane") or "unknown"),
@@ -180,9 +220,107 @@ def normalise_access_verification(value: Optional[Mapping[str, Any]]) -> Dict[st
         "method": str(source.get("method") or "not_evaluated"),
         "reason_code": str(source.get("reason_code") or "not_evaluated"),
         "required_permissions": sorted(
-            {str(item) for item in source.get("required_permissions", []) if item}
+            {str(item) for item in required_permissions if item}
         ),
     }
+
+
+def normalise_collection_access_verification(
+    value: Optional[Mapping[str, Any]],
+) -> Dict[str, Any]:
+    """Build the bounded run-level access evidence persisted in schema 2.5."""
+    if value is not None and not isinstance(value, Mapping):
+        raise ValueError("Collection access verification must be an object")
+    source = dict(value or {})
+    unknown_keys = sorted(set(source) - COLLECTION_ACCESS_VERIFICATION_KEYS)
+    if unknown_keys:
+        raise ValueError(
+            "Collection access verification contains unsupported fields: "
+            + ", ".join(unknown_keys)
+        )
+
+    arm = source.get("arm") or {}
+    graph = source.get("graph") or {}
+    if not isinstance(arm, Mapping) or not isinstance(graph, Mapping):
+        raise ValueError("Collection ARM and Graph access evidence must be objects")
+    arm_unknown = sorted(set(arm) - ARM_ACCESS_VERIFICATION_KEYS)
+    graph_unknown = sorted(set(graph) - GRAPH_ACCESS_VERIFICATION_KEYS)
+    if arm_unknown or graph_unknown:
+        fields = arm_unknown + graph_unknown
+        raise ValueError(
+            "Collection access verification contains unsupported evidence fields: "
+            + ", ".join(fields)
+        )
+
+    arm_status = str(arm.get("status") or "not_evaluated")
+    graph_status = str(graph.get("status") or "not_evaluated")
+    if arm_status not in VALID_VISIBILITY_STATUSES:
+        raise ValueError(f"Invalid ARM visibility status: {arm_status}")
+    if graph_status not in VALID_VISIBILITY_STATUSES:
+        raise ValueError(f"Invalid Graph visibility status: {graph_status}")
+    token_type = str(graph.get("token_type") or "unknown")
+    if token_type not in {"application", "delegated", "unknown"}:
+        raise ValueError(f"Invalid Graph token type: {token_type}")
+    granted_permissions = graph.get("granted_permissions") or []
+    if not isinstance(granted_permissions, (list, tuple, set)):
+        raise ValueError("Graph granted permissions must be a list")
+    if "broad_read_granted" in arm and not isinstance(
+        arm["broad_read_granted"], bool
+    ):
+        raise ValueError("ARM broad-read evidence must be a boolean")
+
+    counts = {}
+    for key in (
+        "role_assignment_count",
+        "role_definition_count",
+        "deny_assignment_count",
+        "applicable_read_deny_count",
+    ):
+        count = arm.get(key, 0)
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError(f"Invalid ARM access evidence count: {key}")
+        counts[key] = count
+
+    return {
+        "arm": {
+            "status": arm_status,
+            "scope": str(arm["scope"]) if arm.get("scope") else None,
+            "method": str(arm.get("method") or "not_evaluated"),
+            "reason_code": str(arm.get("reason_code") or "not_evaluated"),
+            "broad_read_granted": arm.get("broad_read_granted", False),
+            **counts,
+        },
+        "graph": {
+            "status": graph_status,
+            "method": str(graph.get("method") or "not_evaluated"),
+            "reason_code": str(graph.get("reason_code") or "not_evaluated"),
+            "token_type": token_type,
+            "granted_permissions": sorted(
+                {str(item) for item in granted_permissions if item}
+            ),
+        },
+    }
+
+
+def interpreted_visibility_status(
+    manifest_schema_version: Any,
+    verification: Optional[Mapping[str, Any]],
+) -> str:
+    """Interpret endpoint evidence conservatively across manifest revisions."""
+    if not isinstance(verification, Mapping):
+        return "visibility_unverified"
+    status = str(verification.get("status") or "visibility_unverified")
+    if status not in VALID_VISIBILITY_STATUSES:
+        return "visibility_unverified"
+    if (
+        str(manifest_schema_version or "") == "2.4"
+        and verification.get("method") == "arm_effective_permissions"
+        and status in {"access_verified", "scope_restricted"}
+    ):
+        # Schema 2.4 used an undocumented subscription-level permissions call
+        # and did not account for deny assignments, so it cannot prove access.
+        return "visibility_unverified"
+    return status
 
 
 def sha256_file(path: Path) -> str:
@@ -293,10 +431,12 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
         raise ValueError("Collection manifest endpoint_runs must be a list")
     if not isinstance(payload.get("datasets"), list):
         raise ValueError("Collection manifest datasets must be a list")
-    if schema_version == MANIFEST_SCHEMA_VERSION and not isinstance(
+    if schema_version in VISIBILITY_MANIFEST_SCHEMA_VERSIONS and not isinstance(
         payload.get("access_verification"), Mapping
     ):
         raise ValueError("Collection manifest access_verification must be an object")
+    if schema_version == MANIFEST_SCHEMA_VERSION:
+        normalise_collection_access_verification(payload["access_verification"])
     if schema_version == "2.0":
         valid_endpoint_statuses = LEGACY_ENDPOINT_STATUSES
     elif schema_version in {"2.1", "2.2"}:
@@ -310,7 +450,7 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
                 f"Invalid endpoint execution status: {endpoint_status}"
             )
         if (
-            schema_version in {"2.2", "2.3", MANIFEST_SCHEMA_VERSION}
+            schema_version in {"2.2", "2.3", "2.4", MANIFEST_SCHEMA_VERSION}
             and endpoint_status == "skipped"
         ):
             valid_reason_codes = (
@@ -321,12 +461,12 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
             if endpoint_run.get("reason_code") not in valid_reason_codes:
                 raise ValueError("Skipped endpoint is missing a valid reason code")
         if (
-            schema_version in {"2.2", "2.3", MANIFEST_SCHEMA_VERSION}
+            schema_version in {"2.2", "2.3", "2.4", MANIFEST_SCHEMA_VERSION}
             and endpoint_status == "not_attempted"
         ):
             if endpoint_run.get("reason_code") not in VALID_NOT_ATTEMPTED_REASON_CODES:
                 raise ValueError("Unattempted endpoint is missing a valid reason code")
-        if schema_version == MANIFEST_SCHEMA_VERSION:
+        if schema_version in VISIBILITY_MANIFEST_SCHEMA_VERSIONS:
             verification = endpoint_run.get("access_verification")
             if not isinstance(verification, Mapping):
                 raise ValueError("Endpoint execution is missing access verification")
@@ -361,10 +501,7 @@ class CollectionManifestRecorder:
         self.datasets: List[Dict[str, Any]] = []
         self.errors: List[Dict[str, Any]] = []
         self.limitations: List[str] = []
-        self.access_verification: Dict[str, Any] = {
-            "arm": {"status": "not_evaluated"},
-            "graph": {"status": "not_evaluated"},
-        }
+        self.access_verification = normalise_collection_access_verification(None)
         self._planned_endpoints: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._observed_endpoints = set()
         self._lock = threading.Lock()
@@ -403,7 +540,9 @@ class CollectionManifestRecorder:
     def set_access_verification(self, values: Mapping[str, Any]) -> None:
         """Persist non-secret collection-scope authorisation evidence."""
         with self._lock:
-            self.access_verification = deepcopy(dict(values))
+            self.access_verification = normalise_collection_access_verification(
+                values
+            )
 
     def endpoint_statuses(self, endpoint_identifier: str) -> List[str]:
         """Return observed statuses for one stable endpoint identifier."""

@@ -129,18 +129,70 @@ REQUIRED_CUSTOM_ROLE_DATA_ACTIONS = {
 }
 
 GRAPH_ENDPOINT_PERMISSION_ALTERNATIVES = {
-    "Active Directory Applications": ({"Application.Read.All", "Directory.Read.All"},),
-    "Active Directory Groups": ({"Group.Read.All", "Directory.Read.All"},),
-    "Active Directory Service Principals": ({"Application.Read.All", "Directory.Read.All"},),
-    "Active Directory Users": ({"User.Read.All", "Directory.Read.All"},),
-    "Graph Conditional Access Policies": ({"Policy.Read.All"},),
-    "Graph Named Locations": ({"Policy.Read.All"},),
-    "Graph Authorization Policy": ({"Policy.Read.All"},),
-    "Graph Security Defaults Policy": ({"Policy.Read.All"},),
-    "Graph Directory Roles": ({"RoleManagement.Read.Directory", "Directory.Read.All"},),
-    "Graph Directory Role Assignments": ({"RoleManagement.Read.All", "RoleManagement.Read.Directory", "Directory.Read.All"},),
+    "Active Directory Applications": ({
+        "Application.Read.All",
+        "Application.ReadWrite.All",
+        "Application.ReadWrite.OwnedBy",
+        "Directory.Read.All",
+        "Directory.ReadWrite.All",
+    },),
+    "Active Directory Groups": ({
+        "Group.Read.All",
+        "Group.ReadWrite.All",
+        "Directory.Read.All",
+        "Directory.ReadWrite.All",
+    },),
+    "Active Directory Service Principals": ({
+        "Application.Read.All",
+        "Application.ReadWrite.All",
+        "Application.ReadWrite.OwnedBy",
+        "Directory.Read.All",
+        "Directory.ReadWrite.All",
+    },),
+    "Active Directory Users": ({
+        "User.Read.All",
+        "User.ReadWrite.All",
+        "Directory.Read.All",
+        "Directory.ReadWrite.All",
+    },),
+    "Graph Conditional Access Policies": ({
+        "Policy.Read.All",
+        "Policy.Read.ConditionalAccess",
+        "Policy.ReadWrite.ConditionalAccess",
+    },),
+    "Graph Named Locations": ({
+        "Policy.Read.All",
+        "Policy.Read.ConditionalAccess",
+        "Policy.ReadWrite.ConditionalAccess",
+    },),
+    "Graph Authorization Policy": ({
+        "Policy.Read.All",
+        "Policy.ReadWrite.Authorization",
+    },),
+    "Graph Security Defaults Policy": ({
+        "Policy.Read.All",
+        "Policy.ReadWrite.SecurityDefaults",
+    },),
+    "Graph Directory Roles": ({
+        "RoleManagement.Read.Directory",
+        "Directory.Read.All",
+        "Directory.ReadWrite.All",
+        "RoleManagement.ReadWrite.Directory",
+    },),
+    "Graph Directory Role Assignments": ({
+        "RoleManagement.Read.All",
+        "RoleManagement.Read.Directory",
+        "Directory.Read.All",
+        "Directory.ReadWrite.All",
+        "RoleManagement.ReadWrite.Directory",
+    },),
     "Graph User Registration Details": ({"AuditLog.Read.All"},),
-    "Graph Group Settings": ({"Directory.Read.All"},),
+    "Graph Group Settings": ({
+        "GroupSettings.Read.All",
+        "GroupSettings.ReadWrite.All",
+        "Directory.Read.All",
+        "Directory.ReadWrite.All",
+    },),
 }
 ARM_SCOPE_RESTRICTED_ENDPOINTS = {
     "Billing Accounts",
@@ -1852,8 +1904,8 @@ def get_current_principal_context(subscription_id=None):
     }, None
 
 
-def semantic_permission_blocks(payload):
-    """Return Azure effective-permission blocks from common response wrappers."""
+def collection_records(payload):
+    """Return dictionary records from a list or a common value[] wrapper."""
     if isinstance(payload, dict) and isinstance(payload.get("value"), list):
         payload = payload["value"]
     if not isinstance(payload, list):
@@ -1861,73 +1913,225 @@ def semantic_permission_blocks(payload):
     return [item for item in payload if isinstance(item, dict)]
 
 
+def arm_action_pattern_may_include_reads(action):
+    """Conservatively identify an ARM action pattern that can include reads."""
+    pattern = str(action or "").strip().lower()
+    if not pattern:
+        return False
+    final_segment = pattern.rsplit("/", 1)[-1]
+    if final_segment in {"write", "delete", "action"}:
+        return False
+    return True
+
+
 def block_grants_unrestricted_arm_reads(block):
-    """Return whether one effective-permission block grants every ARM read action."""
-    actions = {str(item).strip().lower() for item in block.get("actions", [])}
+    """Return whether one role permission block grants every ARM read action."""
+    actions = {
+        str(item).strip().lower() for item in (block.get("actions") or [])
+    }
     not_actions = {
-        str(item).strip().lower() for item in block.get("notActions", [])
+        str(item).strip().lower() for item in (block.get("notActions") or [])
     }
     broad_read = bool(actions.intersection({"*", "*/read"}))
     read_exclusions = {
-        item
-        for item in not_actions
-        if item == "*" or item.endswith("/read") or item == "*/read"
+        item for item in not_actions if arm_action_pattern_may_include_reads(item)
     }
     return broad_read and not read_exclusions
 
 
-def collect_automatic_access_verification():
-    """Collect non-secret ARM and Graph access evidence without prompting."""
-    subscription_id = AUTH_CONFIG.get("subscription_id")
-    arm_scope = f"/subscriptions/{subscription_id}" if subscription_id else None
-    arm_record = {
-        "status": "visibility_unverified",
-        "scope": arm_scope,
-        "method": "arm_effective_permissions",
-        "reason_code": "subscription_scope_unavailable",
-        "broad_read_granted": False,
-        "permission_block_count": 0,
+def assigned_role_definitions(role_assignments):
+    """Load role definitions for unconditional assignments relevant to the caller."""
+    definitions = []
+    errors = []
+    definition_ids = {
+        str(assignment.get("roleDefinitionId"))
+        for assignment in role_assignments
+        if assignment.get("roleDefinitionId") and not assignment.get("condition")
     }
-    if subscription_id:
-        permissions_url = (
-            "https://management.azure.com"
-            f"/subscriptions/{subscription_id}"
-            "/providers/Microsoft.Authorization/permissions"
-            "?api-version=2022-04-01"
-        )
-        permissions, permissions_error = run_json_command(
-            "az rest --method get "
-            f"--url {shell_quote(permissions_url)} "
+    for definition_id in sorted(definition_ids):
+        definition_name = definition_id.rstrip("/").split("/")[-1]
+        payload, error = run_json_command(
+            "az role definition list "
+            f"--name {shell_quote(definition_name)} "
             "--output json"
         )
-        blocks = semantic_permission_blocks(permissions)
-        broad_read_granted = any(
-            block_grants_unrestricted_arm_reads(block) for block in blocks
+        if error:
+            errors.append(error)
+            continue
+        definitions.extend(collection_records(payload))
+    return definitions, errors
+
+
+def deny_permission_may_block_reads(permission):
+    """Conservatively identify a deny permission that could remove ARM reads."""
+    actions = {
+        str(item).strip().lower()
+        for item in (permission.get("actions") or [])
+        if item
+    }
+    not_actions = {
+        str(item).strip().lower()
+        for item in (permission.get("notActions") or [])
+        if item
+    }
+    for action in actions:
+        if not arm_action_pattern_may_include_reads(action):
+            continue
+        if action.endswith("/read"):
+            if not any(fnmatch.fnmatchcase(action, exclusion) for exclusion in not_actions):
+                return True
+            continue
+        if "*" not in action:
+            # Unknown control-plane operations are treated conservatively.
+            return True
+        if action == "*" and not_actions.intersection({"*", "*/read"}):
+            continue
+        if action.endswith("/*"):
+            read_exclusion = f"{action}/read"
+            if read_exclusion in not_actions:
+                continue
+        return True
+    return False
+
+
+def deny_assignment_read_effect(deny_assignments, principal_ids, groups_complete):
+    """Return whether an applicable read deny exists and evaluation was complete."""
+    all_principals_id = "00000000-0000-0000-0000-000000000000"
+    known_ids = {str(item).lower() for item in principal_ids if item}
+    evaluation_complete = True
+    applicable_read_denies = 0
+
+    for assignment in deny_assignments:
+        properties = assignment.get("properties")
+        if not isinstance(properties, dict):
+            properties = assignment
+        permissions = properties.get("permissions")
+        if not isinstance(permissions, list):
+            evaluation_complete = False
+            continue
+        if not any(
+            isinstance(permission, dict)
+            and deny_permission_may_block_reads(permission)
+            for permission in permissions
+        ):
+            continue
+
+        principals = properties.get("principals")
+        exclusions = properties.get("excludePrincipals")
+        if not isinstance(principals, list) or not isinstance(exclusions, list):
+            evaluation_complete = False
+            continue
+        principal_entries = [item for item in principals if isinstance(item, dict)]
+        exclusion_ids = {
+            str(item.get("id")).lower()
+            for item in exclusions
+            if isinstance(item, dict) and item.get("id")
+        }
+        if known_ids.intersection(exclusion_ids):
+            continue
+        target_ids = {
+            str(item.get("id")).lower()
+            for item in principal_entries
+            if item.get("id")
+        }
+        if all_principals_id in target_ids or known_ids.intersection(target_ids):
+            applicable_read_denies += 1
+            continue
+        targets_groups = any(
+            str(item.get("type") or "").lower() == "group"
+            for item in principal_entries
         )
-        arm_record.update(
+        if targets_groups and not groups_complete:
+            evaluation_complete = False
+
+    return applicable_read_denies, evaluation_complete
+
+
+def collect_arm_access_verification(principal_object_id):
+    """Prove broad subscription reads using documented RBAC evidence."""
+    subscription_id = AUTH_CONFIG.get("subscription_id")
+    scope = f"/subscriptions/{subscription_id}" if subscription_id else None
+    record = {
+        "status": "visibility_unverified",
+        "scope": scope,
+        "method": "arm_role_and_deny_assignments",
+        "reason_code": "subscription_scope_unavailable",
+        "broad_read_granted": False,
+        "role_assignment_count": 0,
+        "role_definition_count": 0,
+        "deny_assignment_count": 0,
+        "applicable_read_deny_count": 0,
+    }
+    if not subscription_id:
+        return record
+    if not principal_object_id:
+        record["reason_code"] = "principal_object_id_unavailable"
+        return record
+
+    group_ids, group_error = get_transitive_group_ids(principal_object_id)
+    principal_ids = {
+        str(item).lower()
+        for item in {principal_object_id, *group_ids}
+        if item
+    }
+    assignments, assignment_error = get_subscription_role_assignments(subscription_id)
+    if assignment_error:
+        record["reason_code"] = "role_assignment_query_failed"
+        return record
+    relevant_assignments = [
+        assignment
+        for assignment in collection_records(assignments)
+        if str(assignment.get("principalId") or "").lower() in principal_ids
+    ]
+    record["role_assignment_count"] = len(relevant_assignments)
+    definitions, definition_errors = assigned_role_definitions(relevant_assignments)
+    record["role_definition_count"] = len(definitions)
+    broad_read_granted = any(
+        block_grants_unrestricted_arm_reads(permission)
+        for definition in definitions
+        for permission in (definition.get("permissions") or [])
+        if isinstance(permission, dict)
+    )
+    record["broad_read_granted"] = broad_read_granted
+
+    deny_assignments, deny_error = run_json_command(
+        "az role deny-assignment list "
+        f"--scope {shell_quote(scope)} "
+        "--output json"
+    )
+    deny_records = collection_records(deny_assignments)
+    record["deny_assignment_count"] = len(deny_records)
+    applicable_denies, deny_evaluation_complete = deny_assignment_read_effect(
+        deny_records,
+        principal_ids,
+        groups_complete=not bool(group_error),
+    )
+    record["applicable_read_deny_count"] = applicable_denies
+
+    if not broad_read_granted:
+        record["reason_code"] = (
+            "role_definition_query_incomplete"
+            if definition_errors
+            else "subscription_wide_arm_read_not_verified"
+        )
+    elif deny_error:
+        record["reason_code"] = "deny_assignment_query_failed"
+    elif not deny_evaluation_complete:
+        record["reason_code"] = "deny_assignment_evaluation_incomplete"
+    elif applicable_denies:
+        record["reason_code"] = "applicable_read_deny_assignment_present"
+    else:
+        record.update(
             {
-                "status": (
-                    "access_verified"
-                    if broad_read_granted
-                    else "visibility_unverified"
-                ),
-                "reason_code": (
-                    "subscription_wide_arm_read_verified"
-                    if broad_read_granted
-                    else (
-                        "effective_permissions_query_failed"
-                        if permissions_error
-                        else "subscription_wide_arm_read_not_verified"
-                    )
-                ),
-                "broad_read_granted": broad_read_granted,
-                "permission_block_count": len(blocks),
+                "status": "access_verified",
+                "reason_code": "subscription_wide_arm_read_verified",
             }
         )
-        if permissions_error and COLLECTION_MANIFEST is not None:
-            COLLECTION_MANIFEST.add_limitation(
-                "Could not verify effective Azure permissions at the selected subscription scope"
-            )
+    return record
+
+
+def collect_automatic_access_verification():
+    """Collect non-secret ARM and Graph access evidence without prompting."""
 
     graph_record = {
         "status": "visibility_unverified",
@@ -1941,6 +2145,7 @@ def collect_automatic_access_verification():
         "--resource https://graph.microsoft.com/ "
         "--output json"
     )
+    claims = {}
     if not token_error:
         try:
             claims = decode_jwt_payload(token_response["accessToken"])
@@ -1979,6 +2184,15 @@ def collect_automatic_access_verification():
     elif COLLECTION_MANIFEST is not None:
         COLLECTION_MANIFEST.add_limitation(
             "Could not inspect Microsoft Graph permission claims for visibility verification"
+        )
+
+    arm_record = collect_arm_access_verification(claims.get("oid"))
+    if (
+        arm_record["status"] != "access_verified"
+        and COLLECTION_MANIFEST is not None
+    ):
+        COLLECTION_MANIFEST.add_limitation(
+            "Could not prove unrestricted Azure read visibility at the selected subscription scope"
         )
 
     verification = {"arm": arm_record, "graph": graph_record}
@@ -2042,13 +2256,22 @@ def endpoint_access_verification(endpoint_name, command_template):
         }
 
     arm_scope = ACCESS_VERIFICATION.get("arm", {}).get("scope")
-    if name in ARM_SCOPE_RESTRICTED_ENDPOINTS:
+    arm = ACCESS_VERIFICATION.get("arm", {})
+    if name in ARM_SCOPE_RESTRICTED_ENDPOINTS and arm.get("status") == "access_verified":
         return {
             "status": "scope_restricted",
             "plane": "azure_resource_manager",
             "scope": arm_scope,
-            "method": "arm_effective_permissions",
+            "method": "arm_role_and_deny_assignments",
             "reason_code": "endpoint_scope_exceeds_selected_subscription",
+        }
+    if name in ARM_SCOPE_RESTRICTED_ENDPOINTS:
+        return {
+            "status": "visibility_unverified",
+            "plane": "azure_resource_manager",
+            "scope": arm_scope,
+            "method": "arm_role_and_deny_assignments",
+            "reason_code": "endpoint_and_subscription_scope_access_unverified",
         }
     if any(marker in lowered_command for marker in NON_READ_COMMAND_MARKERS):
         return {
@@ -2058,13 +2281,12 @@ def endpoint_access_verification(endpoint_name, command_template):
             "method": "endpoint_permission_not_mapped",
             "reason_code": "specialised_action_not_verified",
         }
-    arm = ACCESS_VERIFICATION.get("arm", {})
     if arm.get("status") == "access_verified":
         return {
             "status": "access_verified",
             "plane": "azure_resource_manager",
             "scope": arm_scope,
-            "method": "arm_effective_permissions",
+            "method": "arm_role_and_deny_assignments",
             "reason_code": "subscription_wide_arm_read_verified",
             "required_permissions": ["*/read"],
         }
@@ -2072,7 +2294,7 @@ def endpoint_access_verification(endpoint_name, command_template):
         "status": "visibility_unverified",
         "plane": "azure_resource_manager",
         "scope": arm_scope,
-        "method": "arm_effective_permissions",
+        "method": "arm_role_and_deny_assignments",
         "reason_code": arm.get("reason_code") or "arm_read_access_not_verified",
         "required_permissions": ["*/read"],
     }
@@ -2878,7 +3100,12 @@ def upstream_source_skip_reason(source):
     for outcome in outcomes:
         verification = outcome.get("access_verification")
         if isinstance(verification, dict) and verification.get("status"):
-            contributing_visibility_statuses.add(str(verification["status"]))
+            verification_status = str(verification["status"])
+            if not (
+                outcome.get("status") in {"skipped", "not_attempted"}
+                and verification_status == "not_evaluated"
+            ):
+                contributing_visibility_statuses.add(verification_status)
         details = outcome.get("reason_details")
         if not isinstance(details, dict):
             details = {}

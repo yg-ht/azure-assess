@@ -7,7 +7,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from azure_assess.collection_manifest import is_tenant_unavailable_error
+from azure_assess.collection_manifest import (
+    interpreted_visibility_status,
+    is_tenant_unavailable_error,
+)
 
 
 REPORTING_SCHEMA_VERSION = "1.3"
@@ -520,9 +523,15 @@ def required_endpoint_records(
         if isinstance(access_verification, Mapping) and access_verification.get(
             "status"
         ):
-            group["visibility_statuses"].add(
-                str(access_verification["status"])
+            verification_status = interpreted_visibility_status(
+                manifest.get("schema_version"),
+                access_verification,
             )
+            if not (
+                endpoint_run.get("status") in {"skipped", "not_attempted"}
+                and verification_status == "not_evaluated"
+            ):
+                group["visibility_statuses"].add(verification_status)
         reason_details = endpoint_run.get("reason_details")
         if isinstance(reason_details, Mapping):
             group["reason_codes"].update(
@@ -535,13 +544,18 @@ def required_endpoint_records(
                 for endpoint_id in reason_details.get("root_cause_endpoint_ids", [])
                 if endpoint_id
             )
-            group["visibility_statuses"].update(
-                str(status)
-                for status in reason_details.get(
-                    "contributing_visibility_statuses", []
-                )
-                if status
-            )
+            for inherited_status in reason_details.get(
+                "contributing_visibility_statuses", []
+            ):
+                if not inherited_status:
+                    continue
+                inherited_status = str(inherited_status)
+                if (
+                    str(manifest.get("schema_version") or "") == "2.4"
+                    and inherited_status in {"access_verified", "scope_restricted"}
+                ):
+                    inherited_status = "visibility_unverified"
+                group["visibility_statuses"].add(inherited_status)
             group["dependency_chains"].extend(
                 list(chain)
                 for chain in reason_details.get("dependency_chains", [])
@@ -636,10 +650,10 @@ def insufficient_data_attribution(
         or not visibility_statuses
     ):
         cause = "source_visibility_unverified"
-    elif "skipped" in statuses:
-        cause = "skipped_prerequisite"
     elif empty_source_present:
         cause = "empty_source"
+    elif "skipped" in statuses:
+        cause = "skipped_prerequisite"
     else:
         cause = "missing_or_unattributed_source"
 

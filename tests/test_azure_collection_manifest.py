@@ -10,6 +10,7 @@ from azure_assess.collection_manifest import (
     CollectionManifestRecorder,
     classify_execution_status,
     extract_azure_error_code,
+    interpreted_visibility_status,
     result_item_count,
     sha256_file,
     truncate_error_text,
@@ -130,7 +131,7 @@ class CollectionManifestContentTests(unittest.TestCase):
             )
             manifest = recorder.finish()
 
-        self.assertEqual(manifest["schema_version"], "2.4")
+        self.assertEqual(manifest["schema_version"], "2.5")
         self.assertEqual(manifest["status"], "success")
         self.assertEqual(manifest["endpoint_runs"][0]["status"], "not_applicable")
         self.assertEqual(manifest["errors"], [])
@@ -200,6 +201,28 @@ class CollectionManifestContentTests(unittest.TestCase):
 
 
 class CollectionManifestRecorderTests(unittest.TestCase):
+    def test_schema_2_4_arm_proof_is_interpreted_conservatively(self):
+        self.assertEqual(
+            interpreted_visibility_status(
+                "2.4",
+                {
+                    "status": "access_verified",
+                    "method": "arm_effective_permissions",
+                },
+            ),
+            "visibility_unverified",
+        )
+        self.assertEqual(
+            interpreted_visibility_status(
+                "2.4",
+                {
+                    "status": "access_verified",
+                    "method": "graph_access_token_claims",
+                },
+            ),
+            "access_verified",
+        )
+
     def test_result_count_uses_semantic_collection_records(self):
         self.assertEqual(result_item_count({"@odata.context": "metadata", "value": []}), 0)
         self.assertEqual(
@@ -238,7 +261,7 @@ class CollectionManifestRecorderTests(unittest.TestCase):
                     "status": "access_verified",
                     "plane": "azure_resource_manager",
                     "scope": "/subscriptions/sub-one",
-                    "method": "arm_effective_permissions",
+                    "method": "arm_role_and_deny_assignments",
                     "reason_code": "subscription_wide_arm_read_verified",
                     "required_permissions": ["*/read"],
                 },
@@ -247,7 +270,7 @@ class CollectionManifestRecorderTests(unittest.TestCase):
             manifest = recorder.finish()
             validate_manifest(manifest)
 
-        self.assertEqual(manifest["schema_version"], "2.4")
+        self.assertEqual(manifest["schema_version"], "2.5")
         self.assertEqual(
             manifest["access_verification"]["arm"]["status"],
             "access_verified",
@@ -256,6 +279,50 @@ class CollectionManifestRecorderTests(unittest.TestCase):
             manifest["endpoint_runs"][0]["access_verification"]["status"],
             "access_verified",
         )
+
+    def test_manifest_rejects_unbounded_access_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-bounded-evidence",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            recorder.record_execution(
+                "Resources",
+                "base",
+                "az resource list",
+                "2026-08-03T12:00:00Z",
+                0.1,
+                0,
+                0,
+            )
+            manifest = recorder.finish()
+
+        manifest["access_verification"]["graph"]["accessToken"] = "never-store"
+        with self.assertRaisesRegex(ValueError, "unsupported evidence fields"):
+            validate_manifest(manifest)
+
+    def test_manifest_rejects_malformed_required_permissions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-malformed-evidence",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            with self.assertRaisesRegex(ValueError, "must be a list"):
+                recorder.record_execution(
+                    "Resources",
+                    "base",
+                    "az resource list",
+                    "2026-08-03T12:00:00Z",
+                    0.1,
+                    0,
+                    0,
+                    access_verification={
+                        "status": "access_verified",
+                        "required_permissions": "*/read",
+                    },
+                )
 
     def test_successful_run_records_execution_and_dataset_integrity(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -466,6 +533,35 @@ class CollectionManifestRecorderTests(unittest.TestCase):
 
         validate_manifest(manifest)
 
+    def test_manifest_validation_keeps_schema_2_4_access_evidence_readable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-pre-rbac-evidence",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            recorder.record_execution(
+                "Resources",
+                "base",
+                "az resource list",
+                "2026-08-03T12:00:00Z",
+                0.1,
+                0,
+                0,
+            )
+            manifest = recorder.finish()
+
+        manifest["schema_version"] = "2.4"
+        manifest["access_verification"]["arm"] = {
+            "status": "access_verified",
+            "method": "arm_effective_permissions",
+            "reason_code": "subscription_wide_arm_read_verified",
+            "broad_read_granted": True,
+            "permission_block_count": 1,
+        }
+
+        validate_manifest(manifest)
+
     def test_concurrent_execution_records_are_not_lost(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = CollectionManifestRecorder("run-concurrent", Path(tmpdir), project_dir=Path(tmpdir))
@@ -550,21 +646,26 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
             "tenant_id": "tenant-one",
             "subscription_id": "sub-one",
         }
+        azure_collect.SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE.pop("sub-one", None)
         responses = [
+            ({"accessToken": "header.payload.signature"}, None),
+            ({"value": []}, None),
             (
-                {
-                    "value": [
-                        {
-                            "actions": ["*/read"],
-                            "notActions": [],
-                            "dataActions": [],
-                            "notDataActions": [],
-                        }
-                    ]
-                },
+                [{
+                    "principalId": "principal-one",
+                    "roleDefinitionId": "/subscriptions/sub-one/providers/Microsoft.Authorization/roleDefinitions/reader-role",
+                }],
                 None,
             ),
-            ({"accessToken": "header.payload.signature"}, None),
+            ([{
+                "permissions": [{
+                    "actions": ["*/read"],
+                    "notActions": [],
+                    "dataActions": [],
+                    "notDataActions": [],
+                }]
+            }], None),
+            ([], None),
         ]
 
         with mock.patch.object(
@@ -577,6 +678,7 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
                 "decode_jwt_payload",
                 return_value={
                     "idtyp": "app",
+                    "oid": "principal-one",
                     "roles": ["Policy.Read.All", "Directory.Read.All"],
                 },
             ):
@@ -585,6 +687,7 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
         self.assertEqual(verification["arm"]["status"], "access_verified")
         self.assertTrue(verification["arm"]["broad_read_granted"])
         self.assertEqual(verification["graph"]["token_type"], "application")
+        self.assertNotIn("accessToken", json.dumps(verification))
         self.assertEqual(
             azure_collect.endpoint_access_verification(
                 "Graph Security Defaults Policy",
@@ -606,6 +709,141 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
             )["status"],
             "visibility_unverified",
         )
+
+    def test_arm_read_deny_prevents_access_verification(self):
+        azure_collect.AUTH_CONFIG = {"subscription_id": "sub-denied"}
+        azure_collect.SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE.pop("sub-denied", None)
+        responses = [
+            ({"value": []}, None),
+            ([{
+                "principalId": "principal-one",
+                "roleDefinitionId": "/subscriptions/sub-denied/providers/Microsoft.Authorization/roleDefinitions/reader-role",
+            }], None),
+            ([{"permissions": [{"actions": ["*/read"], "notActions": []}]}], None),
+            ([{
+                "permissions": [{"actions": ["Microsoft.Storage/*"], "notActions": []}],
+                "principals": [{
+                    "id": "00000000-0000-0000-0000-000000000000",
+                    "type": "SystemDefined",
+                }],
+                "excludePrincipals": [],
+            }], None),
+        ]
+
+        with mock.patch.object(
+            azure_collect,
+            "run_json_command",
+            side_effect=responses,
+        ):
+            verification = azure_collect.collect_arm_access_verification(
+                "principal-one"
+            )
+
+        self.assertEqual(verification["status"], "visibility_unverified")
+        self.assertEqual(
+            verification["reason_code"],
+            "applicable_read_deny_assignment_present",
+        )
+        self.assertEqual(verification["applicable_read_deny_count"], 1)
+
+    def test_deny_query_failure_prevents_access_verification(self):
+        azure_collect.AUTH_CONFIG = {"subscription_id": "sub-deny-query"}
+        azure_collect.SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE.pop(
+            "sub-deny-query", None
+        )
+        responses = [
+            ({"value": []}, None),
+            ([{
+                "principalId": "principal-one",
+                "roleDefinitionId": "/subscriptions/sub-deny-query/providers/Microsoft.Authorization/roleDefinitions/reader-role",
+            }], None),
+            ([{"permissions": [{"actions": ["*/read"], "notActions": []}]}], None),
+            (None, "Forbidden"),
+        ]
+
+        with mock.patch.object(
+            azure_collect,
+            "run_json_command",
+            side_effect=responses,
+        ):
+            verification = azure_collect.collect_arm_access_verification(
+                "principal-one"
+            )
+
+        self.assertEqual(verification["status"], "visibility_unverified")
+        self.assertEqual(
+            verification["reason_code"],
+            "deny_assignment_query_failed",
+        )
+
+    def test_non_read_deny_does_not_hide_verified_read_access(self):
+        self.assertFalse(
+            azure_collect.deny_permission_may_block_reads(
+                {
+                    "actions": [
+                        "Microsoft.Authorization/roleAssignments/write",
+                        "*/delete",
+                    ],
+                    "notActions": [],
+                }
+            )
+        )
+
+    def test_broad_role_with_namespace_read_exclusion_is_not_unrestricted(self):
+        self.assertFalse(
+            azure_collect.block_grants_unrestricted_arm_reads(
+                {
+                    "actions": ["*"],
+                    "notActions": ["Microsoft.Storage/*"],
+                }
+            )
+        )
+        self.assertTrue(
+            azure_collect.block_grants_unrestricted_arm_reads(
+                {
+                    "actions": ["*"],
+                    "notActions": ["Microsoft.Authorization/*/write"],
+                }
+            )
+        )
+
+    def test_unverified_subscription_access_does_not_claim_scope_restriction(self):
+        azure_collect.ACCESS_VERIFICATION = {
+            "arm": {
+                "status": "visibility_unverified",
+                "scope": "/subscriptions/sub-one",
+            },
+            "graph": {"status": "visibility_unverified"},
+        }
+
+        verification = azure_collect.endpoint_access_verification(
+            "Management Groups",
+            "az account management-group list",
+        )
+
+        self.assertEqual(verification["status"], "visibility_unverified")
+        self.assertEqual(
+            verification["reason_code"],
+            "endpoint_and_subscription_scope_access_unverified",
+        )
+
+    def test_documented_higher_graph_permission_can_verify_endpoint_access(self):
+        azure_collect.AUTH_CONFIG = {"tenant_id": "tenant-one"}
+        azure_collect.ACCESS_VERIFICATION = {
+            "arm": {"status": "visibility_unverified"},
+            "graph": {
+                "status": "visibility_unverified",
+                "token_type": "application",
+                "granted_permissions": ["GroupSettings.Read.All"],
+            },
+        }
+
+        verification = azure_collect.endpoint_access_verification(
+            "Graph Group Settings",
+            "az rest --method get --url https://graph.microsoft.com/v1.0/groupSettings",
+        )
+
+        self.assertEqual(verification["status"], "access_verified")
 
     def test_delegated_graph_claims_do_not_prove_tenant_wide_visibility(self):
         azure_collect.AUTH_CONFIG = {

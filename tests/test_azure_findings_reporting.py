@@ -358,6 +358,78 @@ class FindingProvenanceTests(unittest.TestCase):
             "empty_source",
         )
 
+    def test_verified_empty_upstream_is_not_polluted_by_skipped_endpoint_status(self):
+        finding = example_finding([])
+        finding["status"] = "no_data_to_assess"
+        finding["references"]["required_endpoint_ids"] = ["child_details"]
+        catalog = self.manifest_only_catalog(
+            [
+                {
+                    "endpoint_id": "child_details",
+                    "endpoint_name": "Child Details",
+                    "category": "parameterised",
+                    "status": "skipped",
+                    "reason_code": "upstream_source_returned_no_data",
+                    "access_verification": {"status": "not_evaluated"},
+                    "reason_details": {
+                        "contributing_reason_codes": [
+                            "upstream_source_returned_no_data"
+                        ],
+                        "contributing_visibility_statuses": ["access_verified"],
+                        "root_cause_endpoint_ids": ["parent_list"],
+                    },
+                }
+            ]
+        )
+
+        normalise_finding_reporting(finding, catalog=catalog)
+
+        provenance = finding["reporting"]["provenance"]
+        self.assertEqual(
+            provenance["required_endpoints"][0]["visibility_statuses"],
+            ["access_verified"],
+        )
+        self.assertEqual(
+            provenance["insufficient_data"]["cause"],
+            "empty_source",
+        )
+
+    def test_schema_2_4_inherited_access_claim_is_treated_as_unverified(self):
+        finding = example_finding([])
+        finding["status"] = "no_data_to_assess"
+        finding["references"]["required_endpoint_ids"] = ["child_details"]
+        catalog = self.manifest_only_catalog(
+            [
+                {
+                    "endpoint_id": "child_details",
+                    "endpoint_name": "Child Details",
+                    "category": "parameterised",
+                    "status": "skipped",
+                    "reason_code": "upstream_source_returned_no_data",
+                    "access_verification": {"status": "not_evaluated"},
+                    "reason_details": {
+                        "contributing_reason_codes": [
+                            "upstream_source_returned_no_data"
+                        ],
+                        "contributing_visibility_statuses": ["access_verified"],
+                    },
+                }
+            ]
+        )
+        catalog["azure-collection-manifest"]["data"]["schema_version"] = "2.4"
+
+        normalise_finding_reporting(finding, catalog=catalog)
+
+        provenance = finding["reporting"]["provenance"]
+        self.assertEqual(
+            provenance["required_endpoints"][0]["visibility_statuses"],
+            ["visibility_unverified"],
+        )
+        self.assertEqual(
+            provenance["insufficient_data"]["cause"],
+            "source_visibility_unverified",
+        )
+
     def test_transitive_unauthorised_reason_and_root_are_retained(self):
         finding = example_finding([])
         finding["status"] = "no_data_to_assess"
