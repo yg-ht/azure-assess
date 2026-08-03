@@ -16,8 +16,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
-MANIFEST_SCHEMA_VERSION = "2.3"
-SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {"2.0", "2.1", "2.2", MANIFEST_SCHEMA_VERSION}
+MANIFEST_SCHEMA_VERSION = "2.4"
+SUPPORTED_MANIFEST_SCHEMA_VERSIONS = {
+    "2.0",
+    "2.1",
+    "2.2",
+    "2.3",
+    MANIFEST_SCHEMA_VERSION,
+}
 MANIFEST_FILENAME_PREFIX = "azure-collection-manifest"
 MAX_ERROR_MESSAGE_CHARS = 1000
 VALID_RUN_STATUSES = {"running", "success", "partial", "failed"}
@@ -58,6 +64,12 @@ VALID_NOT_ATTEMPTED_REASON_CODES = {
 PRE_23_ENDPOINT_STATUSES = VALID_ENDPOINT_STATUSES - {"tenant_unavailable"}
 PRE_23_SKIPPED_REASON_CODES = VALID_SKIPPED_REASON_CODES - {
     "upstream_source_tenant_unavailable"
+}
+VALID_VISIBILITY_STATUSES = {
+    "access_verified",
+    "scope_restricted",
+    "visibility_unverified",
+    "not_evaluated",
 }
 NOT_APPLICABLE_ERROR_MARKERS = (
     "network watcher is not enabled for region",
@@ -145,12 +157,32 @@ def is_tenant_unavailable_error(value: Any) -> bool:
 
 
 def result_item_count(data: Any) -> int:
-    """Return a stable top-level record count for a collected JSON payload."""
+    """Return the number of semantic records in common Azure JSON payloads."""
     if isinstance(data, list):
         return len(data)
     if isinstance(data, dict):
-        return len(data.keys())
+        if isinstance(data.get("value"), list):
+            return len(data["value"])
+        return 1 if data else 0
     return 0
+
+
+def normalise_access_verification(value: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+    """Build a bounded, non-secret verification record for one endpoint."""
+    source = dict(value or {})
+    status = str(source.get("status") or "not_evaluated")
+    if status not in VALID_VISIBILITY_STATUSES:
+        raise ValueError(f"Invalid endpoint visibility status: {status}")
+    return {
+        "status": status,
+        "plane": str(source.get("plane") or "unknown"),
+        "scope": str(source["scope"]) if source.get("scope") else None,
+        "method": str(source.get("method") or "not_evaluated"),
+        "reason_code": str(source.get("reason_code") or "not_evaluated"),
+        "required_permissions": sorted(
+            {str(item) for item in source.get("required_permissions", []) if item}
+        ),
+    }
 
 
 def sha256_file(path: Path) -> str:
@@ -261,6 +293,10 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
         raise ValueError("Collection manifest endpoint_runs must be a list")
     if not isinstance(payload.get("datasets"), list):
         raise ValueError("Collection manifest datasets must be a list")
+    if schema_version == MANIFEST_SCHEMA_VERSION and not isinstance(
+        payload.get("access_verification"), Mapping
+    ):
+        raise ValueError("Collection manifest access_verification must be an object")
     if schema_version == "2.0":
         valid_endpoint_statuses = LEGACY_ENDPOINT_STATUSES
     elif schema_version in {"2.1", "2.2"}:
@@ -274,7 +310,7 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
                 f"Invalid endpoint execution status: {endpoint_status}"
             )
         if (
-            schema_version in {"2.2", MANIFEST_SCHEMA_VERSION}
+            schema_version in {"2.2", "2.3", MANIFEST_SCHEMA_VERSION}
             and endpoint_status == "skipped"
         ):
             valid_reason_codes = (
@@ -285,11 +321,16 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
             if endpoint_run.get("reason_code") not in valid_reason_codes:
                 raise ValueError("Skipped endpoint is missing a valid reason code")
         if (
-            schema_version in {"2.2", MANIFEST_SCHEMA_VERSION}
+            schema_version in {"2.2", "2.3", MANIFEST_SCHEMA_VERSION}
             and endpoint_status == "not_attempted"
         ):
             if endpoint_run.get("reason_code") not in VALID_NOT_ATTEMPTED_REASON_CODES:
                 raise ValueError("Unattempted endpoint is missing a valid reason code")
+        if schema_version == MANIFEST_SCHEMA_VERSION:
+            verification = endpoint_run.get("access_verification")
+            if not isinstance(verification, Mapping):
+                raise ValueError("Endpoint execution is missing access verification")
+            normalise_access_verification(verification)
     for dataset in payload["datasets"]:
         if not re.fullmatch(r"[a-f0-9]{64}", str(dataset.get("sha256") or "")):
             raise ValueError(
@@ -320,6 +361,10 @@ class CollectionManifestRecorder:
         self.datasets: List[Dict[str, Any]] = []
         self.errors: List[Dict[str, Any]] = []
         self.limitations: List[str] = []
+        self.access_verification: Dict[str, Any] = {
+            "arm": {"status": "not_evaluated"},
+            "graph": {"status": "not_evaluated"},
+        }
         self._planned_endpoints: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._observed_endpoints = set()
         self._lock = threading.Lock()
@@ -354,6 +399,11 @@ class CollectionManifestRecorder:
         """Update run context after authentication establishes the active account."""
         with self._lock:
             self.context.update(deepcopy(dict(values)))
+
+    def set_access_verification(self, values: Mapping[str, Any]) -> None:
+        """Persist non-secret collection-scope authorisation evidence."""
+        with self._lock:
+            self.access_verification = deepcopy(dict(values))
 
     def endpoint_statuses(self, endpoint_identifier: str) -> List[str]:
         """Return observed statuses for one stable endpoint identifier."""
@@ -393,6 +443,7 @@ class CollectionManifestRecorder:
         error_message: Optional[str] = None,
         diagnostic_text: Optional[str] = None,
         endpoint_identifier: Optional[str] = None,
+        access_verification: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """Record one completed Azure CLI execution."""
         status = classify_execution_status(
@@ -420,6 +471,9 @@ class CollectionManifestRecorder:
             ),
             "response_error_truncated": (
                 len(str(diagnostic_text or "")) > MAX_ERROR_MESSAGE_CHARS
+            ),
+            "access_verification": normalise_access_verification(
+                access_verification
             ),
         }
         with self._lock:
@@ -467,6 +521,7 @@ class CollectionManifestRecorder:
             "error": truncate_error_text(reason),
             "reason_code": str(reason_code),
             "reason_details": deepcopy(dict(reason_details or {})),
+            "access_verification": normalise_access_verification(None),
         }
         with self._lock:
             self.endpoint_runs.append(record)
@@ -555,6 +610,7 @@ class CollectionManifestRecorder:
                         "error": truncate_error_text(fallback_reason),
                         "reason_code": fallback_reason_code,
                         "reason_details": fallback_reason_details,
+                        "access_verification": normalise_access_verification(None),
                     }
                 )
 
@@ -616,6 +672,7 @@ class CollectionManifestRecorder:
             "tool": dict(self.tool),
             "context": self.context,
             "options": self.options,
+            "access_verification": deepcopy(self.access_verification),
             "endpoint_runs": endpoint_runs,
             "datasets": datasets,
             "errors": errors,

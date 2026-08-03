@@ -10,6 +10,7 @@ from azure_assess.collection_manifest import (
     CollectionManifestRecorder,
     classify_execution_status,
     extract_azure_error_code,
+    result_item_count,
     sha256_file,
     truncate_error_text,
     validate_manifest,
@@ -129,7 +130,7 @@ class CollectionManifestContentTests(unittest.TestCase):
             )
             manifest = recorder.finish()
 
-        self.assertEqual(manifest["schema_version"], "2.3")
+        self.assertEqual(manifest["schema_version"], "2.4")
         self.assertEqual(manifest["status"], "success")
         self.assertEqual(manifest["endpoint_runs"][0]["status"], "not_applicable")
         self.assertEqual(manifest["errors"], [])
@@ -199,6 +200,63 @@ class CollectionManifestContentTests(unittest.TestCase):
 
 
 class CollectionManifestRecorderTests(unittest.TestCase):
+    def test_result_count_uses_semantic_collection_records(self):
+        self.assertEqual(result_item_count({"@odata.context": "metadata", "value": []}), 0)
+        self.assertEqual(
+            result_item_count(
+                {"@odata.context": "metadata", "value": [{"id": "one"}]}
+            ),
+            1,
+        )
+        self.assertEqual(result_item_count({"id": "singleton"}), 1)
+
+    def test_manifest_records_endpoint_and_run_access_verification(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-visibility",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            recorder.set_access_verification(
+                {
+                    "arm": {
+                        "status": "access_verified",
+                        "scope": "/subscriptions/sub-one",
+                    },
+                    "graph": {"status": "visibility_unverified"},
+                }
+            )
+            recorder.record_execution(
+                "Resources",
+                "base",
+                "az resource list",
+                "2026-08-03T12:00:00Z",
+                0.1,
+                0,
+                0,
+                access_verification={
+                    "status": "access_verified",
+                    "plane": "azure_resource_manager",
+                    "scope": "/subscriptions/sub-one",
+                    "method": "arm_effective_permissions",
+                    "reason_code": "subscription_wide_arm_read_verified",
+                    "required_permissions": ["*/read"],
+                },
+            )
+
+            manifest = recorder.finish()
+            validate_manifest(manifest)
+
+        self.assertEqual(manifest["schema_version"], "2.4")
+        self.assertEqual(
+            manifest["access_verification"]["arm"]["status"],
+            "access_verified",
+        )
+        self.assertEqual(
+            manifest["endpoint_runs"][0]["access_verification"]["status"],
+            "access_verified",
+        )
+
     def test_successful_run_records_execution_and_dataset_integrity(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)
@@ -384,6 +442,30 @@ class CollectionManifestRecorderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "valid reason code"):
             validate_manifest(manifest)
 
+    def test_manifest_validation_keeps_schema_2_3_readable_without_access_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-pre-visibility",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            recorder.record_execution(
+                "Resources",
+                "base",
+                "az resource list",
+                "2026-08-03T12:00:00Z",
+                0.1,
+                0,
+                0,
+            )
+            manifest = recorder.finish()
+
+        manifest["schema_version"] = "2.3"
+        manifest.pop("access_verification")
+        manifest["endpoint_runs"][0].pop("access_verification")
+
+        validate_manifest(manifest)
+
     def test_concurrent_execution_records_are_not_lost(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             recorder = CollectionManifestRecorder("run-concurrent", Path(tmpdir), project_dir=Path(tmpdir))
@@ -412,11 +494,15 @@ class CollectionManifestRecorderTests(unittest.TestCase):
 class CollectionManifestIntegrationTests(unittest.TestCase):
     def setUp(self):
         self.original_manifest = azure_collect.COLLECTION_MANIFEST
+        self.original_access_verification = azure_collect.ACCESS_VERIFICATION
+        self.original_auth_config = azure_collect.AUTH_CONFIG
         self.original_output_dir = getattr(azure_collect, "OUTPUT_DIR", None)
         self.original_start_timestamp = getattr(azure_collect, "START_TIMESTAMP", None)
 
     def tearDown(self):
         azure_collect.COLLECTION_MANIFEST = self.original_manifest
+        azure_collect.ACCESS_VERIFICATION = self.original_access_verification
+        azure_collect.AUTH_CONFIG = self.original_auth_config
         if self.original_output_dir is None:
             if hasattr(azure_collect, "OUTPUT_DIR"):
                 del azure_collect.OUTPUT_DIR
@@ -458,6 +544,93 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
         self.assertIn("{name}", execution["command_template"])
         self.assertNotIn("nsg-one", execution["command_template"])
         self.assertEqual(execution["attempt_count"], 2)
+
+    def test_automatic_access_verification_uses_arm_permissions_and_graph_roles(self):
+        azure_collect.AUTH_CONFIG = {
+            "tenant_id": "tenant-one",
+            "subscription_id": "sub-one",
+        }
+        responses = [
+            (
+                {
+                    "value": [
+                        {
+                            "actions": ["*/read"],
+                            "notActions": [],
+                            "dataActions": [],
+                            "notDataActions": [],
+                        }
+                    ]
+                },
+                None,
+            ),
+            ({"accessToken": "header.payload.signature"}, None),
+        ]
+
+        with mock.patch.object(
+            azure_collect,
+            "run_json_command",
+            side_effect=responses,
+        ):
+            with mock.patch.object(
+                azure_collect,
+                "decode_jwt_payload",
+                return_value={
+                    "idtyp": "app",
+                    "roles": ["Policy.Read.All", "Directory.Read.All"],
+                },
+            ):
+                verification = azure_collect.collect_automatic_access_verification()
+
+        self.assertEqual(verification["arm"]["status"], "access_verified")
+        self.assertTrue(verification["arm"]["broad_read_granted"])
+        self.assertEqual(verification["graph"]["token_type"], "application")
+        self.assertEqual(
+            azure_collect.endpoint_access_verification(
+                "Graph Security Defaults Policy",
+                "az rest --method get --url https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy",
+            )["status"],
+            "access_verified",
+        )
+        self.assertEqual(
+            azure_collect.endpoint_access_verification(
+                "Storage Accounts",
+                "az storage account list",
+            )["status"],
+            "access_verified",
+        )
+        self.assertEqual(
+            azure_collect.endpoint_access_verification(
+                "Storage Account Keys",
+                "az storage account keys list --account-name {name}",
+            )["status"],
+            "visibility_unverified",
+        )
+
+    def test_delegated_graph_claims_do_not_prove_tenant_wide_visibility(self):
+        azure_collect.AUTH_CONFIG = {
+            "tenant_id": "tenant-one",
+            "subscription_id": "sub-one",
+        }
+        azure_collect.ACCESS_VERIFICATION = {
+            "arm": {"status": "visibility_unverified"},
+            "graph": {
+                "status": "visibility_unverified",
+                "token_type": "delegated",
+                "granted_permissions": ["Policy.Read.All"],
+            },
+        }
+
+        verification = azure_collect.endpoint_access_verification(
+            "Graph Security Defaults Policy",
+            "az rest --method get --url https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy",
+        )
+
+        self.assertEqual(verification["status"], "visibility_unverified")
+        self.assertEqual(
+            verification["reason_code"],
+            "delegated_graph_access_requires_user_privileges",
+        )
 
     def test_failed_azure_cli_execution_preserves_diagnostic_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:

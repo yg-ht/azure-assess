@@ -98,6 +98,8 @@ INSUFFICIENT_DATA_CAUSES = OrderedDict(
         ("tenant_capability_unavailable", ("Licence or Tenant Capability", "#795548")),
         ("failed_request", ("Failed Request", "#fd7e14")),
         ("collection_incomplete", ("Interrupted or Unrecorded Collection", "#d63384")),
+        ("scope_restricted_source", ("Source Scope Restricted", "#8a6d3b")),
+        ("source_visibility_unverified", ("Source Visibility Unverified", "#e0a800")),
         ("skipped_prerequisite", ("Skipped Prerequisite", "#ffc107")),
         ("empty_source", ("Empty Upstream Source", "#0dcaf0")),
         ("missing_or_unattributed_source", ("Missing or Unattributed Source", "#adb5bd")),
@@ -1683,6 +1685,7 @@ def collection_request_summary():
     status_counts = Counter()
     failures = []
     omissions = []
+    empty_visibility_counts = Counter()
     for request_record in manifest.get("endpoint_runs", []):
         if not isinstance(request_record, dict):
             continue
@@ -1705,6 +1708,20 @@ def collection_request_summary():
         ):
             status = "tenant_unavailable"
         status_counts[status] += 1
+        if status == "empty":
+            verification = request_record.get("access_verification")
+            verification_status = (
+                verification.get("status")
+                if isinstance(verification, dict)
+                else "visibility_unverified"
+            )
+            if verification_status not in {
+                "access_verified",
+                "scope_restricted",
+                "visibility_unverified",
+            }:
+                verification_status = "visibility_unverified"
+            empty_visibility_counts[verification_status] += 1
         if status in {"skipped", "not_attempted"}:
             omissions.append(request_record)
         if status not in {"failed", "unauthorised", "tenant_unavailable"}:
@@ -1753,6 +1770,11 @@ def collection_request_summary():
         "attempted": attempted,
         "success": status_counts["success"],
         "empty": status_counts["empty"],
+        "empty_access_verified": empty_visibility_counts["access_verified"],
+        "empty_scope_restricted": empty_visibility_counts["scope_restricted"],
+        "empty_visibility_unverified": empty_visibility_counts[
+            "visibility_unverified"
+        ],
         "failed": status_counts["failed"],
         "unauthorised": status_counts["unauthorised"],
         "tenant_unavailable": status_counts["tenant_unavailable"],
@@ -1879,9 +1901,19 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
                     "detail": "Requests completed successfully and returned one or more records",
                 },
                 {
-                    "label": "Returned No Data",
-                    "value": collection_requests["empty"],
-                    "detail": "Requests completed successfully but returned no records",
+                    "label": "Returned No Data — Access Verified",
+                    "value": collection_requests["empty_access_verified"],
+                    "detail": "Empty responses where the required access and intended scope were verified",
+                },
+                {
+                    "label": "Returned No Data — Scope Restricted",
+                    "value": collection_requests["empty_scope_restricted"],
+                    "detail": "Empty responses where verified access covered less than the endpoint's intended scope",
+                },
+                {
+                    "label": "Returned No Data — Visibility Unverified",
+                    "value": collection_requests["empty_visibility_unverified"],
+                    "detail": "Empty responses where complete visibility could not be demonstrated",
                 },
                 {
                     "label": "Failed",

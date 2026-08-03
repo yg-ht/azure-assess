@@ -10,8 +10,13 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from azure_assess.collection_manifest import is_tenant_unavailable_error
 
 
-REPORTING_SCHEMA_VERSION = "1.2"
-SUPPORTED_REPORTING_SCHEMA_VERSIONS = {"1.0", "1.1", REPORTING_SCHEMA_VERSION}
+REPORTING_SCHEMA_VERSION = "1.3"
+SUPPORTED_REPORTING_SCHEMA_VERSIONS = {
+    "1.0",
+    "1.1",
+    "1.2",
+    REPORTING_SCHEMA_VERSION,
+}
 ASSET_ID_RE = re.compile(r"^asset_[a-f0-9]{24}$")
 OBSERVATION_ID_RE = re.compile(r"^obs_[a-f0-9]{24}$")
 AZURE_IDENTIFIER_KEYS = {
@@ -46,6 +51,8 @@ INSUFFICIENT_DATA_CAUSE_LABELS = {
     "tenant_capability_unavailable": "Licence or Tenant Capability",
     "failed_request": "Failed Request",
     "collection_incomplete": "Interrupted or Unrecorded Collection",
+    "scope_restricted_source": "Source Scope Restricted",
+    "source_visibility_unverified": "Source Visibility Unverified",
     "skipped_prerequisite": "Skipped Prerequisite",
     "empty_source": "Empty Upstream Source",
     "missing_or_unattributed_source": "Missing or Unattributed Source",
@@ -492,6 +499,7 @@ def required_endpoint_records(
                 "category": endpoint_run.get("category") or "Unknown",
                 "statuses": set(),
                 "reason_codes": set(),
+                "visibility_statuses": set(),
                 "root_cause_endpoint_ids": set(),
                 "dependency_chains": [],
             },
@@ -508,6 +516,13 @@ def required_endpoint_records(
             group["statuses"].add(status)
         if endpoint_run.get("reason_code"):
             group["reason_codes"].add(str(endpoint_run["reason_code"]))
+        access_verification = endpoint_run.get("access_verification")
+        if isinstance(access_verification, Mapping) and access_verification.get(
+            "status"
+        ):
+            group["visibility_statuses"].add(
+                str(access_verification["status"])
+            )
         reason_details = endpoint_run.get("reason_details")
         if isinstance(reason_details, Mapping):
             group["reason_codes"].update(
@@ -519,6 +534,13 @@ def required_endpoint_records(
                 str(endpoint_id)
                 for endpoint_id in reason_details.get("root_cause_endpoint_ids", [])
                 if endpoint_id
+            )
+            group["visibility_statuses"].update(
+                str(status)
+                for status in reason_details.get(
+                    "contributing_visibility_statuses", []
+                )
+                if status
             )
             group["dependency_chains"].extend(
                 list(chain)
@@ -546,6 +568,7 @@ def required_endpoint_records(
                 **group,
                 "statuses": sorted(group["statuses"]),
                 "reason_codes": sorted(group["reason_codes"]),
+                "visibility_statuses": sorted(group["visibility_statuses"]),
                 "root_cause_endpoint_ids": sorted(
                     group["root_cause_endpoint_ids"]
                 ),
@@ -578,6 +601,15 @@ def insufficient_data_attribution(
         for endpoint in required_endpoints
         for reason_code in endpoint.get("reason_codes", [])
     }
+    visibility_statuses = {
+        status
+        for endpoint in required_endpoints
+        for status in endpoint.get("visibility_statuses", [])
+    }
+    empty_source_present = bool(
+        "empty" in statuses
+        or "upstream_source_returned_no_data" in reason_codes
+    )
     if "unauthorised" in statuses or "upstream_source_unauthorised" in reason_codes:
         cause = "unauthorised_source"
     elif (
@@ -596,9 +628,17 @@ def insufficient_data_attribution(
         }
     ):
         cause = "collection_incomplete"
+    elif empty_source_present and "scope_restricted" in visibility_statuses:
+        cause = "scope_restricted_source"
+    elif empty_source_present and (
+        "visibility_unverified" in visibility_statuses
+        or "not_evaluated" in visibility_statuses
+        or not visibility_statuses
+    ):
+        cause = "source_visibility_unverified"
     elif "skipped" in statuses:
         cause = "skipped_prerequisite"
-    elif "empty" in statuses or "upstream_source_returned_no_data" in reason_codes:
+    elif empty_source_present:
         cause = "empty_source"
     else:
         cause = "missing_or_unattributed_source"
@@ -635,6 +675,19 @@ def insufficient_data_attribution(
             )
         if cause == "skipped_prerequisite":
             return "skipped" in endpoint_statuses
+        if cause in {"scope_restricted_source", "source_visibility_unverified"}:
+            endpoint_visibility = set(endpoint.get("visibility_statuses", []))
+            has_empty_cause = bool(
+                "empty" in endpoint_statuses
+                or "upstream_source_returned_no_data" in endpoint_reasons
+            )
+            if cause == "scope_restricted_source":
+                return has_empty_cause and "scope_restricted" in endpoint_visibility
+            return has_empty_cause and (
+                "visibility_unverified" in endpoint_visibility
+                or "not_evaluated" in endpoint_visibility
+                or not endpoint_visibility
+            )
         if cause == "empty_source":
             return bool(
                 "empty" in endpoint_statuses
@@ -830,7 +883,7 @@ def validate_finding_reporting(finding: Mapping[str, Any]) -> None:
         raise ValueError("Unsupported finding provenance attribution precision")
     if not isinstance(provenance.get("source_datasets"), list):
         raise ValueError("Finding provenance source datasets must be a list")
-    if reporting_schema_version in {"1.1", REPORTING_SCHEMA_VERSION}:
+    if reporting_schema_version in {"1.1", "1.2", REPORTING_SCHEMA_VERSION}:
         if not isinstance(provenance.get("required_endpoints"), list):
             raise ValueError("Finding provenance required endpoints must be a list")
         if any(
@@ -848,6 +901,10 @@ def validate_finding_reporting(finding: Mapping[str, Any]) -> None:
             raise ValueError("Conclusive finding cannot have insufficient-data attribution")
         if reporting_schema_version == REPORTING_SCHEMA_VERSION:
             for endpoint in provenance["required_endpoints"]:
+                if not isinstance(endpoint.get("visibility_statuses"), list):
+                    raise ValueError(
+                        "Finding required endpoint visibility statuses must be a list"
+                    )
                 if not isinstance(endpoint.get("root_cause_endpoint_ids"), list):
                     raise ValueError(
                         "Finding required endpoint root causes must be a list"

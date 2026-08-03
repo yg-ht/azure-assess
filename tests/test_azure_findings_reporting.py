@@ -236,13 +236,33 @@ class FindingProvenanceTests(unittest.TestCase):
 
     def test_insufficient_data_cause_precedence_is_mutually_exclusive(self):
         cases = [
-            ({"statuses": ["empty"]}, "empty_source"),
+            (
+                {
+                    "statuses": ["empty"],
+                    "visibility_statuses": ["access_verified"],
+                },
+                "empty_source",
+            ),
+            (
+                {
+                    "statuses": ["empty"],
+                    "visibility_statuses": ["visibility_unverified"],
+                },
+                "source_visibility_unverified",
+            ),
+            (
+                {
+                    "statuses": ["empty"],
+                    "visibility_statuses": ["scope_restricted"],
+                },
+                "scope_restricted_source",
+            ),
             (
                 {
                     "statuses": ["skipped"],
                     "reason_codes": ["upstream_source_returned_no_data"],
                 },
-                "skipped_prerequisite",
+                "source_visibility_unverified",
             ),
             (
                 {
@@ -299,6 +319,43 @@ class FindingProvenanceTests(unittest.TestCase):
         self.assertEqual(
             provenance["insufficient_data"]["cause"],
             "unauthorised_source",
+        )
+
+    def test_verified_empty_visibility_is_retained_in_finding_provenance(self):
+        finding = example_finding([])
+        finding["status"] = "no_data_to_assess"
+        finding["references"]["required_endpoint_ids"] = [
+            "az_storage_account_list"
+        ]
+        catalog = self.manifest_only_catalog(
+            [
+                {
+                    "endpoint_id": "az_storage_account_list",
+                    "endpoint_name": "Storage Accounts",
+                    "category": "base",
+                    "status": "empty",
+                    "access_verification": {
+                        "status": "access_verified",
+                        "plane": "azure_resource_manager",
+                        "scope": "/subscriptions/sub-one",
+                        "method": "arm_effective_permissions",
+                        "reason_code": "subscription_wide_arm_read_verified",
+                        "required_permissions": ["*/read"],
+                    },
+                }
+            ]
+        )
+
+        normalise_finding_reporting(finding, catalog=catalog)
+
+        provenance = finding["reporting"]["provenance"]
+        self.assertEqual(
+            provenance["required_endpoints"][0]["visibility_statuses"],
+            ["access_verified"],
+        )
+        self.assertEqual(
+            provenance["insufficient_data"]["cause"],
+            "empty_source",
         )
 
     def test_transitive_unauthorised_reason_and_root_are_retained(self):
@@ -401,7 +458,7 @@ class FindingProvenanceTests(unittest.TestCase):
         insufficient_data = finding["reporting"]["provenance"]["insufficient_data"]
         self.assertEqual(insufficient_data["cause"], "failed_request")
 
-    def test_evaluation_retains_expected_source_when_upstream_dataset_is_empty(self):
+    def test_empty_legacy_source_records_unverified_visibility(self):
         catalog = self.manifest_only_catalog(
             [
                 {
@@ -422,7 +479,7 @@ class FindingProvenanceTests(unittest.TestCase):
         self.assertEqual(finding["status"], "no_data_to_assess")
         self.assertEqual(
             finding["reporting"]["provenance"]["insufficient_data"]["cause"],
-            "empty_source",
+            "source_visibility_unverified",
         )
 
     def test_reporting_schema_1_0_remains_valid_without_required_endpoint_fields(self):

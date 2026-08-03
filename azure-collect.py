@@ -74,6 +74,7 @@ from azure_assess.collection_manifest import (
     CollectionManifestRecorder,
     endpoint_id,
     is_not_applicable_error,
+    result_item_count,
     utc_timestamp,
 )
 
@@ -90,6 +91,10 @@ SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE = {}
 TIMING_RECORDS = []
 COLLECTION_ERRORS = []
 COLLECTION_MANIFEST = None
+ACCESS_VERIFICATION = {
+    "arm": {"status": "not_evaluated"},
+    "graph": {"status": "not_evaluated"},
+}
 
 PERMISSION_BASELINE_CHECKED = False
 SOURCE_FILE_INDEX_LOCK = threading.Lock()
@@ -122,6 +127,41 @@ REQUIRED_CUSTOM_ROLE_ACTIONS = {
 REQUIRED_CUSTOM_ROLE_DATA_ACTIONS = {
     "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
 }
+
+GRAPH_ENDPOINT_PERMISSION_ALTERNATIVES = {
+    "Active Directory Applications": ({"Application.Read.All", "Directory.Read.All"},),
+    "Active Directory Groups": ({"Group.Read.All", "Directory.Read.All"},),
+    "Active Directory Service Principals": ({"Application.Read.All", "Directory.Read.All"},),
+    "Active Directory Users": ({"User.Read.All", "Directory.Read.All"},),
+    "Graph Conditional Access Policies": ({"Policy.Read.All"},),
+    "Graph Named Locations": ({"Policy.Read.All"},),
+    "Graph Authorization Policy": ({"Policy.Read.All"},),
+    "Graph Security Defaults Policy": ({"Policy.Read.All"},),
+    "Graph Directory Roles": ({"RoleManagement.Read.Directory", "Directory.Read.All"},),
+    "Graph Directory Role Assignments": ({"RoleManagement.Read.All", "RoleManagement.Read.Directory", "Directory.Read.All"},),
+    "Graph User Registration Details": ({"AuditLog.Read.All"},),
+    "Graph Group Settings": ({"Directory.Read.All"},),
+}
+ARM_SCOPE_RESTRICTED_ENDPOINTS = {
+    "Billing Accounts",
+    "Management Groups",
+    "Subscriptions",
+}
+NON_READ_COMMAND_MARKERS = (
+    " list-keys",
+    " listkeys",
+    " connection-string",
+    " appsettings ",
+    " keys ",
+    " keyvault key ",
+    " query ",
+    " run-command",
+    " secret ",
+    " storage blob ",
+    " list-effective",
+    " show-effective",
+    "--auth-mode login",
+)
 
 AZURE_CLI_EXTENSION_COMMAND_PREFIXES = {
     ("appconfig",): "appconfig",
@@ -245,15 +285,6 @@ def print_collection_error_summary():
     print("===========================================")
 
 
-def result_item_count(data):
-    """Return a human-scale count for a command JSON payload."""
-    if isinstance(data, list):
-        return len(data)
-    if isinstance(data, dict):
-        return len(data.keys())
-    return 0
-
-
 def timed_run_az_cli(
     cmd,
     endpoint_name=None,
@@ -307,6 +338,10 @@ def timed_run_az_cli(
             diagnostic_text=diagnostic_output,
             endpoint_identifier=endpoint_identifier,
             retry_count=retry_count,
+            access_verification=endpoint_access_verification(
+                endpoint_name,
+                command_template or cmd,
+            ),
         )
     return result
 
@@ -1817,6 +1852,232 @@ def get_current_principal_context(subscription_id=None):
     }, None
 
 
+def semantic_permission_blocks(payload):
+    """Return Azure effective-permission blocks from common response wrappers."""
+    if isinstance(payload, dict) and isinstance(payload.get("value"), list):
+        payload = payload["value"]
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def block_grants_unrestricted_arm_reads(block):
+    """Return whether one effective-permission block grants every ARM read action."""
+    actions = {str(item).strip().lower() for item in block.get("actions", [])}
+    not_actions = {
+        str(item).strip().lower() for item in block.get("notActions", [])
+    }
+    broad_read = bool(actions.intersection({"*", "*/read"}))
+    read_exclusions = {
+        item
+        for item in not_actions
+        if item == "*" or item.endswith("/read") or item == "*/read"
+    }
+    return broad_read and not read_exclusions
+
+
+def collect_automatic_access_verification():
+    """Collect non-secret ARM and Graph access evidence without prompting."""
+    subscription_id = AUTH_CONFIG.get("subscription_id")
+    arm_scope = f"/subscriptions/{subscription_id}" if subscription_id else None
+    arm_record = {
+        "status": "visibility_unverified",
+        "scope": arm_scope,
+        "method": "arm_effective_permissions",
+        "reason_code": "subscription_scope_unavailable",
+        "broad_read_granted": False,
+        "permission_block_count": 0,
+    }
+    if subscription_id:
+        permissions_url = (
+            "https://management.azure.com"
+            f"/subscriptions/{subscription_id}"
+            "/providers/Microsoft.Authorization/permissions"
+            "?api-version=2022-04-01"
+        )
+        permissions, permissions_error = run_json_command(
+            "az rest --method get "
+            f"--url {shell_quote(permissions_url)} "
+            "--output json"
+        )
+        blocks = semantic_permission_blocks(permissions)
+        broad_read_granted = any(
+            block_grants_unrestricted_arm_reads(block) for block in blocks
+        )
+        arm_record.update(
+            {
+                "status": (
+                    "access_verified"
+                    if broad_read_granted
+                    else "visibility_unverified"
+                ),
+                "reason_code": (
+                    "subscription_wide_arm_read_verified"
+                    if broad_read_granted
+                    else (
+                        "effective_permissions_query_failed"
+                        if permissions_error
+                        else "subscription_wide_arm_read_not_verified"
+                    )
+                ),
+                "broad_read_granted": broad_read_granted,
+                "permission_block_count": len(blocks),
+            }
+        )
+        if permissions_error and COLLECTION_MANIFEST is not None:
+            COLLECTION_MANIFEST.add_limitation(
+                "Could not verify effective Azure permissions at the selected subscription scope"
+            )
+
+    graph_record = {
+        "status": "visibility_unverified",
+        "method": "graph_access_token_claims",
+        "reason_code": "graph_token_unavailable",
+        "token_type": "unknown",
+        "granted_permissions": [],
+    }
+    token_response, token_error = run_json_command(
+        "az account get-access-token "
+        "--resource https://graph.microsoft.com/ "
+        "--output json"
+    )
+    if not token_error:
+        try:
+            claims = decode_jwt_payload(token_response["accessToken"])
+        except (KeyError, ValueError):
+            claims = {}
+        roles = sorted(
+            {str(item) for item in claims.get("roles", []) if item}
+        )
+        scopes = sorted(
+            {item for item in str(claims.get("scp") or "").split() if item}
+        )
+        token_type = (
+            "application"
+            if claims.get("idtyp") == "app" or (roles and not scopes)
+            else "delegated" if scopes else "unknown"
+        )
+        granted_permissions = roles if token_type == "application" else scopes
+        graph_record.update(
+            {
+                # Observing token claims supplies endpoint-specific evidence, but
+                # it does not prove complete Graph visibility in the abstract.
+                "status": "visibility_unverified",
+                "reason_code": (
+                    "application_roles_observed"
+                    if token_type == "application" and roles
+                    else (
+                        "delegated_scopes_observed"
+                        if token_type == "delegated" and scopes
+                        else "graph_permission_claims_unavailable"
+                    )
+                ),
+                "token_type": token_type,
+                "granted_permissions": granted_permissions,
+            }
+        )
+    elif COLLECTION_MANIFEST is not None:
+        COLLECTION_MANIFEST.add_limitation(
+            "Could not inspect Microsoft Graph permission claims for visibility verification"
+        )
+
+    verification = {"arm": arm_record, "graph": graph_record}
+    global ACCESS_VERIFICATION
+    ACCESS_VERIFICATION = verification
+    if COLLECTION_MANIFEST is not None:
+        COLLECTION_MANIFEST.set_access_verification(verification)
+    return verification
+
+
+def endpoint_access_verification(endpoint_name, command_template):
+    """Apply collected access evidence conservatively to one endpoint."""
+    name = str(endpoint_name or "unknown")
+    command = str(command_template or "")
+    lowered_command = command.lower()
+    if lowered_command.startswith("az config "):
+        return {
+            "status": "not_evaluated",
+            "plane": "local",
+            "method": "not_applicable",
+            "reason_code": "local_cli_configuration",
+        }
+
+    is_graph = (
+        name in GRAPH_ENDPOINT_PERMISSION_ALTERNATIVES
+        or "graph.microsoft.com" in lowered_command
+        or lowered_command.startswith("az ad ")
+    )
+    if is_graph:
+        alternatives = GRAPH_ENDPOINT_PERMISSION_ALTERNATIVES.get(name)
+        required_permissions = sorted(
+            {
+                permission
+                for group in (alternatives or ())
+                for permission in group
+            }
+        )
+        graph = ACCESS_VERIFICATION.get("graph", {})
+        granted = set(graph.get("granted_permissions") or [])
+        if graph.get("token_type") == "application" and alternatives and any(
+            granted.intersection(group) for group in alternatives
+        ):
+            status = "access_verified"
+            reason_code = "required_graph_application_permission_present"
+        elif graph.get("token_type") == "delegated":
+            status = "visibility_unverified"
+            reason_code = "delegated_graph_access_requires_user_privileges"
+        elif not alternatives:
+            status = "visibility_unverified"
+            reason_code = "endpoint_permission_not_mapped"
+        else:
+            status = "visibility_unverified"
+            reason_code = "required_graph_application_permission_not_verified"
+        return {
+            "status": status,
+            "plane": "microsoft_graph",
+            "scope": AUTH_CONFIG.get("tenant_id"),
+            "method": "graph_access_token_claims",
+            "reason_code": reason_code,
+            "required_permissions": required_permissions,
+        }
+
+    arm_scope = ACCESS_VERIFICATION.get("arm", {}).get("scope")
+    if name in ARM_SCOPE_RESTRICTED_ENDPOINTS:
+        return {
+            "status": "scope_restricted",
+            "plane": "azure_resource_manager",
+            "scope": arm_scope,
+            "method": "arm_effective_permissions",
+            "reason_code": "endpoint_scope_exceeds_selected_subscription",
+        }
+    if any(marker in lowered_command for marker in NON_READ_COMMAND_MARKERS):
+        return {
+            "status": "visibility_unverified",
+            "plane": "azure_or_service_data_plane",
+            "scope": arm_scope,
+            "method": "endpoint_permission_not_mapped",
+            "reason_code": "specialised_action_not_verified",
+        }
+    arm = ACCESS_VERIFICATION.get("arm", {})
+    if arm.get("status") == "access_verified":
+        return {
+            "status": "access_verified",
+            "plane": "azure_resource_manager",
+            "scope": arm_scope,
+            "method": "arm_effective_permissions",
+            "reason_code": "subscription_wide_arm_read_verified",
+            "required_permissions": ["*/read"],
+        }
+    return {
+        "status": "visibility_unverified",
+        "plane": "azure_resource_manager",
+        "scope": arm_scope,
+        "method": "arm_effective_permissions",
+        "reason_code": arm.get("reason_code") or "arm_read_access_not_verified",
+        "required_permissions": ["*/read"],
+    }
+
+
 def graph_collection_values(url):
     """Return all value[] entries from a Microsoft Graph collection, following nextLink."""
     values = []
@@ -2612,8 +2873,12 @@ def upstream_source_skip_reason(source):
     }
     root_cause_endpoint_ids = set()
     dependency_chains = []
+    contributing_visibility_statuses = set()
     source_id = endpoint_id(source)
     for outcome in outcomes:
+        verification = outcome.get("access_verification")
+        if isinstance(verification, dict) and verification.get("status"):
+            contributing_visibility_statuses.add(str(verification["status"]))
         details = outcome.get("reason_details")
         if not isinstance(details, dict):
             details = {}
@@ -2644,6 +2909,9 @@ def upstream_source_skip_reason(source):
     )
     return reason_code, statuses, {
         "contributing_reason_codes": sorted(contributing_reason_codes),
+        "contributing_visibility_statuses": sorted(
+            contributing_visibility_statuses
+        ),
         "root_cause_endpoint_ids": sorted(root_cause_endpoint_ids),
         "dependency_chains": dependency_chains,
     }
@@ -2951,7 +3219,7 @@ def collect_parameter_set(endpoint, param_set):
         if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
             data = data["value"]
 
-        if not data:
+        if result_item_count(data) == 0:
             print(f"[!] No data returned for: {name} with {param_set}")
             return []
 
@@ -3062,6 +3330,7 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
             source_diagnostics = {}
             reason_codes = []
             contributing_reason_codes = set()
+            contributing_visibility_statuses = set()
             root_cause_endpoint_ids = set()
             dependency_chains = []
             for source in missing_sources:
@@ -3089,6 +3358,9 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
                 contributing_reason_codes.add(reason_code)
                 contributing_reason_codes.update(
                     cause_details.get("contributing_reason_codes", [])
+                )
+                contributing_visibility_statuses.update(
+                    cause_details.get("contributing_visibility_statuses", [])
                 )
                 root_cause_endpoint_ids.update(
                     cause_details.get("root_cause_endpoint_ids", [])
@@ -3127,6 +3399,9 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
                     "parameters": missing_params,
                     "sources": source_diagnostics,
                     "contributing_reason_codes": sorted(contributing_reason_codes),
+                    "contributing_visibility_statuses": sorted(
+                        contributing_visibility_statuses
+                    ),
                     "immediate_upstream_endpoint_ids": [
                         endpoint_id(source) for source in missing_sources
                     ],
@@ -3401,6 +3676,17 @@ def execute_collection(args, max_workers):
         if args.timing_summary:
             print_timing_summary()
         return True
+
+    print("[*] Verifying collection visibility without additional user input...")
+    access_verification = collect_automatic_access_verification()
+    print(
+        "[~] Azure subscription read visibility: "
+        f"{access_verification['arm']['status']}"
+    )
+    print(
+        "[~] Microsoft Graph permission evidence: "
+        f"{access_verification['graph']['reason_code']}"
+    )
 
     # Azure CLI version collection is diagnostic only. A version lookup failure
     # must not prevent assessment data from being collected.

@@ -1041,11 +1041,27 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "result_count": 2,
                 },
                 {
-                    "endpoint_name": "Empty Endpoint",
+                    "endpoint_name": "Empty Endpoint — Visibility Unverified",
                     "category": "base",
                     "status": "empty",
                     "returncode": 0,
                     "result_count": 0,
+                },
+                {
+                    "endpoint_name": "Empty Endpoint — Access Verified",
+                    "category": "base",
+                    "status": "empty",
+                    "returncode": 0,
+                    "result_count": 0,
+                    "access_verification": {"status": "access_verified"},
+                },
+                {
+                    "endpoint_name": "Empty Endpoint — Scope Restricted",
+                    "category": "base",
+                    "status": "empty",
+                    "returncode": 0,
+                    "result_count": 0,
+                    "access_verification": {"status": "scope_restricted"},
                 },
                 {
                     "endpoint_name": "Azure CLI config",
@@ -1103,9 +1119,12 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             1,
         )
         self.assertNotIn("permission_blocked", summary)
-        self.assertEqual(requests["attempted"], 6)
+        self.assertEqual(requests["attempted"], 8)
         self.assertEqual(requests["success"], 1)
-        self.assertEqual(requests["empty"], 1)
+        self.assertEqual(requests["empty"], 3)
+        self.assertEqual(requests["empty_access_verified"], 1)
+        self.assertEqual(requests["empty_scope_restricted"], 1)
+        self.assertEqual(requests["empty_visibility_unverified"], 1)
         self.assertEqual(requests["failed"], 1)
         self.assertEqual(requests["unauthorised"], 1)
         self.assertEqual(requests["not_applicable"], 2)
@@ -1142,7 +1161,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         )
         self.assertEqual(failed_card["value"], 1)
         self.assertEqual(unauthorised_card["value"], 1)
-        self.assertEqual(request_attempts_card["value"], 6)
+        self.assertEqual(request_attempts_card["value"], 8)
         self.assertEqual(not_applicable_card["value"], 2)
         self.assertEqual(
             cards["requests"]["unrecorded"][0],
@@ -1164,6 +1183,9 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("The outcome cards below add up to Total Attempts", body)
         self.assertIn("the cause cards below add up to Total Skipped", body)
         self.assertIn("They are an accounting gap", body)
+        self.assertIn("Returned No Data — Access Verified", body)
+        self.assertIn("Returned No Data — Scope Restricted", body)
+        self.assertIn("Returned No Data — Visibility Unverified", body)
         self.assertIn("Checks Without Sufficient Data", body)
         self.assertNotIn("Rows in azure-findings-flat.json", body)
         self.assertNotIn("Status: not_found", body)
@@ -1871,6 +1893,27 @@ class CollectDataWithParamsTests(unittest.TestCase):
         azure_collect.SOURCE_RECORD_CACHE.clear()
         azure_collect.SOURCE_FILE_INDEX_CACHE.clear()
 
+    def test_parameterised_value_wrapper_with_no_records_is_empty(self):
+        endpoint = {
+            "name": "Wrapped Collection",
+            "cli_command": "az rest --method get --url {id}",
+        }
+
+        with mock.patch.object(
+            azure_collect,
+            "timed_run_az_cli",
+            return_value={
+                "returncode": 0,
+                "json": {"@odata.context": "metadata", "value": []},
+            },
+        ):
+            records = azure_collect.collect_parameter_set(
+                endpoint,
+                {"id": "https://example.invalid/collection"},
+            )
+
+        self.assertEqual(records, [])
+
     def test_empty_upstream_collection_records_structured_skip_reason(self):
         endpoint = {
             "name": "Child Details",
@@ -1894,6 +1937,12 @@ class CollectDataWithParamsTests(unittest.TestCase):
                 0,
                 0,
                 endpoint_identifier="az_parent_list",
+                access_verification={
+                    "status": "access_verified",
+                    "plane": "azure_resource_manager",
+                    "method": "arm_effective_permissions",
+                    "reason_code": "subscription_wide_arm_read_verified",
+                },
             )
             azure_collect.OUTPUT_DIR = output_dir
 
@@ -1911,6 +1960,10 @@ class CollectDataWithParamsTests(unittest.TestCase):
         self.assertEqual(
             skipped["reason_details"]["sources"]["az_parent_list"]["collection_statuses"],
             ["empty"],
+        )
+        self.assertEqual(
+            skipped["reason_details"]["contributing_visibility_statuses"],
+            ["access_verified"],
         )
 
     def test_tenant_capability_root_is_available_to_downstream_collectors(self):
