@@ -8,6 +8,7 @@ from pathlib import Path
 from azure_assess.findings_definitions import finding_definition
 from azure_assess.findings_reporting import (
     REPORTING_SCHEMA_VERSION,
+    insufficient_data_attribution,
     normalise_finding_reporting,
     sha256_file,
     validate_finding_reporting,
@@ -213,6 +214,140 @@ class FindingProvenanceTests(unittest.TestCase):
             }
         }
 
+    def manifest_only_catalog(self, endpoint_runs):
+        return {
+            "azure-collection-manifest": {
+                "path": "/tmp/azure-collection-manifest_run-causes.json",
+                "error": None,
+                "data": {
+                    "schema_version": "2.2",
+                    "run_id": "run-causes",
+                    "status": "partial",
+                    "started_at": "2026-08-03T10:00:00Z",
+                    "completed_at": "2026-08-03T10:05:00Z",
+                    "context": {},
+                    "tool": {},
+                    "limitations": [],
+                    "endpoint_runs": endpoint_runs,
+                    "datasets": [],
+                },
+            }
+        }
+
+    def test_insufficient_data_cause_precedence_is_mutually_exclusive(self):
+        cases = [
+            ({"statuses": ["empty"]}, "empty_source"),
+            (
+                {
+                    "statuses": ["skipped"],
+                    "reason_codes": ["upstream_source_returned_no_data"],
+                },
+                "skipped_prerequisite",
+            ),
+            ({"statuses": ["not_attempted"]}, "collection_incomplete"),
+            ({"statuses": ["failed", "empty"]}, "failed_request"),
+            ({"statuses": ["unauthorised", "failed"]}, "unauthorised_source"),
+        ]
+
+        for endpoint, expected_cause in cases:
+            with self.subTest(expected_cause=expected_cause):
+                attribution = insufficient_data_attribution(
+                    "no_data_to_assess",
+                    [{"endpoint_id": "endpoint-one", **endpoint}],
+                )
+                self.assertEqual(attribution["cause"], expected_cause)
+
+    def test_inconclusive_finding_uses_required_endpoint_status_precedence(self):
+        finding = example_finding([])
+        finding["status"] = "no_data_to_assess"
+        finding["references"]["required_endpoint_ids"] = [
+            "az_storage_account_list",
+            "az_storage_account_keys_list",
+        ]
+        catalog = self.manifest_only_catalog(
+            [
+                {
+                    "endpoint_id": "az_storage_account_list",
+                    "endpoint_name": "Storage Accounts",
+                    "category": "base",
+                    "status": "empty",
+                },
+                {
+                    "endpoint_id": "az_storage_account_keys_list",
+                    "endpoint_name": "Storage Account Keys",
+                    "category": "parameterised",
+                    "status": "unauthorised",
+                },
+            ]
+        )
+
+        normalise_finding_reporting(finding, catalog=catalog)
+
+        provenance = finding["reporting"]["provenance"]
+        self.assertEqual(len(provenance["required_endpoints"]), 2)
+        self.assertEqual(
+            provenance["insufficient_data"]["cause"],
+            "unauthorised_source",
+        )
+
+    def test_required_endpoint_patterns_match_when_no_dataset_was_written(self):
+        finding = example_finding([])
+        finding["status"] = "no_data_to_assess"
+        finding["references"]["required_endpoint_patterns"] = [
+            ["graph.microsoft.com", "authorizationpolicy"],
+        ]
+        catalog = self.manifest_only_catalog(
+            [
+                {
+                    "endpoint_id": (
+                        "az_rest_--method_get_--url_https_graph.microsoft.com_"
+                        "v1.0_policies_authorizationpolicy"
+                    ),
+                    "endpoint_name": "Graph Authorization Policy",
+                    "category": "base",
+                    "status": "failed",
+                }
+            ]
+        )
+
+        normalise_finding_reporting(finding, catalog=catalog)
+
+        insufficient_data = finding["reporting"]["provenance"]["insufficient_data"]
+        self.assertEqual(insufficient_data["cause"], "failed_request")
+
+    def test_evaluation_retains_expected_source_when_upstream_dataset_is_empty(self):
+        catalog = self.manifest_only_catalog(
+            [
+                {
+                    "endpoint_id": "az_storage_account_list",
+                    "endpoint_name": "Storage Accounts",
+                    "category": "base",
+                    "status": "empty",
+                }
+            ]
+        )
+
+        findings = azure_findings.evaluate_findings(catalog)
+
+        finding = next(
+            item for item in findings
+            if item["title"] == "Azure blob container permits public access"
+        )
+        self.assertEqual(finding["status"], "no_data_to_assess")
+        self.assertEqual(
+            finding["reporting"]["provenance"]["insufficient_data"]["cause"],
+            "empty_source",
+        )
+
+    def test_reporting_schema_1_0_remains_valid_without_required_endpoint_fields(self):
+        finding = example_finding([])
+        normalise_finding_reporting(finding)
+        finding["reporting"]["schema_version"] = "1.0"
+        finding["reporting"]["provenance"].pop("required_endpoints")
+        finding["reporting"]["provenance"].pop("insufficient_data")
+
+        validate_finding_reporting(finding)
+
     def test_manifest_dataset_hash_and_collection_run_are_linked(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             dataset_path = Path(tmpdir) / "az_storage_account_list_run-one.json"
@@ -280,6 +415,13 @@ class FindingProvenanceTests(unittest.TestCase):
             ["az_role_assignment_list", "az_role_definition_custom_list"],
         )
         self.assertEqual(source_dataset["collection_statuses"], ["empty", "success"])
+        self.assertEqual(
+            [
+                endpoint["endpoint_id"]
+                for endpoint in finding["reporting"]["provenance"]["required_endpoints"]
+            ],
+            ["az_role_assignment_list", "az_role_definition_custom_list"],
+        )
 
     def test_manifest_hash_mismatch_is_an_explicit_limitation(self):
         with tempfile.TemporaryDirectory() as tmpdir:

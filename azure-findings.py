@@ -448,6 +448,49 @@ def dataset_paths_any(catalog, *fragment_sets):
     return sorted(set(paths))
 
 
+class SourceReferences(list):
+    """Actual source paths plus expected endpoint identities for absent data."""
+
+    def __init__(self, paths=(), required_patterns=(), required_endpoint_ids=()):
+        super().__init__(paths)
+        self.required_patterns = tuple(
+            dict.fromkeys(tuple(pattern) for pattern in required_patterns)
+        )
+        self.required_endpoint_ids = tuple(dict.fromkeys(required_endpoint_ids))
+
+    def __add__(self, other):
+        return SourceReferences(
+            list(self) + list(other),
+            self.required_patterns + tuple(getattr(other, "required_patterns", ())),
+            self.required_endpoint_ids
+            + tuple(getattr(other, "required_endpoint_ids", ())),
+        )
+
+    def __radd__(self, other):
+        return SourceReferences(
+            list(other) + list(self),
+            tuple(getattr(other, "required_patterns", ())) + self.required_patterns,
+            tuple(getattr(other, "required_endpoint_ids", ()))
+            + self.required_endpoint_ids,
+        )
+
+
+def dataset_references(catalog, *fragments):
+    """Return matching paths while retaining the endpoint matching pattern."""
+    return SourceReferences(
+        dataset_paths(catalog, *fragments),
+        required_patterns=(tuple(str(fragment).lower() for fragment in fragments),),
+    )
+
+
+def dataset_references_any(catalog, *fragment_sets):
+    """Combine alternative dataset references without losing expected patterns."""
+    references = SourceReferences()
+    for fragments in fragment_sets:
+        references += dataset_references(catalog, *fragments)
+    return SourceReferences(sorted(set(references)), references.required_patterns)
+
+
 def resource_portal_link(resource_id):
     if not resource_id:
         return None
@@ -536,7 +579,17 @@ def build_present_links(source_files, evidence, finding_title):
 
 
 def attach_references(finding, source_files):
-    references = {"source_files": sorted(set(source_files)), "evidence_links": []}
+    references = {
+        "source_files": sorted(set(source_files)),
+        "required_endpoint_patterns": [
+            list(pattern)
+            for pattern in getattr(source_files, "required_patterns", ())
+        ],
+        "required_endpoint_ids": list(
+            getattr(source_files, "required_endpoint_ids", ())
+        ),
+        "evidence_links": [],
+    }
     for evidence in finding["evidence"]:
         item_refs = build_evidence_references(evidence)
         item_refs.extend(build_present_links(source_files, evidence, finding["title"]))
@@ -897,6 +950,7 @@ def correlation_finding(title, severity, reason, correlation):
     finding["_coverage_eligible_assets"] = correlation.eligible_assets
     finding["_correlation_limitations"] = correlation.limitations
     finding["_correlation_source_files"] = correlation.source_files
+    finding["_required_endpoint_ids"] = correlation.required_endpoint_ids
     return finding
 
 
@@ -1005,108 +1059,108 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     graph_security_defaults_policy = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"))
     graph_user_registration_details = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "userregistrationdetails"))
     source_map = {
-        "apim_services": dataset_paths(catalog, "az_apim_show"),
-        "ad_users": dataset_paths(catalog, "az_ad_user_list"),
-        "app_service_environments": dataset_paths(catalog, "az_appservice_ase_show"),
-        "storage_accounts": dataset_paths(catalog, "az_storage_account_list"),
-        "storage_keys": dataset_paths(catalog, "az_storage_account_keys_list"),
-        "storage_blob_service_properties": dataset_paths(catalog, "az_storage_account_blob-service-properties_show"),
-        "storage_file_service_properties": dataset_paths(catalog, "az_storage_account_file-service-properties_show"),
-        "storage_shares": dataset_paths(catalog, "az_storage_share-rm_list"),
-        "storage_queues": dataset_paths(catalog, "az_storage_queue_list"),
-        "storage_tables": dataset_paths(catalog, "az_storage_table_list"),
-        "role_definitions": dataset_paths(catalog, "az_role_definition_list"),
-        "role_assignments": dataset_paths(catalog, "role_enriched") or dataset_paths(catalog, "az_role_assignment_list"),
-        "postgres_parameters": dataset_paths(catalog, "az_postgres_flexible-server_parameter_list"),
-        "postgres_firewall_rules": dataset_paths(catalog, "az_postgres_flexible-server_firewall-rule_list"),
-        "mysql_servers": dataset_paths(catalog, "az_mysql_flexible-server_list"),
-        "mysql_parameters": dataset_paths(catalog, "az_mysql_flexible-server_parameter_list"),
-        "key_vaults": dataset_paths(catalog, "az_keyvault_list"),
-        "key_vault_network_rules": dataset_paths(catalog, "az_keyvault_network-rule_list"),
-        "key_vault_private_endpoint_connections": dataset_paths(catalog, "az_keyvault_show", "privateendpointconnections"),
-        "key_vault_keys": dataset_paths(catalog, "az_keyvault_key_list"),
-        "key_vault_key_rotation_policies": dataset_paths(catalog, "az_keyvault_key_rotation-policy_show"),
-        "key_vault_secrets": dataset_paths(catalog, "az_keyvault_secret_list"),
-        "metric_alerts": dataset_paths(catalog, "az_monitor_metrics_alert_list"),
-        "defender_assessments": dataset_paths_any(
+        "apim_services": dataset_references(catalog, "az_apim_show"),
+        "ad_users": dataset_references(catalog, "az_ad_user_list"),
+        "app_service_environments": dataset_references(catalog, "az_appservice_ase_show"),
+        "storage_accounts": dataset_references(catalog, "az_storage_account_list"),
+        "storage_keys": dataset_references(catalog, "az_storage_account_keys_list"),
+        "storage_blob_service_properties": dataset_references(catalog, "az_storage_account_blob-service-properties_show"),
+        "storage_file_service_properties": dataset_references(catalog, "az_storage_account_file-service-properties_show"),
+        "storage_shares": dataset_references(catalog, "az_storage_share-rm_list"),
+        "storage_queues": dataset_references(catalog, "az_storage_queue_list"),
+        "storage_tables": dataset_references(catalog, "az_storage_table_list"),
+        "role_definitions": dataset_references(catalog, "az_role_definition_list"),
+        "role_assignments": dataset_references(catalog, "role_enriched") or dataset_references(catalog, "az_role_assignment_list"),
+        "postgres_parameters": dataset_references(catalog, "az_postgres_flexible-server_parameter_list"),
+        "postgres_firewall_rules": dataset_references(catalog, "az_postgres_flexible-server_firewall-rule_list"),
+        "mysql_servers": dataset_references(catalog, "az_mysql_flexible-server_list"),
+        "mysql_parameters": dataset_references(catalog, "az_mysql_flexible-server_parameter_list"),
+        "key_vaults": dataset_references(catalog, "az_keyvault_list"),
+        "key_vault_network_rules": dataset_references(catalog, "az_keyvault_network-rule_list"),
+        "key_vault_private_endpoint_connections": dataset_references(catalog, "az_keyvault_show", "privateendpointconnections"),
+        "key_vault_keys": dataset_references(catalog, "az_keyvault_key_list"),
+        "key_vault_key_rotation_policies": dataset_references(catalog, "az_keyvault_key_rotation-policy_show"),
+        "key_vault_secrets": dataset_references(catalog, "az_keyvault_secret_list"),
+        "metric_alerts": dataset_references(catalog, "az_monitor_metrics_alert_list"),
+        "defender_assessments": dataset_references_any(
             catalog,
             ("az_security_assessment_list",),
             ("microsoft.security", "assessments"),
         ),
-        "defender_settings": dataset_paths(catalog, "az_security_pricing_list"),
-        "defender_general_settings": dataset_paths(catalog, "az_security_setting_list"),
-        "defender_auto_provisioning_settings": dataset_paths(catalog, "az_security_auto-provisioning-setting_list"),
-        "defender_jit_policies": dataset_paths(catalog, "az_security_jit-policy_list"),
-        "security_contacts": dataset_paths(catalog, "az_security_contact_list"),
-        "locations": dataset_paths(catalog, "az_account_list-locations"),
-        "resources": dataset_paths(catalog, "az_resource_list"),
-        "network_watchers": dataset_paths(catalog, "az_network_watcher_list"),
-        "subscriptions": dataset_paths(catalog, "az_account_list"),
-        "subscription_diagnostic_settings": dataset_paths(catalog, "az_monitor_diagnostic-settings_subscription_list"),
-        "diagnostic_settings": dataset_paths(catalog, "az_monitor_diagnostic-settings_list"),
-        "diagnostic_categories": dataset_paths(catalog, "az_monitor_diagnostic-settings_categories_list"),
-        "activity_log_alerts": dataset_paths(catalog, "az_monitor_activity-log_alert_list"),
-        "log_profiles": dataset_paths(catalog, "az_monitor_log-profiles_list"),
-        "web_app_configs": dataset_paths(catalog, "az_webapp_config_show"),
-        "web_app_access_restrictions": dataset_paths(catalog, "az_webapp_config_access-restriction_show"),
-        "web_app_auth_settings": dataset_paths(catalog, "az_webapp_auth_show"),
-        "web_app_logs": dataset_paths(catalog, "az_webapp_log_show"),
-        "web_apps": dataset_paths(catalog, "az_webapp_list"),
-        "web_app_appsettings": dataset_paths(catalog, "az_webapp_config_appsettings_list"),
-        "function_apps": dataset_paths(catalog, "az_functionapp_list"),
-        "function_app_configs": dataset_paths(catalog, "az_functionapp_config_show"),
-        "function_app_auth_settings": dataset_paths(catalog, "az_webapp_auth_show"),
-        "function_app_appsettings": dataset_paths(catalog, "az_functionapp_config_appsettings_list"),
-        "function_app_keys": dataset_paths(catalog, "az_functionapp_keys_list"),
-        "function_app_access_restrictions": dataset_paths(catalog, "az_functionapp_config_access-restriction_show"),
-        "function_app_identities": dataset_paths(catalog, "az_functionapp_identity_show"),
-        "function_app_vnet_integrations": dataset_paths(catalog, "az_functionapp_vnet-integration_list"),
-        "aks_clusters": dataset_paths(catalog, "az_aks_list"),
-        "container_registries": dataset_paths(catalog, "az_acr_list"),
-        "acr_private_endpoint_connections": dataset_paths(catalog, "microsoft.containerregistry", "private-endpoint-connection"),
-        "cosmosdb_accounts": dataset_paths(catalog, "az_cosmosdb_list"),
-        "cosmosdb_sql_role_assignments": dataset_paths(catalog, "az_cosmosdb_sql_role_assignment_list"),
-        "eventgrid_topics": dataset_paths(catalog, "az_eventgrid_topic_list"),
-        "eventgrid_domains": dataset_paths(catalog, "az_eventgrid_domain_list"),
-        "iot_dps_instances": dataset_paths(catalog, "az_iot_dps_list"),
-        "cognitive_services_accounts": dataset_paths(catalog, "az_cognitiveservices_account_list"),
-        "databricks_workspaces": dataset_paths(catalog, "az_databricks_workspace_show"),
-        "machine_learning_workspaces": dataset_paths(catalog, "az_ml_workspace_show"),
-        "redis_caches": dataset_paths(catalog, "az_redis_list"),
-        "search_services": dataset_paths(catalog, "az_search_service_show"),
-        "search_shared_private_links": dataset_paths(catalog, "az_search_shared-private-link-resource_list"),
-        "signalr_services": dataset_paths(catalog, "az_signalr_show"),
-        "sql_servers": dataset_paths(catalog, "az_sql_server_list"),
-        "sql_server_details": dataset_paths(catalog, "az_sql_server_show"),
-        "sql_server_aad_admins": dataset_paths(catalog, "az_sql_server_ad-admin_list"),
-        "sql_server_audit_policies": dataset_paths(catalog, "az_sql_server_audit-policy_show"),
-        "sql_server_firewall_rules": dataset_paths(catalog, "az_sql_server_firewall-rule_list"),
-        "sql_server_threat_policies": dataset_paths(catalog, "az_sql_server_threat-policy_show"),
-        "sql_server_tde_keys": dataset_paths(catalog, "az_sql_server_tde-key_show"),
-        "sql_server_vuln_assessments": dataset_paths(catalog, "az_sql_server_vuln-assessment_show"),
-        "sql_database_audit_policies": dataset_paths(catalog, "az_sql_db_audit-policy_show"),
-        "sql_database_threat_policies": dataset_paths(catalog, "az_sql_db_threat-policy_show"),
-        "sql_database_tde": dataset_paths(catalog, "az_sql_db_tde_show"),
-        "backup_items": dataset_paths(catalog, "az_backup_item_list"),
-        "backup_policies": dataset_paths(catalog, "az_backup_policy_list"),
-        "hdinsight_clusters": dataset_paths(catalog, "az_hdinsight_show"),
-        "managed_disks": dataset_paths(catalog, "az_disk_list"),
-        "synapse_workspaces": dataset_paths(catalog, "az_synapse_workspace_list"),
-        "bastion_hosts": dataset_paths(catalog, "az_network_bastion_list"),
-        "flow_logs": dataset_paths(catalog, "az_network_watcher_flow-log_list"),
-        "public_ip_addresses": dataset_paths(catalog, "az_network_public-ip_list"),
-        "vm_details": dataset_paths(catalog, "az_vm_show"),
-        "vm_extensions": dataset_paths(catalog, "az_vm_extension_list"),
-        "vm_scale_sets": dataset_paths(catalog, "az_vmss_list"),
-        "nsgs": dataset_paths(catalog, "az_network_nsg_list"),
-        "graph_conditional_access_policies": dataset_paths(catalog, "graph.microsoft.com", "conditionalaccess", "policies"),
-        "graph_directory_roles": dataset_paths(catalog, "graph.microsoft.com", "directoryroles"),
-        "graph_directory_role_assignments": dataset_paths(catalog, "graph.microsoft.com", "rolemanagement", "roleassignments"),
-        "graph_group_settings": dataset_paths(catalog, "graph.microsoft.com", "groupsettings"),
-        "graph_named_locations": dataset_paths(catalog, "graph.microsoft.com", "namedlocations"),
-        "graph_authorization_policy": dataset_paths(catalog, "graph.microsoft.com", "authorizationpolicy"),
-        "graph_security_defaults_policy": dataset_paths(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"),
-        "graph_user_registration_details": dataset_paths(catalog, "graph.microsoft.com", "userregistrationdetails"),
+        "defender_settings": dataset_references(catalog, "az_security_pricing_list"),
+        "defender_general_settings": dataset_references(catalog, "az_security_setting_list"),
+        "defender_auto_provisioning_settings": dataset_references(catalog, "az_security_auto-provisioning-setting_list"),
+        "defender_jit_policies": dataset_references(catalog, "az_security_jit-policy_list"),
+        "security_contacts": dataset_references(catalog, "az_security_contact_list"),
+        "locations": dataset_references(catalog, "az_account_list-locations"),
+        "resources": dataset_references(catalog, "az_resource_list"),
+        "network_watchers": dataset_references(catalog, "az_network_watcher_list"),
+        "subscriptions": dataset_references(catalog, "az_account_list"),
+        "subscription_diagnostic_settings": dataset_references(catalog, "az_monitor_diagnostic-settings_subscription_list"),
+        "diagnostic_settings": dataset_references(catalog, "az_monitor_diagnostic-settings_list"),
+        "diagnostic_categories": dataset_references(catalog, "az_monitor_diagnostic-settings_categories_list"),
+        "activity_log_alerts": dataset_references(catalog, "az_monitor_activity-log_alert_list"),
+        "log_profiles": dataset_references(catalog, "az_monitor_log-profiles_list"),
+        "web_app_configs": dataset_references(catalog, "az_webapp_config_show"),
+        "web_app_access_restrictions": dataset_references(catalog, "az_webapp_config_access-restriction_show"),
+        "web_app_auth_settings": dataset_references(catalog, "az_webapp_auth_show"),
+        "web_app_logs": dataset_references(catalog, "az_webapp_log_show"),
+        "web_apps": dataset_references(catalog, "az_webapp_list"),
+        "web_app_appsettings": dataset_references(catalog, "az_webapp_config_appsettings_list"),
+        "function_apps": dataset_references(catalog, "az_functionapp_list"),
+        "function_app_configs": dataset_references(catalog, "az_functionapp_config_show"),
+        "function_app_auth_settings": dataset_references(catalog, "az_webapp_auth_show"),
+        "function_app_appsettings": dataset_references(catalog, "az_functionapp_config_appsettings_list"),
+        "function_app_keys": dataset_references(catalog, "az_functionapp_keys_list"),
+        "function_app_access_restrictions": dataset_references(catalog, "az_functionapp_config_access-restriction_show"),
+        "function_app_identities": dataset_references(catalog, "az_functionapp_identity_show"),
+        "function_app_vnet_integrations": dataset_references(catalog, "az_functionapp_vnet-integration_list"),
+        "aks_clusters": dataset_references(catalog, "az_aks_list"),
+        "container_registries": dataset_references(catalog, "az_acr_list"),
+        "acr_private_endpoint_connections": dataset_references(catalog, "microsoft.containerregistry", "private-endpoint-connection"),
+        "cosmosdb_accounts": dataset_references(catalog, "az_cosmosdb_list"),
+        "cosmosdb_sql_role_assignments": dataset_references(catalog, "az_cosmosdb_sql_role_assignment_list"),
+        "eventgrid_topics": dataset_references(catalog, "az_eventgrid_topic_list"),
+        "eventgrid_domains": dataset_references(catalog, "az_eventgrid_domain_list"),
+        "iot_dps_instances": dataset_references(catalog, "az_iot_dps_list"),
+        "cognitive_services_accounts": dataset_references(catalog, "az_cognitiveservices_account_list"),
+        "databricks_workspaces": dataset_references(catalog, "az_databricks_workspace_show"),
+        "machine_learning_workspaces": dataset_references(catalog, "az_ml_workspace_show"),
+        "redis_caches": dataset_references(catalog, "az_redis_list"),
+        "search_services": dataset_references(catalog, "az_search_service_show"),
+        "search_shared_private_links": dataset_references(catalog, "az_search_shared-private-link-resource_list"),
+        "signalr_services": dataset_references(catalog, "az_signalr_show"),
+        "sql_servers": dataset_references(catalog, "az_sql_server_list"),
+        "sql_server_details": dataset_references(catalog, "az_sql_server_show"),
+        "sql_server_aad_admins": dataset_references(catalog, "az_sql_server_ad-admin_list"),
+        "sql_server_audit_policies": dataset_references(catalog, "az_sql_server_audit-policy_show"),
+        "sql_server_firewall_rules": dataset_references(catalog, "az_sql_server_firewall-rule_list"),
+        "sql_server_threat_policies": dataset_references(catalog, "az_sql_server_threat-policy_show"),
+        "sql_server_tde_keys": dataset_references(catalog, "az_sql_server_tde-key_show"),
+        "sql_server_vuln_assessments": dataset_references(catalog, "az_sql_server_vuln-assessment_show"),
+        "sql_database_audit_policies": dataset_references(catalog, "az_sql_db_audit-policy_show"),
+        "sql_database_threat_policies": dataset_references(catalog, "az_sql_db_threat-policy_show"),
+        "sql_database_tde": dataset_references(catalog, "az_sql_db_tde_show"),
+        "backup_items": dataset_references(catalog, "az_backup_item_list"),
+        "backup_policies": dataset_references(catalog, "az_backup_policy_list"),
+        "hdinsight_clusters": dataset_references(catalog, "az_hdinsight_show"),
+        "managed_disks": dataset_references(catalog, "az_disk_list"),
+        "synapse_workspaces": dataset_references(catalog, "az_synapse_workspace_list"),
+        "bastion_hosts": dataset_references(catalog, "az_network_bastion_list"),
+        "flow_logs": dataset_references(catalog, "az_network_watcher_flow-log_list"),
+        "public_ip_addresses": dataset_references(catalog, "az_network_public-ip_list"),
+        "vm_details": dataset_references(catalog, "az_vm_show"),
+        "vm_extensions": dataset_references(catalog, "az_vm_extension_list"),
+        "vm_scale_sets": dataset_references(catalog, "az_vmss_list"),
+        "nsgs": dataset_references(catalog, "az_network_nsg_list"),
+        "graph_conditional_access_policies": dataset_references(catalog, "graph.microsoft.com", "conditionalaccess", "policies"),
+        "graph_directory_roles": dataset_references(catalog, "graph.microsoft.com", "directoryroles"),
+        "graph_directory_role_assignments": dataset_references(catalog, "graph.microsoft.com", "rolemanagement", "roleassignments"),
+        "graph_group_settings": dataset_references(catalog, "graph.microsoft.com", "groupsettings"),
+        "graph_named_locations": dataset_references(catalog, "graph.microsoft.com", "namedlocations"),
+        "graph_authorization_policy": dataset_references(catalog, "graph.microsoft.com", "authorizationpolicy"),
+        "graph_security_defaults_policy": dataset_references(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"),
+        "graph_user_registration_details": dataset_references(catalog, "graph.microsoft.com", "userregistrationdetails"),
     }
 
     # Resolve exact dataset identities for the cross-dataset analyzers. Existing
@@ -1114,12 +1168,17 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     offline_inputs = AnalysisInputs(catalog, OFFLINE_CORRELATION_DATASETS)
 
     def offline_sources(*logical_names):
-        return sorted(
-            {
+        return SourceReferences(
+            sorted({
                 source_file
                 for logical_name in logical_names
                 for source_file in offline_inputs.get(logical_name).source_files
-            }
+            }),
+            required_endpoint_ids=sorted({
+                endpoint_id
+                for logical_name in logical_names
+                for endpoint_id in offline_inputs.get(logical_name).endpoint_ids
+            }),
         )
 
     def offline_records(logical_name):
@@ -1129,6 +1188,13 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         correlation.limitations = list(
             dict.fromkeys(
                 correlation.limitations + offline_inputs.limitations(logical_names)
+            )
+        )
+        correlation.required_endpoint_ids = sorted(
+            set(correlation.required_endpoint_ids).union(
+                endpoint_id
+                for logical_name in logical_names
+                for endpoint_id in offline_inputs.get(logical_name).endpoint_ids
             )
         )
         return correlation
@@ -3362,13 +3428,13 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "Access to Azure Key Vault not restricted to trusted source addresses": source_map["key_vaults"] + source_map["key_vault_network_rules"],
         "Azure Monitor Alerts not configured to notify high severity events": source_map["metric_alerts"],
         "Storage Accounts not using private IP endpoints": source_map["storage_accounts"],
-        "PostgreSQL server without connection throttling": dataset_paths(catalog, "az_postgres_flexible-server_parameter_list"),
+        "PostgreSQL server without connection throttling": dataset_references(catalog, "az_postgres_flexible-server_parameter_list"),
         "Azure Storage Containers without Soft Delete protection": source_map["storage_blob_service_properties"],
         "Azure Activity Log Alerts missing for key event types": source_map["activity_log_alerts"],
         "Microsoft Defender for Cloud is not enabled": source_map["defender_settings"],
         "Role-Based Access Control (RBAC) not enabled for Azure Key Vault": source_map["key_vaults"],
-        "MySQL server without audit logging enabled": dataset_paths(catalog, "az_mysql_flexible-server_parameter_list"),
-        "PostgreSQL server with short log retention period": dataset_paths(catalog, "az_postgres_flexible-server_parameter_list"),
+        "MySQL server without audit logging enabled": dataset_references(catalog, "az_mysql_flexible-server_parameter_list"),
+        "PostgreSQL server with short log retention period": dataset_references(catalog, "az_postgres_flexible-server_parameter_list"),
         "Security contact phone number is not set in Azure tenant": source_map["security_contacts"],
         "Azure AppService HTTP logs not enabled enabled": source_map["web_app_logs"],
         "Azure Network Watcher not enabled for all subscription locations": source_map["network_watchers"] + source_map["resources"] + source_map["locations"],
@@ -3438,13 +3504,13 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "MySQL flexible servers do not enable geo-redundant backup": source_map["mysql_servers"],
         "MySQL flexible servers permit TLS versions below 1.2": source_map["mysql_servers"] + source_map["mysql_parameters"],
         "MySQL flexible servers do not enforce SSL connections": source_map["mysql_servers"] + source_map["mysql_parameters"],
-        "PostgreSQL flexible servers do not enforce SSL connections": source_map["postgres_parameters"] + dataset_paths(catalog, "az_postgres_flexible-server_list"),
-        "PostgreSQL flexible servers do not enable geo-redundant backup": dataset_paths(catalog, "az_postgres_flexible-server_list"),
-        "PostgreSQL flexible servers do not log checkpoints": source_map["postgres_parameters"] + dataset_paths(catalog, "az_postgres_flexible-server_list"),
-        "PostgreSQL flexible servers do not log connections": source_map["postgres_parameters"] + dataset_paths(catalog, "az_postgres_flexible-server_list"),
-        "PostgreSQL flexible servers do not log disconnections": source_map["postgres_parameters"] + dataset_paths(catalog, "az_postgres_flexible-server_list"),
-        "PostgreSQL flexible servers do not have a private DNS zone configured": dataset_paths(catalog, "az_postgres_flexible-server_list"),
-        "PostgreSQL flexible servers do not use private network access": dataset_paths(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL flexible servers do not enforce SSL connections": source_map["postgres_parameters"] + dataset_references(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL flexible servers do not enable geo-redundant backup": dataset_references(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL flexible servers do not log checkpoints": source_map["postgres_parameters"] + dataset_references(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL flexible servers do not log connections": source_map["postgres_parameters"] + dataset_references(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL flexible servers do not log disconnections": source_map["postgres_parameters"] + dataset_references(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL flexible servers do not have a private DNS zone configured": dataset_references(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL flexible servers do not use private network access": dataset_references(catalog, "az_postgres_flexible-server_list"),
         "Redis caches do not have RDB backup enabled": source_map["redis_caches"],
         "Azure AI Search services allow public network access": source_map["search_services"],
         "Azure AI Search services do not use shared private links": source_map["search_services"] + source_map["search_shared_private_links"],
@@ -3490,8 +3556,8 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "NSG Inbound Rule Allows Internet Access to MSSQL Service": source_map["nsgs"],
         "NSG Inbound Rule Allows Internet Access to UDP Services": source_map["nsgs"],
         "NSG Inbound Rule Allows Internet Access to Exposed Services": source_map["nsgs"],
-        "PostgreSQL Server Connection Throttling Not Enabled": source_map["postgres_parameters"] + dataset_paths(catalog, "az_postgres_flexible-server_list"),
-        "PostgreSQL Server Duration Logging Not Enabled": source_map["postgres_parameters"] + dataset_paths(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL Server Connection Throttling Not Enabled": source_map["postgres_parameters"] + dataset_references(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL Server Duration Logging Not Enabled": source_map["postgres_parameters"] + dataset_references(catalog, "az_postgres_flexible-server_list"),
         "PostgreSQL Server Firewall Allows Access from Any IP": source_map["postgres_firewall_rules"],
         "Security Contacts Not Configured": source_map["security_contacts"],
         "Security Contact Email Address Not Configured": source_map["security_contacts"],
@@ -3544,10 +3610,10 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "MySQL flexible servers do not have Defender threat detection enabled": source_map["mysql_servers"] + source_map["defender_settings"],
         "HTTP is exposed to the internet through NSG rules": source_map["nsgs"],
         "Public IP addresses are exposed to internet indexing services": source_map["public_ip_addresses"],
-        "PostgreSQL flexible servers do not enable infrastructure double encryption": dataset_paths(catalog, "az_postgres_flexible-server_list"),
-        "PostgreSQL flexible servers do not have Defender threat detection enabled": dataset_paths(catalog, "az_postgres_flexible-server_list") + source_map["defender_settings"],
-        "Service Bus queues allow public network access": dataset_paths(catalog, "az_servicebus_namespace_show") + dataset_paths(catalog, "az_servicebus_queue_list"),
-        "Service Bus topics allow public network access": dataset_paths(catalog, "az_servicebus_namespace_show") + dataset_paths(catalog, "az_servicebus_topic_list"),
+        "PostgreSQL flexible servers do not enable infrastructure double encryption": dataset_references(catalog, "az_postgres_flexible-server_list"),
+        "PostgreSQL flexible servers do not have Defender threat detection enabled": dataset_references(catalog, "az_postgres_flexible-server_list") + source_map["defender_settings"],
+        "Service Bus queues allow public network access": dataset_references(catalog, "az_servicebus_namespace_show") + dataset_references(catalog, "az_servicebus_queue_list"),
+        "Service Bus topics allow public network access": dataset_references(catalog, "az_servicebus_namespace_show") + dataset_references(catalog, "az_servicebus_topic_list"),
         "SQL servers use a minimal TLS version below the recommended baseline": source_map["sql_server_details"] + source_map["sql_servers"],
         "Storage queues allow public access": source_map["storage_accounts"] + source_map["storage_queues"],
         "Storage shares allow public access": source_map["storage_accounts"] + source_map["storage_shares"],
@@ -3563,7 +3629,10 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     }
 
     correlation_sources = {
-        finding["title"]: list(finding.get("_correlation_source_files") or [])
+        finding["title"]: SourceReferences(
+            finding.get("_correlation_source_files") or [],
+            required_endpoint_ids=finding.get("_required_endpoint_ids") or [],
+        )
         for finding in findings
         if finding.get("_coverage_eligible_assets") is not None
     }

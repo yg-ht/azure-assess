@@ -90,6 +90,16 @@ OMISSION_REASON_LABELS = {
     "legacy_no_usable_parameter_records": "No usable parameter records were available",
     "legacy_reason_unavailable": "Reason unavailable in legacy manifest",
 }
+INSUFFICIENT_DATA_CAUSES = OrderedDict(
+    [
+        ("unauthorised_source", ("Unauthorised Source", "#6f42c1")),
+        ("failed_request", ("Failed Request", "#fd7e14")),
+        ("collection_incomplete", ("Interrupted or Unrecorded Collection", "#d63384")),
+        ("skipped_prerequisite", ("Skipped Prerequisite", "#ffc107")),
+        ("empty_source", ("Empty Upstream Source", "#0dcaf0")),
+        ("missing_or_unattributed_source", ("Missing or Unattributed Source", "#adb5bd")),
+    ]
+)
 
 FINDINGS_PRIMARY_COLUMNS = (
     "title",
@@ -549,7 +559,7 @@ HTML_TEMPLATE = """
         <div class="card dashboard-chart-card">
           <div class="card-body">
             <h4 class="h5">Finding Outcome Distribution</h4>
-            <p class="dashboard-muted mb-3">Percentages use the total number of assessed checks as their denominator.</p>
+            <p class="dashboard-muted mb-3">Percentages use the total number of assessed checks as their denominator. Checks with insufficient data are split by one primary cause derived from their required endpoint outcomes.</p>
             <div class="dashboard-chart-wrap">
               <canvas id="findingsPieChart" class="dashboard-chart-canvas"></canvas>
             </div>
@@ -1747,11 +1757,26 @@ def findings_summary():
         "not_found": 0,
         "no_data_to_assess": 0,
         "not_implemented": 0,
+        "insufficient_data_causes": Counter(),
     }
     for row in rows:
         status = canonical_finding_status(row.get("status") if isinstance(row, dict) else None)
         if status in counts:
             counts[status] += 1
+        if status == "no_data_to_assess" and isinstance(row, dict):
+            insufficient_data = (
+                row.get("reporting", {})
+                .get("provenance", {})
+                .get("insufficient_data")
+            )
+            cause = (
+                insufficient_data.get("cause")
+                if isinstance(insufficient_data, dict)
+                else None
+            )
+            if cause not in INSUFFICIENT_DATA_CAUSES:
+                cause = "missing_or_unattributed_source"
+            counts["insufficient_data_causes"][cause] += 1
     return counts
 
 
@@ -2274,9 +2299,18 @@ def dashboard():
         findings_chart_data = [
             {"label": "Findings Raised", "value": findings["found"], "color": "#dc3545"},
             {"label": "Checks Passed", "value": findings["not_found"], "color": "#198754"},
-            {"label": "Insufficient Data", "value": findings["no_data_to_assess"], "color": "#ffc107"},
-            {"label": "Not Implemented", "value": findings["not_implemented"], "color": "#6c757d"},
         ]
+        findings_chart_data.extend(
+            {
+                "label": f"Insufficient Data — {label}",
+                "value": findings["insufficient_data_causes"][cause],
+                "color": color,
+            }
+            for cause, (label, color) in INSUFFICIENT_DATA_CAUSES.items()
+        )
+        findings_chart_data.append(
+            {"label": "Not Implemented", "value": findings["not_implemented"], "color": "#6c757d"}
+        )
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,

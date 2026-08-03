@@ -711,8 +711,14 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
     def test_dashboard_surfaces_direct_azure_request_failures(self):
         findings_rows = {
             "rows": [
-                {"status": "no_data_to_assess"},
-                {"status": "no_data_to_assess"},
+                {
+                    "status": "no_data_to_assess",
+                    "reporting": {"provenance": {"insufficient_data": {"cause": "unauthorised_source"}}},
+                },
+                {
+                    "status": "no_data_to_assess",
+                    "reporting": {"provenance": {"insufficient_data": {"cause": "empty_source"}}},
+                },
                 {"status": "no_data_to_assess"},
                 {"status": "found"},
             ]
@@ -817,6 +823,12 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                 response = client.get("/")
 
         self.assertEqual(summary["no_data_to_assess"], 3)
+        self.assertEqual(summary["insufficient_data_causes"]["unauthorised_source"], 1)
+        self.assertEqual(summary["insufficient_data_causes"]["empty_source"], 1)
+        self.assertEqual(
+            summary["insufficient_data_causes"]["missing_or_unattributed_source"],
+            1,
+        )
         self.assertNotIn("permission_blocked", summary)
         self.assertEqual(requests["attempted"], 6)
         self.assertEqual(requests["success"], 1)
@@ -868,7 +880,9 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Checks Without Sufficient Data", body)
         self.assertNotIn("Rows in azure-findings-flat.json", body)
         self.assertNotIn("Status: not_found", body)
-        self.assertIn('"label": "Insufficient Data", "value": 3', body)
+        self.assertIn('"label": "Insufficient Data \\u2014 Unauthorised Source", "value": 1', body)
+        self.assertIn('"label": "Insufficient Data \\u2014 Empty Upstream Source", "value": 1', body)
+        self.assertIn('"label": "Insufficient Data \\u2014 Missing or Unattributed Source", "value": 1', body)
         self.assertIn("Finding Outcome Distribution", body)
         self.assertNotIn("Request Attempt Distribution", body)
         self.assertIn("findingsPieChart", body)
@@ -877,8 +891,8 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             "renderDashboardPie('findingsPieChart'",
             1,
         )[1].split(");", 1)[0]
-        self.assertNotIn("Failed", finding_chart_call)
-        self.assertNotIn("Unauthorised", finding_chart_call)
+        self.assertNotIn('"label": "Failed"', finding_chart_call)
+        self.assertNotIn('"label": "Unauthorised"', finding_chart_call)
         self.assertIn("Endpoint Omission Reasons", body)
         self.assertIn("Upstream source returned no records", body)
         self.assertIn("Reason unavailable in legacy manifest", body)

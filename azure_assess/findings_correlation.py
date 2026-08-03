@@ -171,6 +171,7 @@ class CorrelationResult:
     observations: List[Dict[str, Any]] = field(default_factory=list)
     eligible_assets: List[Dict[str, Any]] = field(default_factory=list)
     source_files: List[str] = field(default_factory=list)
+    required_endpoint_ids: List[str] = field(default_factory=list)
     limitations: List[str] = field(default_factory=list)
     conclusion_support: str = "inconclusive"
 
@@ -194,6 +195,13 @@ def merge_correlation_results(results: Iterable[CorrelationResult]) -> Correlati
         observations=observations,
         eligible_assets=[asset for item in results for asset in item.eligible_assets],
         source_files=sorted({path for item in results for path in item.source_files}),
+        required_endpoint_ids=sorted(
+            {
+                endpoint_id
+                for item in results
+                for endpoint_id in item.required_endpoint_ids
+            }
+        ),
         limitations=list(
             dict.fromkeys(limitation for item in results for limitation in item.limitations)
         ),

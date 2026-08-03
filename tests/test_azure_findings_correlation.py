@@ -135,12 +135,20 @@ class DatasetResolutionTests(unittest.TestCase):
             [
                 CorrelationResult(
                     observations=[{"id": "one"}],
+                    required_endpoint_ids=["endpoint-one"],
                     conclusion_support="positive_and_negative",
                 ),
-                CorrelationResult(conclusion_support="inconclusive"),
+                CorrelationResult(
+                    required_endpoint_ids=["endpoint-two"],
+                    conclusion_support="inconclusive",
+                ),
             ]
         )
         self.assertEqual(merged.observations, [{"id": "one"}])
+        self.assertEqual(
+            merged.required_endpoint_ids,
+            ["endpoint-one", "endpoint-two"],
+        )
         self.assertEqual(merged.conclusion_support, "positive_only")
 
 

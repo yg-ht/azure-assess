@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
-REPORTING_SCHEMA_VERSION = "1.0"
+REPORTING_SCHEMA_VERSION = "1.1"
+SUPPORTED_REPORTING_SCHEMA_VERSIONS = {"1.0", REPORTING_SCHEMA_VERSION}
 ASSET_ID_RE = re.compile(r"^asset_[a-f0-9]{24}$")
 OBSERVATION_ID_RE = re.compile(r"^obs_[a-f0-9]{24}$")
 AZURE_IDENTIFIER_KEYS = {
@@ -38,6 +39,14 @@ NAMED_ASSET_KEYS = (
     "subscriptionName",
 )
 SOURCE_HASH_CACHE: Dict[Tuple[str, int, int], str] = {}
+INSUFFICIENT_DATA_CAUSE_LABELS = {
+    "unauthorised_source": "Unauthorised Source",
+    "failed_request": "Failed Request",
+    "collection_incomplete": "Interrupted or Unrecorded Collection",
+    "skipped_prerequisite": "Skipped Prerequisite",
+    "empty_source": "Empty Upstream Source",
+    "missing_or_unattributed_source": "Missing or Unattributed Source",
+}
 
 
 def stable_digest(prefix: str, value: Any) -> str:
@@ -439,14 +448,142 @@ def collection_run_record(
     }
 
 
+def required_endpoint_records(
+    references: Mapping[str, Any],
+    manifest: Optional[Mapping[str, Any]],
+    additional_endpoint_ids: Iterable[Any] = (),
+) -> List[Dict[str, Any]]:
+    """Resolve expected endpoint patterns to manifest executions, even without files."""
+    if manifest is None:
+        return []
+    explicit_ids = {
+        str(endpoint_id).lower()
+        for endpoint_id in (
+            list(references.get("required_endpoint_ids", []))
+            + list(additional_endpoint_ids)
+        )
+        if endpoint_id
+    }
+    patterns = [
+        tuple(str(fragment).lower() for fragment in pattern if fragment)
+        for pattern in references.get("required_endpoint_patterns", [])
+        if isinstance(pattern, list)
+    ]
+    groups: Dict[str, Dict[str, Any]] = {}
+    for endpoint_run in manifest.get("endpoint_runs", []):
+        if not isinstance(endpoint_run, Mapping):
+            continue
+        endpoint_id = str(endpoint_run.get("endpoint_id") or "").lower()
+        if not endpoint_id:
+            continue
+        if endpoint_id not in explicit_ids and not any(
+            pattern and all(fragment in endpoint_id for fragment in pattern)
+            for pattern in patterns
+        ):
+            continue
+        group = groups.setdefault(
+            endpoint_id,
+            {
+                "endpoint_id": endpoint_id,
+                "endpoint_name": endpoint_run.get("endpoint_name") or "Unknown",
+                "category": endpoint_run.get("category") or "Unknown",
+                "statuses": set(),
+                "reason_codes": set(),
+            },
+        )
+        if endpoint_run.get("status"):
+            group["statuses"].add(str(endpoint_run["status"]))
+        if endpoint_run.get("reason_code"):
+            group["reason_codes"].add(str(endpoint_run["reason_code"]))
+    return [
+        {
+            **group,
+            "statuses": sorted(group["statuses"]),
+            "reason_codes": sorted(group["reason_codes"]),
+        }
+        for group in sorted(groups.values(), key=lambda item: item["endpoint_id"])
+    ]
+
+
+def insufficient_data_attribution(
+    finding_status: Any,
+    required_endpoints: Iterable[Mapping[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Assign one evidence-backed primary cause to an inconclusive check."""
+    if finding_status != "no_data_to_assess":
+        return None
+    required_endpoints = list(required_endpoints)
+    statuses = {
+        status
+        for endpoint in required_endpoints
+        for status in endpoint.get("statuses", [])
+    }
+    reason_codes = {
+        reason_code
+        for endpoint in required_endpoints
+        for reason_code in endpoint.get("reason_codes", [])
+    }
+    if "unauthorised" in statuses or "upstream_source_unauthorised" in reason_codes:
+        cause = "unauthorised_source"
+    elif "failed" in statuses or "upstream_source_failed" in reason_codes:
+        cause = "failed_request"
+    elif statuses.intersection({"not_attempted"}) or reason_codes.intersection(
+        {
+            "collection_interrupted",
+            "collection_terminated_by_exception",
+            "collector_outcome_not_recorded",
+            "upstream_source_not_attempted",
+        }
+    ):
+        cause = "collection_incomplete"
+    elif "skipped" in statuses:
+        cause = "skipped_prerequisite"
+    elif "empty" in statuses or "upstream_source_returned_no_data" in reason_codes:
+        cause = "empty_source"
+    else:
+        cause = "missing_or_unattributed_source"
+    return {
+        "cause": cause,
+        "label": INSUFFICIENT_DATA_CAUSE_LABELS[cause],
+        "basis": (
+            "required_endpoint_manifest_status"
+            if required_endpoints
+            else "no_attributable_required_endpoint"
+        ),
+        "required_endpoint_ids": [
+            endpoint.get("endpoint_id")
+            for endpoint in required_endpoints
+            if endpoint.get("endpoint_id")
+        ],
+    }
+
+
 def normalise_finding_reporting(
     finding: Dict[str, Any],
     catalog: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Attach normalised assets, observations, and provenance to a finding."""
     manifest, manifest_filename = collection_manifest(catalog)
-    source_files = finding.get("references", {}).get("source_files", [])
+    references = finding.get("references", {})
+    source_files = references.get("source_files", [])
     datasets, limitations = source_dataset_records(source_files, manifest)
+    required_endpoints = required_endpoint_records(
+        references,
+        manifest,
+        additional_endpoint_ids=[
+            endpoint_id
+            for dataset in datasets
+            for endpoint_id in (
+                dataset.get("source_endpoint_ids")
+                or [dataset.get("source_endpoint_id")]
+            )
+            if endpoint_id
+        ],
+    )
+    insufficient_data = insufficient_data_attribution(
+        finding.get("status"),
+        required_endpoints,
+    )
     if manifest is None:
         limitations.append("No collection-run manifest was available for provenance")
     else:
@@ -519,6 +656,8 @@ def normalise_finding_reporting(
             "attribution_precision": "finding_level",
             "collection_run": collection_run_record(manifest, manifest_filename),
             "source_datasets": datasets,
+            "required_endpoints": required_endpoints,
+            "insufficient_data": insufficient_data,
             "limitations": sorted(set(limitations)),
         },
     }
@@ -530,7 +669,8 @@ def normalise_finding_reporting(
 def validate_finding_reporting(finding: Mapping[str, Any]) -> None:
     """Reject inconsistent report-facing normalisation data."""
     reporting = finding.get("reporting") or {}
-    if reporting.get("schema_version") != REPORTING_SCHEMA_VERSION:
+    reporting_schema_version = reporting.get("schema_version")
+    if reporting_schema_version not in SUPPORTED_REPORTING_SCHEMA_VERSIONS:
         raise ValueError("Unsupported finding reporting schema")
     assets = reporting.get("assets")
     observations = reporting.get("observations")
@@ -577,5 +717,16 @@ def validate_finding_reporting(finding: Mapping[str, Any]) -> None:
         raise ValueError("Unsupported finding provenance attribution precision")
     if not isinstance(provenance.get("source_datasets"), list):
         raise ValueError("Finding provenance source datasets must be a list")
+    if reporting_schema_version == REPORTING_SCHEMA_VERSION:
+        if not isinstance(provenance.get("required_endpoints"), list):
+            raise ValueError("Finding provenance required endpoints must be a list")
+        insufficient_data = provenance.get("insufficient_data")
+        if finding.get("status") == "no_data_to_assess":
+            if not isinstance(insufficient_data, Mapping):
+                raise ValueError("Inconclusive finding is missing insufficient-data attribution")
+            if insufficient_data.get("cause") not in INSUFFICIENT_DATA_CAUSE_LABELS:
+                raise ValueError("Inconclusive finding has an invalid insufficient-data cause")
+        elif insufficient_data is not None:
+            raise ValueError("Conclusive finding cannot have insufficient-data attribution")
     if not isinstance(provenance.get("limitations"), list):
         raise ValueError("Finding provenance limitations must be a list")
