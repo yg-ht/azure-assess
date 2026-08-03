@@ -9,6 +9,7 @@ from unittest import mock
 from azure_assess.collection_manifest import (
     CollectionManifestRecorder,
     classify_execution_status,
+    extract_azure_error_code,
     sha256_file,
     truncate_error_text,
     validate_manifest,
@@ -85,6 +86,58 @@ class CollectionManifestContentTests(unittest.TestCase):
         )
 
         self.assertEqual(status, "unauthorised")
+
+        coded_status = classify_execution_status(
+            1,
+            None,
+            diagnostic_text="(Authorization_RequestDenied) Access was rejected.",
+        )
+
+        self.assertEqual(coded_status, "unauthorised")
+
+    def test_azure_error_codes_are_extracted_from_direct_response_formats(self):
+        self.assertEqual(
+            extract_azure_error_code(
+                '{"error":{"code":"AuthorizationFailed","message":"denied"}}'
+            ),
+            "AuthorizationFailed",
+        )
+        self.assertEqual(
+            extract_azure_error_code(
+                "ERROR: (Forbidden) The client cannot perform this request."
+            ),
+            "Forbidden",
+        )
+        self.assertIsNone(extract_azure_error_code("request failed without a code"))
+
+    def test_direct_response_truncation_is_explicit_in_manifest(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            recorder = CollectionManifestRecorder(
+                "run-truncated-response",
+                Path(tmpdir),
+                project_dir=Path(tmpdir),
+            )
+            diagnostic = "x" * 1001
+
+            recorder.record_execution(
+                "Resources",
+                "base",
+                "az resource list",
+                "2026-08-03T12:00:00Z",
+                0.1,
+                1,
+                None,
+                error_message="Azure CLI request failed with return code 1",
+                diagnostic_text=diagnostic,
+            )
+            manifest = recorder.finish()
+
+        execution = manifest["endpoint_runs"][0]
+        self.assertTrue(execution["response_error_truncated"])
+        self.assertEqual(
+            execution["response_error"],
+            ("x" * 1000) + "... [truncated]",
+        )
 
 
 class CollectionManifestRecorderTests(unittest.TestCase):
@@ -288,7 +341,7 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
             result = {
                 "returncode": 1,
                 "success": False,
-                "stdout": "Authorization: Bearer token-value",
+                "stdout": "(AuthorizationFailed) Principal cannot read this resource.",
                 "json": {},
                 "collection_error": "Command failed",
             }
@@ -304,8 +357,17 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
 
         self.assertEqual(
             manifest["endpoint_runs"][0]["error"],
-            "Command failed: Authorization: Bearer token-value",
+            "Command failed",
         )
+        execution = manifest["endpoint_runs"][0]
+        self.assertEqual(execution["error_code"], "AuthorizationFailed")
+        self.assertEqual(
+            execution["response_error"],
+            "(AuthorizationFailed) Principal cannot read this resource.",
+        )
+        self.assertFalse(execution["response_error_truncated"])
+        self.assertEqual(manifest["errors"][0]["error_code"], "AuthorizationFailed")
+        self.assertEqual(manifest["errors"][0]["returncode"], 1)
 
     def test_managed_role_cache_records_version_dataset_and_output_link(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -44,11 +44,14 @@ from json2html import json2html
 from pathlib import Path
 from urllib.parse import unquote, urlparse, parse_qs
 
+from azure_assess.collection_manifest import extract_azure_error_code
+
 app = Flask(__name__)
 DATA_DIR = Path("azure-collect")
 FINDINGS_FLAT_FILENAME = "azure-findings-flat.json"
 FINDINGS_SARIF_FILENAME = "azure-findings-SARIF.json"
 LEGACY_FINDINGS_SARIF_FILENAME = "azure-findings.json"
+COLLECTION_MANIFEST_PREFIX = "azure-collection-manifest"
 FINDINGS_FILENAMES = {
     FINDINGS_FLAT_FILENAME,
     FINDINGS_SARIF_FILENAME,
@@ -62,17 +65,6 @@ FINDING_STATUS_OPTIONS = OrderedDict(
         ("not_implemented", {"label": "Not Implemented", "statuses": {"not_implemented"}}),
         ("all", {"label": "All Findings", "statuses": None}),
     ]
-)
-
-PERMISSION_FAILURE_STATUSES = {"unauthorised", "unauthorized"}
-PERMISSION_FAILURE_MARKERS = (
-    "authorizationfailed",
-    "does not have authorization",
-    "forbidden",
-    "insufficient privileges",
-    "permission denied",
-    "unauthorised",
-    "unauthorized",
 )
 
 FINDINGS_PRIMARY_COLUMNS = (
@@ -407,6 +399,13 @@ HTML_TEMPLATE = """
         border-radius: 50%;
         display: inline-block;
       }
+      .dashboard-error-message {
+        margin: 0;
+        max-width: 48rem;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--text-color);
+      }
     </style>
   </head>
   <!-- Dark mode enabled by default via the dark-mode class -->
@@ -451,11 +450,52 @@ HTML_TEMPLATE = """
         <div class="card dashboard-chart-card">
           <div class="card-body">
             <h3 class="h5">Findings Overview</h3>
-            <p class="dashboard-muted mb-3">Current distribution of findings, clear checks, permission-blocked checks, and other checks with no data to assess.</p>
+            <p class="dashboard-muted mb-3">Current distribution of findings, clear checks, and checks with no data to assess.</p>
             <div class="dashboard-chart-wrap">
               <canvas id="findingsPieChart" class="dashboard-chart-canvas"></canvas>
             </div>
             <div id="findingsPieLegend" class="chart-legend"></div>
+          </div>
+        </div>
+        {% endif %}
+        {% if collection_requests and collection_requests.failures %}
+        <div class="card dashboard-chart-card mt-4">
+          <div class="card-body">
+            <h3 class="h5">Failed Azure Requests</h3>
+            <p class="dashboard-muted mb-3">Direct errors returned by attempted Azure collection requests in the latest collection manifest.</p>
+            <div class="table-responsive">
+              <table class="table table-striped align-middle">
+                <thead>
+                  <tr>
+                    <th>Endpoint</th>
+                    <th>Category</th>
+                    <th>Status</th>
+                    <th>Azure Error Code</th>
+                    <th>CLI Return Code</th>
+                    <th>Parameters</th>
+                    <th>Returned Error</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for failure in collection_requests.failures %}
+                  <tr>
+                    <td>{{ failure.endpoint_name }}</td>
+                    <td>{{ failure.category }}</td>
+                    <td>{{ failure.status }}</td>
+                    <td>{{ failure.error_code or "Unavailable" }}</td>
+                    <td>{{ failure.returncode if failure.returncode is not none else "Unavailable" }}</td>
+                    <td><code>{{ failure.parameter_context|tojson }}</code></td>
+                    <td>
+                      <pre class="dashboard-error-message">{{ failure.message or "No error message was recorded" }}</pre>
+                      {% if failure.message_truncated %}
+                      <span class="small dashboard-muted">Stored message was truncated by the collection manifest.</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
         {% endif %}
@@ -1264,43 +1304,73 @@ def latest_resource_object_count(tabs):
     )
 
 
-def permission_failure_text(value):
-    """Return whether diagnostic text explicitly describes a permission failure."""
-    text = str(value or "").strip().casefold()
-    return any(marker in text for marker in PERMISSION_FAILURE_MARKERS)
-
-
-def finding_blocked_by_permissions(row):
-    """Identify an inconclusive check explicitly attributed to missing permissions."""
-    if not isinstance(row, dict):
-        return False
-    if canonical_finding_status(row.get("status")) != "no_data_to_assess":
-        return False
-
-    reporting = row.get("reporting") if isinstance(row.get("reporting"), dict) else {}
-    provenance = (
-        reporting.get("provenance")
-        if isinstance(reporting.get("provenance"), dict)
-        else {}
+def latest_collection_manifest():
+    """Load the latest collection manifest without inferring request outcomes."""
+    paths = sorted(
+        DATA_DIR.glob(f"{COLLECTION_MANIFEST_PREFIX}_*.json"),
+        key=dataset_sort_key,
+        reverse=True,
     )
-    source_datasets = provenance.get("source_datasets")
-    if not isinstance(source_datasets, list):
-        source_datasets = []
-    for dataset in source_datasets:
-        if not isinstance(dataset, dict):
-            continue
-        statuses = dataset.get("collection_statuses")
-        if not isinstance(statuses, list):
-            continue
-        if any(str(status).casefold() in PERMISSION_FAILURE_STATUSES for status in statuses):
-            return True
+    if not paths:
+        return None
+    manifest = load_json_file(paths[0])
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("endpoint_runs"), list):
+        return None
+    return manifest
 
-    coverage = row.get("coverage") if isinstance(row.get("coverage"), dict) else {}
-    diagnostic_values = [row.get("reason")]
-    for limitations in (provenance.get("limitations"), coverage.get("limitations")):
-        if isinstance(limitations, list):
-            diagnostic_values.extend(limitations)
-    return any(permission_failure_text(value) for value in diagnostic_values)
+
+def collection_request_summary():
+    """Summarise only requests that directly reported failed execution."""
+    manifest = latest_collection_manifest()
+    if manifest is None:
+        return None
+    failures = []
+    for request_record in manifest.get("endpoint_runs", []):
+        if not isinstance(request_record, dict):
+            continue
+        status = str(request_record.get("status") or "")
+        if status not in {"failed", "unauthorised"}:
+            continue
+        response_message = (
+            request_record.get("response_error")
+            or request_record.get("error")
+        )
+        failures.append(
+            {
+                "endpoint_name": request_record.get("endpoint_name") or "Unknown",
+                "category": request_record.get("category") or "Unknown",
+                "status": status,
+                "error_code": (
+                    request_record.get("error_code")
+                    or extract_azure_error_code(response_message)
+                ),
+                "returncode": request_record.get("returncode"),
+                "parameter_context": (
+                    request_record.get("parameter_context")
+                    if isinstance(request_record.get("parameter_context"), dict)
+                    else {}
+                ),
+                "message": response_message,
+                "message_truncated": bool(
+                    request_record.get("response_error_truncated")
+                ),
+            }
+        )
+    failures.sort(
+        key=lambda item: (
+            str(item["status"]),
+            str(item["category"]),
+            str(item["endpoint_name"]),
+            json.dumps(item["parameter_context"], sort_keys=True, default=str),
+        )
+    )
+    return {
+        "failed": len(failures),
+        "unauthorised": sum(
+            failure["status"] == "unauthorised" for failure in failures
+        ),
+        "failures": failures,
+    }
 
 
 def findings_summary():
@@ -1322,19 +1392,16 @@ def findings_summary():
         "found": 0,
         "not_found": 0,
         "no_data_to_assess": 0,
-        "permission_blocked": 0,
         "not_implemented": 0,
     }
     for row in rows:
         status = canonical_finding_status(row.get("status") if isinstance(row, dict) else None)
         if status in counts:
             counts[status] += 1
-        if finding_blocked_by_permissions(row):
-            counts["permission_blocked"] += 1
     return counts
 
 
-def build_dashboard_summary_cards(tabs, findings=None):
+def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None):
     object_count, object_detail, object_count_filenames = latest_resource_object_count(tabs)
     total_versions = sum(len(tab["versions"]) for tab in tabs)
     historical_versions = sum(max(len(tab["versions"]) - 1, 0) for tab in tabs)
@@ -1366,12 +1433,20 @@ def build_dashboard_summary_cards(tabs, findings=None):
             {"label": "Finding Checks Found", "value": findings["found"], "detail": "Status: found"},
             {"label": "Finding Checks Clear", "value": findings["not_found"], "detail": "Status: not_found"},
             {"label": "Finding Checks With No Data", "value": findings["no_data_to_assess"], "detail": "Status: no_data_to_assess"},
-            {
-                "label": "Checks Blocked By Permissions",
-                "value": findings["permission_blocked"],
-                "detail": "Subset of no-data checks with explicit permission-failure attribution",
-            },
             {"label": "Finding Checks Not Implemented", "value": findings["not_implemented"], "detail": "Status: not_implemented"},
+        ])
+    if collection_requests is not None:
+        cards.extend([
+            {
+                "label": "Failed Azure Requests",
+                "value": collection_requests["failed"],
+                "detail": "Attempted requests with failed or unauthorised status",
+            },
+            {
+                "label": "Unauthorised Azure Requests",
+                "value": collection_requests["unauthorised"],
+                "detail": "Requests whose returned response was classified as unauthorised",
+            },
         ])
     return cards
 
@@ -1798,24 +1873,25 @@ def dashboard():
         return "<p>Data directory not found. Please create a 'data' folder with JSON files.</p>"
     tabs = dataset_groups()
     findings = findings_summary()
+    collection_requests = collection_request_summary()
     findings_chart_data = None
     if findings is not None:
-        other_no_data = max(
-            findings["no_data_to_assess"] - findings["permission_blocked"],
-            0,
-        )
         findings_chart_data = [
             {"label": "Findings", "value": findings["found"], "color": "#dc3545"},
             {"label": "No Findings", "value": findings["not_found"], "color": "#198754"},
-            {"label": "Permission Blocked", "value": findings["permission_blocked"], "color": "#fd7e14"},
-            {"label": "No Data To Assess", "value": other_no_data, "color": "#ffc107"},
+            {"label": "No Data To Assess", "value": findings["no_data_to_assess"], "color": "#ffc107"},
         ]
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
-        summary_cards=build_dashboard_summary_cards(tabs, findings),
+        summary_cards=build_dashboard_summary_cards(
+            tabs,
+            findings,
+            collection_requests,
+        ),
         dashboard=True,
         findings_chart_data=findings_chart_data,
+        collection_requests=collection_requests,
         dataset_index=False,
     )
 

@@ -28,6 +28,13 @@ VALID_ENDPOINT_STATUSES = {
     "skipped",
     "not_attempted",
 }
+AZURE_ERROR_CODE_PATTERNS = (
+    re.compile(
+        r"(?im)^\s*(?:ERROR:\s*)?\((?P<code>[A-Za-z][A-Za-z0-9_.-]+)\)"
+    ),
+    re.compile(r"(?im)^\s*(?:error\s+)?code\s*:\s*(?P<code>[A-Za-z0-9_.-]+)"),
+    re.compile(r'(?i)"code"\s*:\s*"(?P<code>[^"]+)"'),
+)
 
 
 def utc_timestamp() -> str:
@@ -41,6 +48,48 @@ def truncate_error_text(value: Any) -> str:
     if len(text) > MAX_ERROR_MESSAGE_CHARS:
         text = text[:MAX_ERROR_MESSAGE_CHARS] + "... [truncated]"
     return text
+
+
+def _error_code_from_json(value: Any) -> Optional[str]:
+    """Return the first explicit error code in a decoded Azure response."""
+    if isinstance(value, Mapping):
+        nested_error = value.get("error")
+        if isinstance(nested_error, Mapping):
+            code = nested_error.get("code")
+            if code not in (None, ""):
+                return str(code)
+        code = value.get("code")
+        if code not in (None, ""):
+            return str(code)
+        for child in value.values():
+            code = _error_code_from_json(child)
+            if code:
+                return code
+    elif isinstance(value, list):
+        for child in value:
+            code = _error_code_from_json(child)
+            if code:
+                return code
+    return None
+
+
+def extract_azure_error_code(value: Any) -> Optional[str]:
+    """Extract an Azure-supplied error code without deriving one from permissions."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        decoded = json.loads(text)
+    except (TypeError, ValueError):
+        decoded = None
+    code = _error_code_from_json(decoded)
+    if code:
+        return code
+    for pattern in AZURE_ERROR_CODE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group("code")
+    return None
 
 
 def result_item_count(data: Any) -> int:
@@ -96,11 +145,22 @@ def classify_execution_status(
     diagnostic_text: Optional[str] = None,
 ) -> str:
     """Classify one command without persisting its diagnostic output."""
+    error_code = extract_azure_error_code(diagnostic_text or error_message)
+    normalised_error_code = re.sub(r"[^a-z0-9]", "", str(error_code or "").lower())
+    permission_error_codes = (
+        "authorizationfailed",
+        "forbidden",
+        "insufficientprivileges",
+        "requestdenied",
+        "unauthorized",
+    )
     combined_error = " ".join(
         str(item or "").lower()
         for item in (error_message, diagnostic_text)
     )
     if error_message or returncode not in (None, 0):
+        if any(code in normalised_error_code for code in permission_error_codes):
+            return "unauthorised"
         permission_markers = (
             "authorizationfailed",
             "does not have authorization",
@@ -249,6 +309,13 @@ class CollectionManifestRecorder:
             "result_count": result_count,
             "attempt_count": max(1, int(retry_count) + 1),
             "error": truncate_error_text(error_message) if error_message else None,
+            "error_code": extract_azure_error_code(diagnostic_text or error_message),
+            "response_error": (
+                truncate_error_text(diagnostic_text) if diagnostic_text else None
+            ),
+            "response_error_truncated": (
+                len(str(diagnostic_text or "")) > MAX_ERROR_MESSAGE_CHARS
+            ),
         }
         with self._lock:
             self.endpoint_runs.append(record)
@@ -259,7 +326,13 @@ class CollectionManifestRecorder:
                         "endpoint_name": record["endpoint_name"],
                         "category": record["category"],
                         "status": status,
-                        "message": record["error"] or "Azure CLI command failed",
+                        "error_code": record["error_code"],
+                        "returncode": record["returncode"],
+                        "message": (
+                            record["response_error"]
+                            or record["error"]
+                            or "Azure CLI command failed"
+                        ),
                     }
                 )
 

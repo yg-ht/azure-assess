@@ -281,20 +281,14 @@ def timed_run_az_cli(
         retry_count=retry_count,
     )
     if COLLECTION_MANIFEST is not None:
-        # Preserve both the application-level classification and the underlying
-        # command diagnostic when they provide different failure information.
+        # Keep the application-level classification separate from the direct
+        # Azure CLI diagnostic returned by the attempted request.
         manifest_error = result.get("collection_error")
         diagnostic_output = (
             result.get("stdout")
             if result.get("returncode") not in (None, 0) or manifest_error
             else None
         )
-        if diagnostic_output and diagnostic_output != manifest_error:
-            manifest_error = (
-                f"{manifest_error}: {diagnostic_output}"
-                if manifest_error
-                else diagnostic_output
-            )
         COLLECTION_MANIFEST.record_execution(
             endpoint_name=endpoint_name or "unknown",
             category=category,
@@ -2334,6 +2328,12 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
             ]
             if any(sig in result["stdout"].lower() for sig in error_cli_signatures):
                 error_message = "Unrecognised or malformed CLI command"
+
+            if not error_message:
+                error_message = (
+                    "Azure CLI request failed with return code "
+                    f"{result['returncode']}"
+                )
 
         else:
             if DEBUG:

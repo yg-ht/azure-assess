@@ -689,48 +689,38 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             body,
         )
 
-    def test_dashboard_counts_checks_blocked_by_permissions(self):
+    def test_dashboard_surfaces_direct_azure_request_failures(self):
         findings_rows = {
             "rows": [
+                {"status": "no_data_to_assess"},
+                {"status": "no_data_to_assess"},
+                {"status": "no_data_to_assess"},
+                {"status": "found"},
+            ]
+        }
+        manifest = {
+            "endpoint_runs": [
                 {
-                    "status": "no_data_to_assess",
-                    "reporting": {
-                        "provenance": {
-                            "source_datasets": [
-                                {"collection_statuses": ["unauthorised"]}
-                            ],
-                            "limitations": [],
-                        }
-                    },
-                    "coverage": {"limitations": []},
+                    "endpoint_name": "Storage Account Keys",
+                    "category": "parameterised",
+                    "status": "unauthorised",
+                    "returncode": 1,
+                    "parameter_context": {"name": "account-one"},
+                    "error": "(AuthorizationFailed) Principal cannot list storage account keys.",
                 },
                 {
-                    "status": "no_data_to_assess",
-                    "reporting": {
-                        "provenance": {
-                            "source_datasets": [],
-                            "limitations": [],
-                        }
-                    },
-                    "coverage": {
-                        "limitations": [
-                            "Collection for applications was incomplete: unauthorised"
-                        ]
-                    },
+                    "endpoint_name": "Legacy Failed Endpoint",
+                    "category": "base",
+                    "status": "failed",
+                    "returncode": 2,
+                    "parameter_context": {},
+                    "error": "Legacy manifest error message",
                 },
                 {
-                    "status": "no_data_to_assess",
-                    "reason": "No storage account dataset was found.",
-                },
-                {
-                    "status": "found",
-                    "reporting": {
-                        "provenance": {
-                            "source_datasets": [
-                                {"collection_statuses": ["unauthorised"]}
-                            ]
-                        }
-                    },
+                    "endpoint_name": "Unattempted Endpoint",
+                    "category": "base",
+                    "status": "not_attempted",
+                    "returncode": None,
                 },
             ]
         }
@@ -739,32 +729,38 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             data_dir = Path(tmpdir)
             findings_path = data_dir / azure_present.FINDINGS_FLAT_FILENAME
             findings_path.write_text(json.dumps(findings_rows), encoding="utf-8")
+            manifest_path = data_dir / "azure-collection-manifest_20260803-120000.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
             with mock.patch.object(azure_present, "DATA_DIR", data_dir):
                 summary = azure_present.findings_summary()
-                cards = azure_present.build_dashboard_summary_cards([], summary)
+                requests = azure_present.collection_request_summary()
+                cards = azure_present.build_dashboard_summary_cards(
+                    [],
+                    summary,
+                    requests,
+                )
                 client = azure_present.app.test_client()
                 response = client.get("/")
 
         self.assertEqual(summary["no_data_to_assess"], 3)
-        self.assertEqual(summary["permission_blocked"], 2)
-        permission_card = next(
-            card for card in cards if card["label"] == "Checks Blocked By Permissions"
+        self.assertNotIn("permission_blocked", summary)
+        self.assertEqual(requests["failed"], 2)
+        self.assertEqual(requests["unauthorised"], 1)
+        failed_card = next(
+            card for card in cards if card["label"] == "Failed Azure Requests"
         )
-        self.assertEqual(permission_card["value"], 2)
+        self.assertEqual(failed_card["value"], 2)
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
-        self.assertIn('"label": "Permission Blocked", "value": 2', body)
-        self.assertIn('"label": "No Data To Assess", "value": 1', body)
-
-    def test_permission_word_in_a_finding_does_not_imply_collection_failure(self):
-        row = {
-            "status": "no_data_to_assess",
-            "title": "Custom role has permission to administer locks",
-            "reason": "Role definition inventory is required.",
-        }
-
-        self.assertFalse(azure_present.finding_blocked_by_permissions(row))
+        self.assertNotIn('"label": "Permission Blocked"', body)
+        self.assertIn('"label": "No Data To Assess", "value": 3', body)
+        self.assertIn("Failed Azure Requests", body)
+        self.assertIn("Storage Account Keys", body)
+        self.assertIn("AuthorizationFailed", body)
+        self.assertIn("Principal cannot list storage account keys.", body)
+        self.assertIn("Legacy manifest error message", body)
+        self.assertNotIn("Unattempted Endpoint", body)
 
     def test_dataset_group_lookup_does_not_load_json_payloads(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1724,6 +1720,32 @@ class AzureCliCollectionErrorTests(unittest.TestCase):
         self.assertEqual(
             azure_collect.COLLECTION_ERRORS[0]["endpoint"],
             "SQL Server Vulnerability Assessment",
+        )
+
+    def test_nonzero_azure_request_records_direct_failure_and_continues(self):
+        output = "(AuthorizationFailed) Principal cannot read this resource."
+
+        with mock.patch.object(
+            azure_collect.subprocess,
+            "Popen",
+            return_value=FakeAzProcess(1, output),
+        ):
+            result = azure_collect.run_az_cli(
+                "az resource list",
+                endpoint_name="Resources",
+                category="base",
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(result["returncode"], 1)
+        self.assertEqual(len(azure_collect.COLLECTION_ERRORS), 1)
+        self.assertEqual(
+            azure_collect.COLLECTION_ERRORS[0]["message"],
+            "Azure CLI request failed with return code 1",
+        )
+        self.assertEqual(
+            azure_collect.COLLECTION_ERRORS[0]["process_output"],
+            output,
         )
 
     def test_base_collection_continues_and_accumulates_multiple_command_errors(self):
