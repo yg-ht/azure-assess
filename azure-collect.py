@@ -64,7 +64,7 @@ import urllib.parse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from itertools import product
 from pathlib import Path
 from time import monotonic, sleep
@@ -435,7 +435,7 @@ def write_managed_role_definitions_cache(role_definitions, path=None, az_version
 
     payload = {
         "schemaVersion": 2,
-        "generatedAtUtc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "generatedAtUtc": utc_timestamp(),
         "collectionCommand": "az role definition list --query \"[?roleType=='BuiltInRole']\" --output json",
         "roleDefinitionIdFormat": "/providers/Microsoft.Authorization/roleDefinitions/{roleGuid}",
         "subscriptionIdentifiers": "removed",
@@ -3262,7 +3262,7 @@ def execute_collection(args, max_workers):
 
 if __name__ == "__main__":
     global START_TIMESTAMP
-    START_TIMESTAMP = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    START_TIMESTAMP = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     args = parse_arguments()
     AUTH_CONFIG = build_auth_config(args)
     max_workers = bounded_worker_count(args.max_workers)
