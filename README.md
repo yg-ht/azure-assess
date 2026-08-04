@@ -56,9 +56,9 @@ Remove and reinstall the Azure CLI extensions used by `azure-collect.py`, then v
 ### `scripts/Azure-Graph-Collect-App.ps1`
 
 Purpose:
-Create a temporary, single-tenant Microsoft Entra application and service principal that can authenticate to Microsoft Graph using an X.509 certificate. The script configures application permissions from predefined collection profiles and can grant those permissions with administrator consent.
+Create a temporary, single-tenant Microsoft Entra application and service principal that can authenticate using an X.509 certificate. The script configures Microsoft Graph application permissions from predefined collection profiles and can optionally grant the Azure subscription roles required by `azure-collect.py`.
 
-This is a customer helper intended to be run by a tenant administrator on Windows. It configures Microsoft Graph access only. It does not assign Azure RBAC roles, configure Azure CLI authentication, or make the resulting identity sufficient for Azure Resource Manager collection by `azure-collect.py`.
+This is a customer helper intended to be run by a tenant administrator on Windows. Graph consent and Azure role assignment are separate operations and can require different administrator accounts. Azure roles are configured only when `-AzureSubscriptionIds` is supplied; without that parameter the helper retains its historical Graph-only behaviour.
 
 Prerequisites:
 
@@ -66,6 +66,8 @@ Prerequisites:
 - The `Microsoft.Graph.Authentication` and `Microsoft.Graph.Applications` modules. Install the Microsoft Graph module for the current user with `Install-Module Microsoft.Graph -Scope CurrentUser`.
 - A tenant administrator account. Privileged Role Administrator is the recommended role.
 - Delegated `Application.ReadWrite.All` and `AppRoleAssignment.ReadWrite.All` scopes for the administrator running the script.
+- When `-AzureSubscriptionIds` is used, the `Az.Accounts` and `Az.Resources` modules and Azure rights to create role definitions and role assignments at each requested subscription.
+- When `-ConfigureLegacyKeyVaultAccessPolicies` is used, the `Az.KeyVault` module and `Microsoft.KeyVault/vaults/accessPolicies/write` rights for the applicable vaults.
 - An X.509 public certificate in a format such as `.cer`, `.crt`, or `.pem`. Keep the matching private key on the authorised collector host; do not give the script a `.pfx` or `.p12` file.
 
 Creating the collector certificate on Linux:
@@ -97,7 +99,8 @@ Transfer only `collector-public.cer` to the customer administrator. The administ
 ```powershell
 .\scripts\Azure-Graph-Collect-App.ps1 `
   -TenantId "11111111-2222-3333-4444-555555555555" `
-  -CertificatePath ".\collector-public.cer"
+  -CertificatePath ".\collector-public.cer" `
+  -AzureSubscriptionIds "66665555-7777-4444-8888-555999666000"
 ```
 
 After the Windows administrator returns the generated connection details, choose one authentication workflow. Existing Azure CLI sessions and tool-managed service-principal login are deliberately separate modes.
@@ -154,7 +157,7 @@ unset AZURE_CLIENT_SECRET
 
 Do not configure both `AZURE_CLIENT_SECRET` and `AZURE_CLIENT_CERTIFICATE_PATH` for service-principal mode. The collector rejects this ambiguous combination instead of silently selecting one credential. Credential variables do not trigger a login when `--auth-method existing` is selected.
 
-A customer certificate-authority-issued certificate may be used instead when required by organisational policy. The same application also needs separately assigned Azure RBAC access for the subscriptions assessed; the PowerShell helper grants Microsoft Graph permissions only.
+A customer certificate-authority-issued certificate may be used instead when required by organisational policy. If `-AzureSubscriptionIds` is omitted, separately assign the Azure rights needed by the collector before using the service-principal authentication mode.
 
 Permission profiles:
 
@@ -168,6 +171,8 @@ Permission profiles:
 
 The default is `All`, so customers running a full penetration test do not need to select profiles. Profiles remain available for deliberately restricted assessments; for example, `-Profiles IdentityBaseline,PIM`.
 
+The `All` profile is additive. It retains the original 41 Graph application permissions for compatibility with other authorised assessment tools and adds the current least-privilege directory/group PIM schedule permissions required by Azure Assess. Moving Azure-resource PIM collection to ARM does not remove `PrivilegedAccess.Read.AzureResources` from the helper.
+
 Parameters:
 
 - `-DisplayName`: application display name. Defaults to a dated YGHT Azure Assessment collector name.
@@ -175,6 +180,8 @@ Parameters:
 - `-CertificatePath`: required path to the public certificate. Private-key containers with `.pfx` or `.p12` extensions are rejected.
 - `-Profiles`: one or more predefined permission profiles. Default: `All`.
 - `-AdditionalApplicationPermissions`: additional Microsoft Graph application-permission names to request.
+- `-AzureSubscriptionIds`: optional subscription IDs on which to grant `Reader`, `Key Vault Reader`, and the narrowly scoped custom NIC effective-configuration role. Supplying this parameter causes a separate Azure Resource Manager administrator login when required.
+- `-ConfigureLegacyKeyVaultAccessPolicies`: for non-RBAC Key Vaults in the selected subscriptions, add list-only key and secret permissions to the service principal. This never grants secret `Get`, key recovery, cryptographic, write or delete permissions.
 - `-NoGrant`: configure the requested API permissions without creating app-role assignments. The script prints an administrator-consent URL instead.
 - `-AllowDuplicateDisplayName`: allow creation when an application with the same display name already exists.
 - `-WhatIf`: show the proposed application-registration creation without changing the tenant.
@@ -182,13 +189,16 @@ Parameters:
 Important behaviour:
 
 - Without `-NoGrant`, application-permission grants take effect immediately. Review the selected profiles before approving the operation.
+- Azure subscription role assignments are made only when `-AzureSubscriptionIds` is supplied. `Reader` supports ARM inventory and Azure-resource PIM reads; `Key Vault Reader` exposes key and secret metadata but not values; the custom role contains only NIC read plus the effective NSG and effective route-table actions.
+- The Azure roles are assigned to the new service principal. They apply to `--auth-method service-principal`; they do not add rights to a user or managed identity used with `--auth-method existing`.
+- RBAC-enabled Key Vaults use `Key Vault Reader`. Access-policy vaults require `-ConfigureLegacyKeyVaultAccessPolicies` or an equivalent pre-existing list-only access policy. The switch changes every applicable legacy vault in the selected subscriptions, so review the `-WhatIf` output first.
 - The script validates every requested permission against the enabled Microsoft Graph application roles exposed by the tenant before creating the application. Availability can vary by cloud and workload; review the current [Microsoft Graph permissions reference](https://learn.microsoft.com/graph/permissions-reference).
 - Only the certificate's public bytes are uploaded. The private key is neither read from a public certificate nor written to the output.
 - The generated `<display-name>.connection-details.json` file contains tenant, application, service-principal, certificate, profile, and permission identifiers, plus an optional `Connect-MgGraph` command for a Windows Graph client. It does not contain a client secret or private key.
 - The generated connection details are operational engagement data and should still be stored and transferred appropriately.
 - Linux collection uses the combined `collector-auth.pem` credential directly through Azure CLI.
 - If the script fails after reporting an application or service-principal object ID, inspect and remove any partially created tenant objects before retrying.
-- Remove the application registration, enterprise application, permission grants, local certificate, and generated connection details when the assessment is complete, subject to the engagement's evidence-retention requirements.
+- Remove the application registration, enterprise application, Graph permission grants, Azure role assignments, any no-longer-used YGHT custom network role, local certificate, and generated connection details when the assessment is complete, subject to the engagement's evidence-retention requirements.
 
 ### `azure-collect.py`
 
@@ -433,10 +443,12 @@ Then open `http://127.0.0.1:5000/` in a browser.
 
 ## Microsoft Graph workload collection
 
-The default collection now uses the application permissions created by `scripts/Azure-Graph-Collect-App.ps1` across Identity Baseline, PIM, Microsoft 365 Audit, Endpoint/Intune, Global Secure Access and Defender Hunting. Inventory endpoints collect every available page. Activity, audit and hunting data use a resolved UTC interval controlled by `--graph-lookback-days` (30 days by default); the exact start and end are recorded in the schema 2.5 collection manifest.
+The default collection uses the native Graph runner for Microsoft Graph work across Identity Baseline, Entra directory/group PIM, Microsoft 365 Audit, Endpoint/Intune, Global Secure Access and Defender Hunting. Older `az ad` and Graph-targeted `az rest` collection paths are retained only as historical dataset mappings; new collection no longer depends on their delegated-token behaviour. Inventory endpoints collect every available page. Activity, audit and hunting data use a resolved UTC interval controlled by `--graph-lookback-days` (30 days by default); the exact start and end are recorded in the schema 2.5 collection manifest.
 
-The permission profiles have three capability classes: stable inventory reads, time-bounded activity/audit reads, and explicitly beta-dependent reads. Identity Baseline and Endpoint/Intune are primarily inventory; sign-ins, provisioning, risk detections, service activity, unified audit and hunting are bounded by the lookback interval; PIM schedule resources, recommendations, Global Secure Access and Defender identity resources remain visibly labelled beta where Microsoft has no stable equivalent. A missing licence or unavailable capability is recorded as unavailable and does not become a configuration absence finding.
+The permission profiles have three capability classes: stable inventory reads, time-bounded activity/audit reads, and explicitly beta-dependent reads. Security Defaults, sign-ins, provisioning logs, identity providers, directory PIM and group PIM use stable v1.0 Graph APIs. Azure-resource PIM uses stable Azure Resource Manager `Microsoft.Authorization` schedule APIs instead of Graph. Microsoft 365 D30 usage reports use stable Graph report functions, while the 30-day unified audit query remains beta because the non-Graph Management Activity API exposes only a seven-day retrieval window. Recommendations, Global Secure Access and Defender for Identity resources remain visibly labelled beta where Microsoft has no stable equivalent. Defender hunting remains on Graph because it replaces the retiring workload-specific hunting APIs. A missing licence or unavailable capability is recorded as unavailable and does not become a configuration absence finding.
 
 Datasets use stable `graph_<profile>_<dataset>_<timestamp>.json` names. Records include `_collectionContext` provenance. Endpoints that require Microsoft Graph beta are explicitly labelled in the manifest limitations. Unauthorised requests, unavailable tenant/licence capabilities, inapplicable endpoints, failures and incomplete collection remain distinct assessment states.
 
 Use `--endpoint` with a friendly endpoint name, stable Graph endpoint ID, profile, permission or URL fragment. BitLocker collection requests metadata only and never requests recovery key material. The built-in Defender query pack is fixed and versioned; missing tables or licences affect only the relevant query.
+
+Security Defaults remains available at the stable `/v1.0/policies/identitySecurityDefaultsEnforcementPolicy` endpoint and requires the `Policy.Read.All` application permission. An `AccessDenied` result means the acquired Graph token lacks a suitable permission; it does not mean that Microsoft removed the REST API. The native runner preserves the supplied Graph error code and message so licence restrictions and missing permissions remain distinguishable.

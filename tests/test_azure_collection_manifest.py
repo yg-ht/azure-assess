@@ -662,7 +662,6 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
         azure_collect.SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE.pop("sub-one", None)
         responses = [
             ({"accessToken": "header.payload.signature"}, None),
-            ({"value": []}, None),
             (
                 [{
                     "principalId": "principal-one",
@@ -685,6 +684,10 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
             azure_collect,
             "run_json_command",
             side_effect=responses,
+        ), mock.patch.object(
+            azure_collect,
+            "get_transitive_group_ids",
+            return_value=(set(), None),
         ):
             with mock.patch.object(
                 azure_collect,
@@ -727,7 +730,6 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
         azure_collect.AUTH_CONFIG = {"subscription_id": "sub-denied"}
         azure_collect.SUBSCRIPTION_ROLE_ASSIGNMENTS_CACHE.pop("sub-denied", None)
         responses = [
-            ({"value": []}, None),
             ([{
                 "principalId": "principal-one",
                 "roleDefinitionId": "/subscriptions/sub-denied/providers/Microsoft.Authorization/roleDefinitions/reader-role",
@@ -747,6 +749,10 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
             azure_collect,
             "run_json_command",
             side_effect=responses,
+        ), mock.patch.object(
+            azure_collect,
+            "get_transitive_group_ids",
+            return_value=(set(), None),
         ):
             verification = azure_collect.collect_arm_access_verification(
                 "principal-one"
@@ -765,7 +771,6 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
             "sub-deny-query", None
         )
         responses = [
-            ({"value": []}, None),
             ([{
                 "principalId": "principal-one",
                 "roleDefinitionId": "/subscriptions/sub-deny-query/providers/Microsoft.Authorization/roleDefinitions/reader-role",
@@ -778,6 +783,10 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
             azure_collect,
             "run_json_command",
             side_effect=responses,
+        ), mock.patch.object(
+            azure_collect,
+            "get_transitive_group_ids",
+            return_value=(set(), None),
         ):
             verification = azure_collect.collect_arm_access_verification(
                 "principal-one"

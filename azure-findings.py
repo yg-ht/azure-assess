@@ -103,14 +103,22 @@ OFFLINE_CORRELATION_DATASETS = (
         ("az_security_assessment_list", "az_rest_--method_get_--url_subscriptions_id_providers_microsoft.security_assessments_api-version_2020-01-01"),
         expand_value=True,
     ),
-    DatasetSpec("applications", ("az_ad_app_list",), ("az_ad_app_list",)),
+    DatasetSpec(
+        "applications",
+        ("graph_identity_baseline_applications", "az_ad_app_list"),
+        ("graph_identity_baseline_applications", "az_ad_app_list"),
+    ),
     DatasetSpec(
         "service_principals",
-        ("az_ad_sp_list_--all",),
-        ("az_ad_sp_list_--all",),
+        ("graph_identity_baseline_service_principals", "az_ad_sp_list_--all"),
+        ("graph_identity_baseline_service_principals", "az_ad_sp_list_--all"),
     ),
     DatasetSpec("managed_identities", ("az_identity_list",), ("az_identity_list",)),
-    DatasetSpec("groups", ("az_ad_group_list",), ("az_ad_group_list",)),
+    DatasetSpec(
+        "groups",
+        ("graph_identity_baseline_groups", "az_ad_group_list"),
+        ("graph_identity_baseline_groups", "az_ad_group_list"),
+    ),
     DatasetSpec(
         "role_assignments",
         ("role_enriched", "az_role_assignment_list"),
@@ -957,7 +965,9 @@ def correlation_finding(title, severity, reason, correlation):
 
 def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     apim_services = dataset_records(catalog, "az_apim_show")
-    ad_users = dataset_records(catalog, "az_ad_user_list")
+    ad_users = dataset_records(
+        catalog, "graph_identity_baseline_users", "az_ad_user_list"
+    )
     app_service_environments = dataset_records(catalog, "az_appservice_ase_show")
     storage_accounts = dataset_records(catalog, "az_storage_account_list")
     storage_keys = dataset_records(catalog, "az_storage_account_keys_list")
@@ -1051,17 +1061,19 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     vm_extensions = dataset_records(catalog, "az_vm_extension_list")
     vm_scale_sets = dataset_records(catalog, "az_vmss_list")
     nsgs = dataset_records(catalog, "az_network_nsg_list")
-    graph_conditional_access_policies = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "conditionalaccess", "policies"))
-    graph_directory_roles = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "directoryroles"))
-    graph_directory_role_assignments = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "rolemanagement", "roleassignments"))
-    graph_group_settings = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "groupsettings"))
-    graph_named_locations = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "namedlocations"))
-    graph_authorization_policy = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "authorizationpolicy"))
-    graph_security_defaults_policy = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"))
-    graph_user_registration_details = expand_value_records(dataset_records(catalog, "graph.microsoft.com", "userregistrationdetails"))
+    graph_conditional_access_policies = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_conditional_access",), ("graph.microsoft.com", "conditionalaccess", "policies")))
+    graph_directory_roles = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_directory_roles",), ("graph.microsoft.com", "directoryroles")))
+    graph_directory_role_assignments = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_directory_role_assignments",), ("graph.microsoft.com", "rolemanagement", "roleassignments")))
+    graph_group_settings = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_group_settings",), ("graph.microsoft.com", "groupsettings")))
+    graph_named_locations = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_named_locations",), ("graph.microsoft.com", "namedlocations")))
+    graph_authorization_policy = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_identity_policies",), ("graph.microsoft.com", "authorizationpolicy")))
+    graph_security_defaults_policy = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_security_defaults",), ("graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy")))
+    graph_user_registration_details = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_user_registration_details",), ("graph.microsoft.com", "userregistrationdetails")))
     source_map = {
         "apim_services": dataset_references(catalog, "az_apim_show"),
-        "ad_users": dataset_references(catalog, "az_ad_user_list"),
+        "ad_users": dataset_references(
+            catalog, "graph_identity_baseline_users", "az_ad_user_list"
+        ),
         "app_service_environments": dataset_references(catalog, "az_appservice_ase_show"),
         "storage_accounts": dataset_references(catalog, "az_storage_account_list"),
         "storage_keys": dataset_references(catalog, "az_storage_account_keys_list"),
@@ -1154,14 +1166,14 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "vm_extensions": dataset_references(catalog, "az_vm_extension_list"),
         "vm_scale_sets": dataset_references(catalog, "az_vmss_list"),
         "nsgs": dataset_references(catalog, "az_network_nsg_list"),
-        "graph_conditional_access_policies": dataset_references(catalog, "graph.microsoft.com", "conditionalaccess", "policies"),
-        "graph_directory_roles": dataset_references(catalog, "graph.microsoft.com", "directoryroles"),
-        "graph_directory_role_assignments": dataset_references(catalog, "graph.microsoft.com", "rolemanagement", "roleassignments"),
-        "graph_group_settings": dataset_references(catalog, "graph.microsoft.com", "groupsettings"),
-        "graph_named_locations": dataset_references(catalog, "graph.microsoft.com", "namedlocations"),
-        "graph_authorization_policy": dataset_references(catalog, "graph.microsoft.com", "authorizationpolicy"),
-        "graph_security_defaults_policy": dataset_references(catalog, "graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy"),
-        "graph_user_registration_details": dataset_references(catalog, "graph.microsoft.com", "userregistrationdetails"),
+        "graph_conditional_access_policies": dataset_references_any(catalog, ("graph_identity_baseline_conditional_access",), ("graph.microsoft.com", "conditionalaccess", "policies")),
+        "graph_directory_roles": dataset_references_any(catalog, ("graph_identity_baseline_directory_roles",), ("graph.microsoft.com", "directoryroles")),
+        "graph_directory_role_assignments": dataset_references_any(catalog, ("graph_identity_baseline_directory_role_assignments",), ("graph.microsoft.com", "rolemanagement", "roleassignments")),
+        "graph_group_settings": dataset_references_any(catalog, ("graph_identity_baseline_group_settings",), ("graph.microsoft.com", "groupsettings")),
+        "graph_named_locations": dataset_references_any(catalog, ("graph_identity_baseline_named_locations",), ("graph.microsoft.com", "namedlocations")),
+        "graph_authorization_policy": dataset_references_any(catalog, ("graph_identity_baseline_identity_policies",), ("graph.microsoft.com", "authorizationpolicy")),
+        "graph_security_defaults_policy": dataset_references_any(catalog, ("graph_identity_baseline_security_defaults",), ("graph.microsoft.com", "identitysecuritydefaultsenforcementpolicy")),
+        "graph_user_registration_details": dataset_references_any(catalog, ("graph_identity_baseline_user_registration_details",), ("graph.microsoft.com", "userregistrationdetails")),
     }
 
     # Resolve exact dataset identities for the cross-dataset analyzers. Existing

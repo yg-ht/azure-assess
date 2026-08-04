@@ -11,6 +11,8 @@ This script creates:
   3. Microsoft Graph application permissions from one or more predefined profiles.
   4. A public X.509 certificate credential for app-only authentication.
   5. Optional programmatic admin consent by creating app role assignments.
+  6. Optional Azure subscription role assignments for ARM inventory, Key Vault
+     metadata and NIC effective-configuration collection.
 
 The script is intended to be run by the tenant administrator.
 All permission profiles are selected by default. Use -Profiles only when the assessment requires a deliberately restricted permission set.
@@ -74,7 +76,13 @@ param(
     [switch]$NoGrant,
 
     [Parameter(Mandatory = $false)]
-    [switch]$AllowDuplicateDisplayName
+    [switch]$AllowDuplicateDisplayName,
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$AzureSubscriptionIds = @(),
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ConfigureLegacyKeyVaultAccessPolicies
 )
 
 Set-StrictMode -Version Latest
@@ -87,7 +95,7 @@ function Assert-Module {
     )
 
     if (-not (Get-Module -ListAvailable -Name $Name)) {
-        throw "Missing PowerShell module: $Name. Install it with: Install-Module Microsoft.Graph -Scope CurrentUser"
+        throw "Missing PowerShell module: $Name. Install the module for the current user and retry."
     }
 
     Import-Module $Name -ErrorAction Stop
@@ -137,6 +145,90 @@ function Get-UniqueValues {
     return @($Values | Where-Object { $_ -and $_.Trim() } | Sort-Object -Unique)
 }
 
+function Grant-AzureRoleIfMissing {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ObjectId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RoleDefinitionName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Scope
+    )
+
+    $existing = @(Get-AzRoleAssignment `
+        -ObjectId $ObjectId `
+        -RoleDefinitionName $RoleDefinitionName `
+        -Scope $Scope `
+        -ErrorAction SilentlyContinue)
+
+    if ($existing.Count -gt 0) {
+        Write-Host "Already assigned at ${Scope}: $RoleDefinitionName" -ForegroundColor DarkYellow
+        return
+    }
+
+    if ($PSCmdlet.ShouldProcess($Scope, "Assign '$RoleDefinitionName' to service principal $ObjectId")) {
+        New-AzRoleAssignment `
+            -ObjectId $ObjectId `
+            -RoleDefinitionName $RoleDefinitionName `
+            -Scope $Scope | Out-Null
+    }
+}
+
+function Get-OrCreate-NetworkEffectiveConfigurationReaderRole {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$SubscriptionScopes
+    )
+
+    $roleName = "YGHT Azure Assessment Network Effective Configuration Reader"
+    $requiredActions = @(
+        "Microsoft.Network/networkInterfaces/read",
+        "Microsoft.Network/networkInterfaces/effectiveNetworkSecurityGroups/action",
+        "Microsoft.Network/networkInterfaces/effectiveRouteTable/action"
+    )
+    $role = Get-AzRoleDefinition -Name $roleName -ErrorAction SilentlyContinue
+
+    if ($role) {
+        $missingActions = @($requiredActions | Where-Object { $_ -notin $role.Actions })
+        $unexpectedActions = @($role.Actions | Where-Object { $_ -notin $requiredActions })
+        $missingScopes = @($SubscriptionScopes | Where-Object { $_ -notin $role.AssignableScopes })
+        if (
+            $missingActions.Count -gt 0 -or
+            $unexpectedActions.Count -gt 0 -or
+            @($role.DataActions).Count -gt 0
+        ) {
+            throw "The existing custom role '$roleName' does not have the expected least-privilege action set. Review it manually rather than assigning a broader or incompatible role."
+        }
+        if ($missingScopes.Count -gt 0) {
+            $combinedScopes = @($role.AssignableScopes) + @($missingScopes)
+            $role.AssignableScopes = @($combinedScopes | Sort-Object -Unique)
+            if ($PSCmdlet.ShouldProcess(($missingScopes -join ", "), "Add subscription scopes to custom role '$roleName'")) {
+                Set-AzRoleDefinition -Role $role | Out-Null
+            }
+        }
+        return $roleName
+    }
+
+    $role = [Microsoft.Azure.Commands.Resources.Models.Authorization.PSRoleDefinition]::new()
+    $role.Name = $roleName
+    $role.Description = "Read-only Azure Assess access to NIC effective NSG and route-table calculations."
+    $role.IsCustom = $true
+    $role.Actions = $requiredActions
+    $role.NotActions = @()
+    $role.DataActions = @()
+    $role.NotDataActions = @()
+    $role.AssignableScopes = @($SubscriptionScopes)
+
+    if ($PSCmdlet.ShouldProcess(($SubscriptionScopes -join ", "), "Create custom role '$roleName'")) {
+        New-AzRoleDefinition -Role $role | Out-Null
+    }
+    return $roleName
+}
+
 Assert-Module -Name "Microsoft.Graph.Authentication"
 Assert-Module -Name "Microsoft.Graph.Applications"
 
@@ -158,13 +250,17 @@ $PermissionProfiles = [ordered]@{
         "Reports.Read.All",
         "ReportSettings.Read.All",
         "RoleManagement.Read.All",
+        "RoleManagement.Read.Directory",
         "UserAuthenticationMethod.Read.All"
     )
 
     PIM = @(
+        "PrivilegedAssignmentSchedule.Read.AzureADGroup",
         "PrivilegedAccess.Read.AzureAD",
         "PrivilegedAccess.Read.AzureADGroup",
         "PrivilegedAccess.Read.AzureResources",
+        "PrivilegedEligibilitySchedule.Read.AzureADGroup",
+        "RoleAssignmentSchedule.Read.Directory",
         "RoleEligibilitySchedule.Read.Directory",
         "RoleManagementAlert.Read.Directory"
     )
@@ -419,6 +515,71 @@ else {
     Write-Host "Application permissions granted." -ForegroundColor Green
 }
 
+$ConfiguredAzureSubscriptions = @()
+if ($AzureSubscriptionIds.Count -gt 0) {
+    Assert-Module -Name "Az.Accounts"
+    Assert-Module -Name "Az.Resources"
+    if ($ConfigureLegacyKeyVaultAccessPolicies) {
+        Assert-Module -Name "Az.KeyVault"
+    }
+
+    $AzureContext = Get-AzContext -ErrorAction SilentlyContinue
+    if (-not $AzureContext -or $AzureContext.Tenant.Id -ne $Context.TenantId) {
+        Write-Host "Connecting to Azure Resource Manager..." -ForegroundColor Cyan
+        Connect-AzAccount -Tenant $Context.TenantId | Out-Null
+    }
+
+    $UniqueAzureSubscriptionIds = @(Get-UniqueValues -Values $AzureSubscriptionIds)
+    Set-AzContext `
+        -SubscriptionId $UniqueAzureSubscriptionIds[0] `
+        -Tenant $Context.TenantId | Out-Null
+    $SubscriptionScopes = @($UniqueAzureSubscriptionIds | ForEach-Object { "/subscriptions/$_" })
+    $networkRoleName = Get-OrCreate-NetworkEffectiveConfigurationReaderRole `
+        -SubscriptionScopes $SubscriptionScopes
+
+    foreach ($subscriptionId in $UniqueAzureSubscriptionIds) {
+        $subscriptionScope = "/subscriptions/$subscriptionId"
+        Write-Host "Configuring Azure collection access for subscription: $subscriptionId" -ForegroundColor Cyan
+        Set-AzContext -SubscriptionId $subscriptionId -Tenant $Context.TenantId | Out-Null
+
+        Grant-AzureRoleIfMissing `
+            -ObjectId $ServicePrincipal.Id `
+            -RoleDefinitionName "Reader" `
+            -Scope $subscriptionScope
+        Grant-AzureRoleIfMissing `
+            -ObjectId $ServicePrincipal.Id `
+            -RoleDefinitionName "Key Vault Reader" `
+            -Scope $subscriptionScope
+
+        Grant-AzureRoleIfMissing `
+            -ObjectId $ServicePrincipal.Id `
+            -RoleDefinitionName $networkRoleName `
+            -Scope $subscriptionScope
+
+        if ($ConfigureLegacyKeyVaultAccessPolicies) {
+            foreach ($vault in @(Get-AzKeyVault)) {
+                if ($vault.EnableRbacAuthorization) {
+                    continue
+                }
+                if ($PSCmdlet.ShouldProcess(
+                    $vault.VaultName,
+                    "Grant list-only key and secret metadata access to service principal $($ServicePrincipal.Id)"
+                )) {
+                    Set-AzKeyVaultAccessPolicy `
+                        -VaultName $vault.VaultName `
+                        -ResourceGroupName $vault.ResourceGroupName `
+                        -ObjectId $ServicePrincipal.Id `
+                        -PermissionsToKeys List `
+                        -PermissionsToSecrets List `
+                        -BypassObjectIdValidation
+                }
+            }
+        }
+
+        $ConfiguredAzureSubscriptions += $subscriptionId
+    }
+}
+
 $Output = [ordered]@{
     TenantId                   = $Context.TenantId
     DisplayName                = $DisplayName
@@ -430,6 +591,8 @@ $Output = [ordered]@{
     CertificateNotAfterUtc     = $Certificate.NotAfter.ToUniversalTime().ToString("u")
     Profiles                   = $SelectedProfiles
     GraphApplicationPermissions = $RequestedPermissionNames
+    AzureSubscriptionIds        = $ConfiguredAzureSubscriptions
+    LegacyKeyVaultAccessPoliciesConfigured = [bool]$ConfigureLegacyKeyVaultAccessPolicies
     NoGrant                    = [bool]$NoGrant
     AppOnlyConnectCommand      = "Connect-MgGraph -TenantId `"$($Context.TenantId)`" -ClientId `"$($Application.AppId)`" -CertificateThumbprint `"$($Certificate.Thumbprint)`""
 }

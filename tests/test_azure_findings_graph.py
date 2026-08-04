@@ -66,6 +66,23 @@ class GraphFindingTests(unittest.TestCase):
         self.assertEqual(1, len(hunting))
         self.assertEqual(["graph_defender_hunting_hunting_identity_recon_20260804.json"], sources[hunting[0]["title"]])
 
+    def test_only_active_pim_alerts_are_findings(self):
+        catalog = {
+            "graph_p_i_m_pim_alerts_20260804.json": [
+                {"id": "active", "isActive": True, "incidentCount": 1},
+                {"id": "inactive", "isActive": False, "incidentCount": 0},
+            ],
+            "azure-collection-manifest.json": graph_manifest("graph_p_i_m_pim_alerts"),
+        }
+
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        finding = next(
+            item for item in findings
+            if item["title"] == "Active privileged identity management alerts"
+        )
+        self.assertEqual("finding", finding["status"])
+        self.assertEqual(["active"], [item["id"] for item in finding["evidence"]])
+
 
 if __name__ == "__main__":
     unittest.main()

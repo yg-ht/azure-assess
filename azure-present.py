@@ -1663,6 +1663,20 @@ def load_collect_endpoint_name_map():
         for endpoint in base_endpoints + parameterized_endpoints:
             endpoint_map[endpoint_output_prefix(endpoint)] = endpoint["name"]
 
+    # These commands were replaced by the native Graph runner. Keep both old
+    # filename representations discoverable for historical assessment data.
+    legacy_graph_endpoints = [
+        {
+            "name": "Graph Directory Roles",
+            "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/directoryRoles",
+            "needs_pagination": False,
+        },
+    ]
+    for endpoint in legacy_graph_endpoints:
+        endpoint_map[collect_filename_prefix(endpoint["cli_command"])] = endpoint["name"]
+        if callable(endpoint_output_prefix):
+            endpoint_map[endpoint_output_prefix(endpoint)] = endpoint["name"]
+
     for endpoint in graph_endpoints:
         endpoint_map[endpoint["output"]] = endpoint["name"]
 

@@ -78,10 +78,12 @@ from azure_assess.collection_manifest import (
     result_item_count,
     utc_timestamp,
 )
-from azure_assess.graph_collection import collect_registered_graph
-from azure_assess.graph_collection import selected_graph_endpoints
+from azure_assess.graph_collection import (
+    collect_registered_graph,
+    selected_graph_endpoints,
+)
 from azure_assess.graph_endpoints import GRAPH_ENDPOINTS
-from azure_assess.graph_runner import utc_interval
+from azure_assess.graph_runner import GraphError, GraphRunner, GraphTransport, utc_interval
 
 AUTH_CONFIG = {}
 DEBUG = False
@@ -627,10 +629,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Application Gateways", "cli_command": "az network application-gateway list", "needs_pagination": False},
     {"name": "Application Insights", "cli_command": "az monitor app-insights component show", "needs_pagination": False},
     {"name": "Application Insights web tests", "cli_command": "az monitor app-insights web-test list", "needs_pagination": False},
-    {"name": "Active Directory Applications", "cli_command": "az ad app list", "needs_pagination": True},
-    {"name": "Active Directory Groups", "cli_command": "az ad group list", "needs_pagination": True},
-    {"name": "Active Directory Service Principals", "cli_command": "az ad sp list --all", "needs_pagination": True},
-    {"name": "Active Directory Users", "cli_command": "az ad user list", "needs_pagination": False},
     {"name": "Advisor Recommendations", "cli_command": "az advisor recommendation list", "needs_pagination": False},
     {"name": "Backups", "cli_command": "az backup vault list", "needs_pagination": False},
     {"name": "Bastion Hosts", "cli_command": "az network bastion list", "needs_pagination": False},
@@ -731,17 +729,57 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Security Contacts", "cli_command": "az security contact list", "needs_pagination": False},
     {"name": "SignalR Services", "cli_command": "az signalr list", "needs_pagination": False},
     {"name": "Snapshots", "cli_command": "az snapshot list", "needs_pagination": False},
-    {"name": "Graph Conditional Access Policies", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/identity/conditionalAccess/policies", "needs_pagination": False},
-    {"name": "Graph Named Locations", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/identity/conditionalAccess/namedLocations", "needs_pagination": False},
-    {"name": "Graph Authorization Policy", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/policies/authorizationPolicy", "needs_pagination": False},
-    {"name": "Graph Security Defaults Policy", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/policies/identitySecurityDefaultsEnforcementPolicy", "needs_pagination": False},
-    {"name": "Graph Directory Roles", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/directoryRoles", "needs_pagination": False},
-    {"name": "Graph Directory Role Assignments", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/roleManagement/directory/roleAssignments", "needs_pagination": False},
-    {"name": "Graph User Registration Details", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/reports/authenticationMethods/userRegistrationDetails", "needs_pagination": False},
-    {"name": "Graph Group Settings", "cli_command": "az rest --method get --url https://graph.microsoft.com/v1.0/groupSettings", "needs_pagination": False},
 ]
 
 AZURE_CLI_ENDPOINTS_PARAMS = [
+    {
+        "name": "PIM Azure Resource Active Schedules",
+        "cli_command": "az rest --method get --url https://management.azure.com/subscriptions/{id}/providers/Microsoft.Authorization/roleAssignmentSchedules?api-version=2020-10-01",
+        "required_params": {"id": "az_account_list"},
+        "output_prefix": "arm_pim_azure_resource_assignment_schedules",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "PIM Azure Resource Eligible Schedules",
+        "cli_command": "az rest --method get --url https://management.azure.com/subscriptions/{id}/providers/Microsoft.Authorization/roleEligibilitySchedules?api-version=2020-10-01",
+        "required_params": {"id": "az_account_list"},
+        "output_prefix": "arm_pim_azure_resource_eligibility_schedules",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "PIM Azure Resource Assignment Requests",
+        "cli_command": "az rest --method get --url https://management.azure.com/subscriptions/{id}/providers/Microsoft.Authorization/roleAssignmentScheduleRequests?api-version=2020-10-01",
+        "required_params": {"id": "az_account_list"},
+        "output_prefix": "arm_pim_azure_resource_assignment_requests",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "PIM Azure Resource Eligibility Requests",
+        "cli_command": "az rest --method get --url https://management.azure.com/subscriptions/{id}/providers/Microsoft.Authorization/roleEligibilityScheduleRequests?api-version=2020-10-01",
+        "required_params": {"id": "az_account_list"},
+        "output_prefix": "arm_pim_azure_resource_eligibility_requests",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "PIM Azure Resource Assignment Instances",
+        "cli_command": "az rest --method get --url https://management.azure.com/subscriptions/{id}/providers/Microsoft.Authorization/roleAssignmentScheduleInstances?api-version=2020-10-01",
+        "required_params": {"id": "az_account_list"},
+        "output_prefix": "arm_pim_azure_resource_assignment_instances",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "PIM Azure Resource Eligibility Instances",
+        "cli_command": "az rest --method get --url https://management.azure.com/subscriptions/{id}/providers/Microsoft.Authorization/roleEligibilityScheduleInstances?api-version=2020-10-01",
+        "required_params": {"id": "az_account_list"},
+        "output_prefix": "arm_pim_azure_resource_eligibility_instances",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
     {
         "name": "App Service Environment Details",
         "cli_command": "az appservice ase show --name {name}",
@@ -2048,9 +2086,23 @@ def run_json_command(command):
 
 
 def graph_rest_json(url):
-    return run_json_command(
-        f"az rest --method get --url {shell_quote(url)} --output json"
+    """Run a diagnostic Graph read through the native Graph transport."""
+    token_response, token_error = run_json_command(
+        "az account get-access-token --resource https://graph.microsoft.com/ --output json"
     )
+    if token_error:
+        return None, token_error
+    token = token_response.get("accessToken") if isinstance(token_response, dict) else None
+    if not token:
+        return None, "Azure CLI did not return a Microsoft Graph access token"
+    try:
+        payload, _ = GraphRunner(
+            GraphTransport(token)
+        ).request("GET", url)
+        return payload, None
+    except (GraphError, RuntimeError) as exc:
+        diagnostic = getattr(exc, "body", "") or str(exc)
+        return None, diagnostic
 
 
 def decode_jwt_payload(token):
@@ -3639,6 +3691,57 @@ def collect_parameter_set(endpoint, param_set):
             endpoint_identifier=endpoint_output_prefix(endpoint),
         )
         data = result.get("json", [])
+
+        if endpoint.get("follow_next_link") and isinstance(data, dict):
+            aggregated = []
+            page = data
+            page_number = 1
+            while True:
+                values = page.get("value", [])
+                if not isinstance(values, list):
+                    raise ValueError("Paginated Azure response value was not an array")
+                aggregated.extend(values)
+                next_link = page.get("nextLink") or page.get("@odata.nextLink")
+                if not next_link:
+                    break
+                page_number += 1
+                page_result = timed_run_az_cli(
+                    ["az", "rest", "--method", "get", "--url", str(next_link)],
+                    endpoint_name=name,
+                    category="parameterised",
+                    command_template="GET {nextLink}",
+                    parameter_context={
+                        **param_set,
+                        "page": page_number,
+                        "next_link": str(next_link),
+                    },
+                    endpoint_identifier=endpoint_output_prefix(endpoint),
+                )
+                if page_result.get("returncode") != 0:
+                    if COLLECTION_MANIFEST is not None:
+                        COLLECTION_MANIFEST.record_execution(
+                            endpoint_name=name,
+                            category="parameterised",
+                            command_template=cli_template,
+                            parameter_context={
+                                **param_set,
+                                "completed_pages": page_number - 1,
+                                "incomplete": True,
+                            },
+                            started_at=utc_timestamp(),
+                            duration_seconds=0,
+                            returncode=1,
+                            result_count=len(aggregated),
+                            error_message="A later Azure REST page could not be collected",
+                            diagnostic_text=page_result.get("stdout"),
+                            endpoint_identifier=endpoint_output_prefix(endpoint),
+                            status_override="incomplete",
+                        )
+                    break
+                page = page_result.get("json")
+                if not isinstance(page, dict):
+                    raise ValueError("Paginated Azure response was not an object")
+            data = aggregated
 
         if endpoint.get("extract_value") and isinstance(data, dict) and isinstance(data.get("value"), list):
             data = data["value"]

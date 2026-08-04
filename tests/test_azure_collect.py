@@ -444,6 +444,69 @@ class CorrectedAzureEndpointTests(unittest.TestCase):
             endpoint["cli_command"],
         )
 
+    def test_azure_resource_pim_uses_arm_schedule_apis(self):
+        endpoints = [
+            item for item in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if item["name"].startswith("PIM Azure Resource")
+        ]
+
+        self.assertEqual(6, len(endpoints))
+        for endpoint in endpoints:
+            self.assertIn("management.azure.com/subscriptions/{id}", endpoint["cli_command"])
+            self.assertIn("providers/Microsoft.Authorization/role", endpoint["cli_command"])
+            self.assertNotIn("graph.microsoft.com", endpoint["cli_command"])
+            self.assertEqual({"id": "az_account_list"}, endpoint["required_params"])
+            self.assertTrue(endpoint["extract_value"])
+            self.assertTrue(endpoint["follow_next_link"])
+
+    def test_graph_collection_is_not_duplicated_through_azure_cli(self):
+        commands = [item["cli_command"] for item in azure_collect.AZURE_CLI_ENDPOINTS]
+
+        self.assertFalse(any(command.startswith("az ad ") for command in commands))
+        self.assertFalse(any("graph.microsoft.com" in command for command in commands))
+
+    def test_arm_pim_pagination_retains_all_pages_and_duplicates(self):
+        endpoint = {
+            "name": "PIM test",
+            "cli_command": "az rest --method get --url https://management.azure.com/{id}",
+            "output_prefix": "arm_pim_test",
+            "follow_next_link": True,
+            "extract_value": True,
+        }
+        results = [
+            {"returncode": 0, "json": {"value": [{"id": "same"}], "nextLink": "https://next"}},
+            {"returncode": 0, "json": {"value": [{"id": "same"}]}},
+        ]
+        with mock.patch.object(
+            azure_collect, "timed_run_az_cli", side_effect=results
+        ) as timed:
+            records = azure_collect.collect_parameter_set(endpoint, {"id": "sub"})
+
+        self.assertEqual(["same", "same"], [item["id"] for item in records])
+        self.assertEqual(
+            ["az", "rest", "--method", "get", "--url", "https://next"],
+            timed.call_args_list[1].args[0],
+        )
+
+    def test_arm_pim_partial_page_retains_completed_records(self):
+        endpoint = {
+            "name": "PIM test",
+            "cli_command": "az rest --method get --url https://management.azure.com/{id}",
+            "output_prefix": "arm_pim_test",
+            "follow_next_link": True,
+            "extract_value": True,
+        }
+        results = [
+            {"returncode": 0, "json": {"value": [{"id": "complete"}], "nextLink": "https://next"}},
+            {"returncode": 1, "json": {}, "stdout": "later page failed"},
+        ]
+        with mock.patch.object(
+            azure_collect, "timed_run_az_cli", side_effect=results
+        ):
+            records = azure_collect.collect_parameter_set(endpoint, {"id": "sub"})
+
+        self.assertEqual(["complete"], [item["id"] for item in records])
+
     def test_diagnostic_settings_follow_successful_category_discovery(self):
         endpoints = azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
         categories_index = next(

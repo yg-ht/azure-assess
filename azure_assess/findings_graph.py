@@ -83,6 +83,13 @@ def _state(record: Mapping[str, Any], *keys: str) -> str:
     return ""
 
 
+def _positive_count(record: Mapping[str, Any], key: str) -> bool:
+    try:
+        return int(record.get(key) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def evaluate_graph_findings(catalog, result, unsupported):
     if not graph_collection_present(catalog):
         return [], {}
@@ -95,7 +102,7 @@ def evaluate_graph_findings(catalog, result, unsupported):
         ("Weak or missing privileged authentication methods", "High", ["user_registration_details", "directory_role_assignments"], lambda r: _state(r, "isMfaRegistered", "isMfaCapable") in {"false", "0", "no"}, "Complete privileged-role and authentication-method inventories are required."),
         ("Unsafe entitlement-management assignments or policies", "High", ["entitlement_assignments", "entitlement_policies"], lambda r: _state(r, "status", "state") in {"pending", "inadequate", "permanent", "expired"} or r.get("assignmentScheduleInfo", {}).get("expiration", {}).get("type") == "noExpiration", "Complete entitlement inventories are required."),
         ("Permanent privileged directory assignments", "High", ["pim_directory_active"], lambda r: _state(r, "assignmentType", "expirationType") in {"permanent", "noexpiration", "none"} or (not r.get("assignmentScheduleInfo", {}).get("expiration") and not r.get("scheduleInfo", {}).get("expiration") and not r.get("expirationDateTime")), "Complete, licensed PIM active-assignment inventory is required."),
-        ("Active privileged identity management alerts", "High", ["pim_alerts"], lambda r: _state(r, "status", "alertStatus") not in {"resolved", "dismissed", "closed"}, "A complete, licensed PIM alert inventory is required."),
+        ("Active privileged identity management alerts", "High", ["pim_alerts"], lambda r: _state(r, "isActive") == "true" or _positive_count(r, "incidentCount"), "A complete, licensed PIM alert inventory is required."),
         ("Unsafe Microsoft 365 sharing or tenant settings", "High", ["settings_sharepoint", "settings_apps_services", "settings_forms"], lambda r: _state(r, "sharingCapability", "externalSharing", "defaultSharingLinkType") in {"externalusersandguestsharing", "anyone", "anonymousaccess"}, "Complete licensed tenant-settings inventories are required."),
         ("Non-compliant or stale Intune managed devices", "High", ["managed_devices"], lambda r: _state(r, "complianceState", "deviceHealthAttestationState") in {"noncompliant", "error", "unknown", "stale"} or r.get("managementState") in {"retirePending", "wipePending"}, "A complete, licensed managed-device inventory is required."),
         ("Intune estate lacks compliance or enrolment controls", "High", ["managed_devices", "compliance_policies", "enrolment_restrictions"], lambda r: False, "Complete managed-device, compliance-policy and enrolment inventories are required."),

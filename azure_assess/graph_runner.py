@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Native, bounded-retry Microsoft Graph collection primitives."""
 
+import csv
+import io
 import json
 import os
 import tempfile
@@ -19,7 +21,23 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 GRAPH_ROOT = "https://graph.microsoft.com"
 TRANSIENT_STATUS = {429, 500, 502, 503, 504}
 UNAUTHORISED_STATUS = {401, 403}
-CAPABILITY_STATUS = {402, 404, 409, 422, 501}
+CAPABILITY_STATUS = {402}
+CAPABILITY_ERROR_CODES = {
+    "Authentication_RequestFromNonPremiumTenantOrB2CTenant",
+    "AuthenticationRequestFromNonPremiumTenantOrB2CTenant",
+    "LicenseRestriction",
+    "NotLicensed",
+    "TenantNotLicensed",
+}
+CAPABILITY_MESSAGE_MARKERS = (
+    "doesn't have premium license",
+    "does not have a premium license",
+    "licence is required",
+    "license is required",
+    "tenant is not licensed",
+    "tenant is not onboarded",
+    "service is not available for this tenant",
+)
 
 
 class GraphError(RuntimeError):
@@ -30,12 +48,45 @@ class GraphError(RuntimeError):
         self.status = status
         self.body = body
         self.headers = dict(headers or {})
+        self.attempts = 0
 
     @property
-    def outcome(self) -> str:
+    def error_payload(self) -> Mapping[str, Any]:
+        try:
+            payload = json.loads(self.body or "{}")
+        except (TypeError, ValueError):
+            return {}
+        return payload if isinstance(payload, Mapping) else {}
+
+    @property
+    def code(self) -> Optional[str]:
+        error = self.error_payload.get("error")
+        if isinstance(error, Mapping) and error.get("code"):
+            return str(error["code"])
+        if self.error_payload.get("code"):
+            return str(self.error_payload["code"])
+        return None
+
+    @property
+    def detail(self) -> str:
+        error = self.error_payload.get("error")
+        if isinstance(error, Mapping) and error.get("message"):
+            return str(error["message"])
+        if self.error_payload.get("message"):
+            return str(self.error_payload["message"])
+        return str(self)
+
+    def outcome_for(self, api_channel: str = "v1.0") -> str:
+        detail = self.detail.lower()
+        if (
+            self.code in CAPABILITY_ERROR_CODES
+            or self.status in CAPABILITY_STATUS
+            or any(marker in detail for marker in CAPABILITY_MESSAGE_MARKERS)
+        ):
+            return "tenant_unavailable"
         if self.status in UNAUTHORISED_STATUS:
             return "unauthorised"
-        if self.status in CAPABILITY_STATUS:
+        if api_channel == "beta" and self.status in {404, 501}:
             return "tenant_unavailable"
         return "failed"
 
@@ -50,7 +101,24 @@ class GraphResult:
     contexts: List[Dict[str, Any]] = field(default_factory=list)
     error: Optional[str] = None
     error_status: Optional[int] = None
+    diagnostic: Optional[str] = None
     incomplete: bool = False
+
+
+class SafeGraphRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Do not forward a Graph bearer token to a report download host."""
+
+    def redirect_request(self, request, file_pointer, code, message, headers, new_url):
+        redirected = super().redirect_request(
+            request, file_pointer, code, message, headers, new_url
+        )
+        if redirected is None:
+            return None
+        old_host = urllib.parse.urlsplit(request.full_url).hostname
+        new_host = urllib.parse.urlsplit(new_url).hostname
+        if old_host != new_host:
+            redirected.remove_header("Authorization")
+        return redirected
 
 
 def utc_interval(days: int, now: Optional[datetime] = None) -> Tuple[str, str]:
@@ -70,6 +138,7 @@ def endpoint_url(endpoint: Mapping[str, Any], context: Mapping[str, Any]) -> str
             str(resolved_context["parent_id"]), safe=""
         )
     path = str(endpoint["path"]).format(**resolved_context)
+    path = path.replace(" ", "%20")
     if path.startswith("https://"):
         return path
     return f"{GRAPH_ROOT}/{endpoint['api']}{path}"
@@ -111,6 +180,7 @@ class GraphTransport:
     def __init__(self, token: str, timeout: float = 60.0):
         self.token = token
         self.timeout = timeout
+        self.opener = urllib.request.build_opener(SafeGraphRedirectHandler())
 
     def __call__(self, method: str, url: str, body: Optional[Mapping]) -> Tuple[int, Mapping[str, str], Any]:
         payload = json.dumps(body).encode("utf-8") if body is not None else None
@@ -125,9 +195,19 @@ class GraphTransport:
             },
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with self.opener.open(request, timeout=self.timeout) as response:
                 raw = response.read()
-                decoded = json.loads(raw.decode("utf-8")) if raw else {}
+                content_type = str(response.headers.get("Content-Type", "")).lower()
+                try:
+                    if "json" in content_type:
+                        decoded = json.loads(raw.decode("utf-8")) if raw else {}
+                    else:
+                        decoded = raw.decode("utf-8-sig", errors="strict")
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise GraphError(
+                        "Microsoft Graph returned a malformed response",
+                        status=response.status,
+                    ) from exc
                 return response.status, dict(response.headers), decoded
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
@@ -205,30 +285,54 @@ class GraphRunner:
                     raise GraphError(
                         f"Microsoft Graph returned HTTP {status}",
                         status=status,
-                        body=str(payload),
+                        body=(
+                            json.dumps(payload, ensure_ascii=False)
+                            if isinstance(payload, (dict, list)) else str(payload)
+                        ),
                         headers=headers,
                     )
-                if not isinstance(payload, (dict, list)):
-                    raise GraphError("Microsoft Graph returned malformed JSON")
+                if not isinstance(payload, (dict, list, str)):
+                    raise GraphError("Microsoft Graph returned a malformed response")
                 return payload, attempt
             except GraphError as exc:
                 last_error = exc
                 if exc.status not in TRANSIENT_STATUS or attempt == self.max_attempts:
+                    exc.attempts = attempt
                     raise
                 headers = getattr(exc, "headers", {})
                 self.sleeper(retry_delay(headers, attempt))
         raise last_error
 
     @staticmethod
-    def records(payload: Any) -> Tuple[List[Any], Optional[str]]:
+    def records(
+        payload: Any,
+        response_format: str = "json",
+        records_field: Optional[str] = None,
+    ) -> Tuple[Iterable[Any], Optional[str]]:
+        if response_format == "csv":
+            if not isinstance(payload, str):
+                raise GraphError("Microsoft Graph report did not return CSV data")
+            return csv.DictReader(io.StringIO(payload)), None
         if isinstance(payload, list):
             return payload, None
         if not isinstance(payload, dict):
             raise GraphError("Microsoft Graph returned an unexpected response shape")
+        if records_field:
+            values = payload.get(records_field)
+            if not isinstance(values, list):
+                raise GraphError(
+                    f"Microsoft Graph {records_field} property was not an array"
+                )
+            return values, payload.get("@odata.nextLink")
         if "value" in payload:
-            if not isinstance(payload["value"], list):
-                raise GraphError("Microsoft Graph value property was not an array")
-            return payload["value"], payload.get("@odata.nextLink")
+            value = payload["value"]
+            if isinstance(value, list):
+                return value, payload.get("@odata.nextLink")
+            if isinstance(value, dict):
+                return [value], payload.get("@odata.nextLink")
+            if value is None:
+                return [], payload.get("@odata.nextLink")
+            raise GraphError("Microsoft Graph value property was not an object or array")
         return [payload] if payload else [], payload.get("@odata.nextLink")
 
     def collect(self, endpoint: Mapping[str, Any], target: Path, context: Mapping[str, Any]) -> GraphResult:
@@ -241,9 +345,27 @@ class GraphRunner:
                 return self._collect_audit(endpoint, target, context)
             with AtomicJsonArrayWriter(target) as writer:
                 while url:
-                    payload, attempts = self.request(endpoint["method"], url, body)
+                    try:
+                        payload, attempts = self.request(endpoint["method"], url, body)
+                    except GraphError as exc:
+                        result.attempts += max(1, exc.attempts)
+                        if not result.pages:
+                            raise
+                        result.status = "incomplete"
+                        result.error = (
+                            f"{exc.code}: {exc.detail}" if exc.code else exc.detail
+                        )
+                        result.error_status = exc.status
+                        result.diagnostic = exc.body or str(exc)
+                        result.incomplete = True
+                        break
                     result.attempts += attempts
-                    records, next_url = self.records(payload)
+                    records, next_url = self.records(
+                        payload,
+                        endpoint.get("response_format", "json"),
+                        endpoint.get("records_field"),
+                    )
+                    records = list(records)
                     result.pages += 1
                     page_context = {"page": result.pages, "url": url, "record_count": len(records)}
                     result.contexts.append(page_context)
@@ -260,9 +382,17 @@ class GraphRunner:
                     result.count = writer.count
                     url = next_url if endpoint.get("pagination", True) else None
                     body = None
-            result.status = "success" if result.count else "empty"
+            if not result.incomplete:
+                result.status = "success" if result.count else "empty"
         except GraphError as exc:
-            result.status, result.error, result.error_status = exc.outcome, str(exc), exc.status
+            if not result.attempts:
+                result.attempts = max(1, exc.attempts)
+            result.status = exc.outcome_for(str(endpoint.get("api", "v1.0")))
+            result.error = (
+                f"{exc.code}: {exc.detail}" if exc.code else exc.detail
+            )
+            result.error_status = exc.status
+            result.diagnostic = exc.body or str(exc)
             result.incomplete = result.pages > 0
             if result.incomplete:
                 result.status = "incomplete"
@@ -274,7 +404,9 @@ class GraphRunner:
         payload, attempts = self.request("POST", create_url, resolved_body(endpoint, context))
         query_id = payload.get("id") if isinstance(payload, dict) else None
         if not query_id:
-            raise GraphError("Audit query creation did not return an ID")
+            error = GraphError("Audit query creation did not return an ID")
+            error.attempts = attempts
+            raise error
         status_url = f"{GRAPH_ROOT}/{endpoint['api']}/security/auditLog/queries/{query_id}"
         deadline = monotonic() + self.poll_timeout
         polls = 0
@@ -290,6 +422,10 @@ class GraphRunner:
                 collected.contexts.insert(0, {"query_id": query_id, "poll_count": polls})
                 return collected
             if status in {"failed", "cancelled"}:
-                raise GraphError(f"Audit query finished with status {status}")
+                error = GraphError(f"Audit query finished with status {status}")
+                error.attempts = attempts
+                raise error
             self.sleeper(self.poll_interval)
-        raise GraphError("Audit query polling timed out")
+        error = GraphError("Audit query polling timed out")
+        error.attempts = attempts
+        raise error

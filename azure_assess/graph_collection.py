@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Orchestration between the Graph registry and Azure Assess manifests."""
 
+import base64
 import json
 import os
 import subprocess
@@ -13,6 +14,51 @@ from .graph_endpoints import GRAPH_ENDPOINTS
 from .graph_runner import AtomicJsonArrayWriter, GraphRunner, GraphTransport, utc_interval
 
 
+def endpoint_permissions(endpoint: Mapping[str, Any]) -> list:
+    """Return the complete all-of application permission requirement."""
+    return list(endpoint.get("permissions") or [endpoint["permission"]])
+
+
+def token_permissions(token: str) -> Optional[set]:
+    """Read non-secret role/scope names from a JWT without treating it as verified."""
+    try:
+        encoded = token.split(".")[1]
+        encoded += "=" * (-len(encoded) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(encoded).decode("utf-8"))
+    except (IndexError, TypeError, ValueError, UnicodeDecodeError):
+        return None
+    roles = claims.get("roles") or []
+    scopes = str(claims.get("scp") or "").split()
+    if not isinstance(roles, list):
+        return None
+    return {str(item) for item in [*roles, *scopes] if item}
+
+
+def graph_access_verification(required: Iterable[str], granted: Optional[set]) -> Dict[str, Any]:
+    required_permissions = sorted({str(item) for item in required if item})
+    if granted is None:
+        return {
+            "status": "visibility_unverified",
+            "plane": "microsoft_graph",
+            "scope": "tenant",
+            "method": "token_permission_claims",
+            "reason_code": "graph_token_permissions_unavailable",
+            "required_permissions": required_permissions,
+        }
+    complete = set(required_permissions) <= granted
+    return {
+        "status": "access_verified" if complete else "visibility_unverified",
+        "plane": "microsoft_graph",
+        "scope": "tenant",
+        "method": "token_permission_claims",
+        "reason_code": (
+            "required_graph_permissions_present" if complete
+            else "required_graph_permissions_missing"
+        ),
+        "required_permissions": required_permissions,
+    }
+
+
 def graph_endpoint_definition(endpoint: Mapping[str, Any]) -> Dict[str, str]:
     return {
         "name": endpoint["name"],
@@ -22,6 +68,23 @@ def graph_endpoint_definition(endpoint: Mapping[str, Any]) -> Dict[str, str]:
 
 
 def selected_graph_endpoints(keyword: Optional[str]) -> list:
+    def include_dependencies(selected: Iterable[Mapping[str, Any]]) -> list:
+        selected_ids = {str(endpoint["id"]) for endpoint in selected}
+        changed = True
+        while changed:
+            changed = False
+            for endpoint in GRAPH_ENDPOINTS:
+                if endpoint["id"] not in selected_ids:
+                    continue
+                parent = (endpoint.get("fan_out") or {}).get("parent")
+                if parent and parent not in selected_ids:
+                    selected_ids.add(parent)
+                    changed = True
+        return [
+            endpoint for endpoint in GRAPH_ENDPOINTS
+            if endpoint["id"] in selected_ids
+        ]
+
     if not keyword:
         return list(GRAPH_ENDPOINTS)
     wanted = str(keyword).lower()
@@ -30,12 +93,12 @@ def selected_graph_endpoints(keyword: Optional[str]) -> list:
         if wanted in {str(endpoint.get("id", "")).lower(), str(endpoint.get("name", "")).lower(), str(endpoint.get("output", "")).lower()}
     ]
     if exact:
-        return exact
-    return [
+        return include_dependencies(exact)
+    return include_dependencies([
         endpoint for endpoint in GRAPH_ENDPOINTS
         if wanted in " ".join(str(endpoint.get(key, "")) for key in
-                              ("id", "name", "profile", "permission", "path", "output")).lower()
-    ]
+                              ("id", "name", "profile", "permission", "permissions", "path", "output", "aliases")).lower()
+    ])
 
 
 def _iter_json_array(path: Path):
@@ -112,8 +175,14 @@ def collect_registered_graph(
     if not endpoints:
         return True
     start, end = utc_interval(lookback_days)
+    granted_permissions = token_permissions(token) if token else None
     try:
-        graph_runner = runner or GraphRunner(GraphTransport(token or acquire_graph_token()))
+        if runner is not None:
+            graph_runner = runner
+        else:
+            acquired_token = token or acquire_graph_token()
+            granted_permissions = token_permissions(acquired_token)
+            graph_runner = GraphRunner(GraphTransport(acquired_token))
     except RuntimeError as exc:
         for endpoint in endpoints:
             definition = graph_endpoint_definition(endpoint)
@@ -122,14 +191,56 @@ def collect_registered_graph(
                 command_template=definition["cli_command"], started_at=utc_timestamp(),
                 duration_seconds=0, returncode=1, result_count=None,
                 error_message=f"Graph authentication unavailable: {exc}",
-                diagnostic_text='{"code":"Authorization_RequestDenied"}',
+                diagnostic_text=str(exc),
                 endpoint_identifier=endpoint["output"],
+                status_override="unauthorised",
+                access_verification=graph_access_verification(
+                    endpoint_permissions(endpoint), granted_permissions
+                ),
             )
         return False
 
     parent_ids_by_endpoint: Dict[str, list] = {}
     successful = True
     for endpoint in endpoints:
+        required_permissions = endpoint_permissions(endpoint)
+        missing_permissions = (
+            sorted(set(required_permissions) - granted_permissions)
+            if granted_permissions is not None else []
+        )
+        if missing_permissions:
+            definition = graph_endpoint_definition(endpoint)
+            diagnostic = json.dumps({
+                "error": {
+                    "code": "Authorization_RequestDenied",
+                    "message": "The access token lacks required Microsoft Graph permissions: "
+                    + ", ".join(missing_permissions),
+                }
+            })
+            manifest.record_execution(
+                endpoint_name=endpoint["name"], category="microsoft_graph",
+                command_template=definition["cli_command"],
+                parameter_context={
+                    "endpoint_id": endpoint["id"],
+                    "profile": endpoint["profile"],
+                    "required_permissions": required_permissions,
+                    "missing_permissions": missing_permissions,
+                    "api_channel": endpoint["api"],
+                    "lookback_start": start,
+                    "lookback_end": end,
+                },
+                started_at=utc_timestamp(), duration_seconds=0, returncode=1,
+                result_count=None,
+                error_message="Microsoft Graph access token lacks required application permissions",
+                diagnostic_text=diagnostic,
+                endpoint_identifier=endpoint["output"],
+                status_override="unauthorised",
+                access_verification=graph_access_verification(
+                    required_permissions, granted_permissions
+                ),
+            )
+            successful = False
+            continue
         fan_out = endpoint.get("fan_out")
         contexts = [{"start": start, "end": end}]
         if fan_out:
@@ -157,6 +268,7 @@ def collect_registered_graph(
 
         status = "empty"
         error = None
+        diagnostic = None
         attempts = pages = 0
         total_count = 0
         page_provenance = []
@@ -173,7 +285,14 @@ def collect_registered_graph(
                 if isinstance(item, dict)
             )
             if result.status not in {"success", "empty"}:
-                status, error, successful = result.status, result.error, False
+                if result.status == "incomplete" and result.count:
+                    temporary_targets.append(target)
+                    total_count += result.count
+                status, error, diagnostic, successful = (
+                    result.status, result.error, result.diagnostic, False
+                )
+                if temporary_targets:
+                    status = "incomplete"
                 break
             temporary_targets.append(target)
             total_count += result.count
@@ -203,14 +322,20 @@ def collect_registered_graph(
                         if child_fan_out and child_fan_out.get("parent") == endpoint["id"]:
                             value = record.get(child_fan_out.get("id"))
                             if value:
-                                parent_ids_by_endpoint.setdefault(endpoint["id"], []).append(value)
+                                parent_ids = parent_ids_by_endpoint.setdefault(
+                                    endpoint["id"], []
+                                )
+                                if value not in parent_ids:
+                                    parent_ids.append(value)
         definition = graph_endpoint_definition(endpoint)
         manifest.record_execution(
             endpoint_name=endpoint["name"], category="microsoft_graph",
             command_template=definition["cli_command"],
             parameter_context={
                 "endpoint_id": endpoint["id"], "profile": endpoint["profile"],
-                "required_permission": endpoint["permission"], "api_channel": endpoint["api"],
+                "required_permission": endpoint["permission"],
+                "required_permissions": required_permissions,
+                "api_channel": endpoint["api"],
                 "licence_requirement": endpoint["licence"], "lookback_start": start,
                 "lookback_end": end, "page_count": pages, "query_or_parent_count": len(contexts),
                 "page_provenance": page_provenance,
@@ -220,13 +345,12 @@ def collect_registered_graph(
             returncode=0 if status in {"success", "empty"} else 1,
             result_count=total_count, retry_count=max(0, attempts - 1),
             error_message=error,
-            diagnostic_text=(
-                '{"code":"Authorization_RequestDenied"}' if status == "unauthorised"
-                else '{"code":"AuthenticationRequestFromNonPremiumTenantOrB2CTenant"}'
-                if status == "tenant_unavailable" else error
-            ),
+            diagnostic_text=diagnostic or error,
             endpoint_identifier=endpoint["output"],
-            status_override=status if status == "incomplete" else None,
+            status_override=status,
+            access_verification=graph_access_verification(
+                required_permissions, granted_permissions
+            ),
         )
         if endpoint["api"] == "beta":
             manifest.add_limitation(f"{endpoint['name']} uses the explicitly labelled Microsoft Graph beta API")
