@@ -124,6 +124,7 @@ class GraphRegistryTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn('RoleDefinitionName "Reader"', script)
+        self.assertIn('RoleDefinitionName "Security Reader"', script)
         self.assertIn('RoleDefinitionName "Key Vault Reader"', script)
         self.assertNotIn('RoleDefinitionName "Key Vault Secrets User"', script)
         self.assertIn(
@@ -137,6 +138,16 @@ class GraphRegistryTests(unittest.TestCase):
         self.assertIn("-PermissionsToKeys List", script)
         self.assertIn("-PermissionsToSecrets List", script)
         self.assertNotIn("-PermissionsToSecrets Get", script)
+        for action in (
+            "Microsoft.Compute/virtualMachines/runCommands/read",
+            "Microsoft.CostManagement/query/action",
+            "Microsoft.Insights/Components/Query/Read",
+            "Microsoft.KeyVault/vaults/secrets/read",
+            "Microsoft.Storage/storageAccounts/listkeys/action",
+            "Microsoft.Web/sites/config/list/Action",
+            "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read",
+        ):
+            self.assertIn(f'"{action}"', script)
 
     def test_setup_helper_defaults_to_complete_permission_provisioning(self):
         script = (PROJECT / "scripts/Azure-Graph-Collect-App.ps1").read_text(
@@ -145,6 +156,7 @@ class GraphRegistryTests(unittest.TestCase):
         self.assertIn("[switch]$SkipAzureRoleAssignments", script)
         self.assertIn("[switch]$SkipLegacyKeyVaultAccessPolicies", script)
         self.assertNotIn("ConfigureLegacyKeyVaultAccessPolicies", script)
+        self.assertNotIn("AdditionalApplicationPermissions", script)
         self.assertIn(
             "if (-not $SkipAzureRoleAssignments -and "
             "$AzureSubscriptionIds.Count -eq 0)",

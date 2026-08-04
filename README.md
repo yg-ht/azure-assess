@@ -181,8 +181,7 @@ Parameters:
 - `-TenantId`: tenant to connect to. When omitted, Microsoft Graph prompts for tenant selection during sign-in.
 - `-CertificatePath`: required path to the public certificate. Private-key containers with `.pfx` or `.p12` extensions are rejected.
 - `-Profiles`: one or more predefined permission profiles. Default: `All`.
-- `-AdditionalApplicationPermissions`: extra Microsoft Graph application-permission names for another authorised tool. Azure Assess does not rely on this parameter for any registered collection endpoint.
-- `-AzureSubscriptionIds`: subscription IDs on which to grant `Reader`, `Key Vault Reader`, and the narrowly scoped custom NIC effective-configuration role. Required unless `-SkipAzureRoleAssignments` is used. Supplying it causes a separate Azure Resource Manager administrator login when required.
+- `-AzureSubscriptionIds`: subscription IDs on which to grant `Reader`, `Security Reader`, `Key Vault Reader`, and the fixed Azure Assess specialised-collection role. Required unless `-SkipAzureRoleAssignments` is used. Supplying it causes a separate Azure Resource Manager administrator login when required.
 - `-SkipAzureRoleAssignments`: explicitly create a Graph-only application without assigning Azure roles or legacy Key Vault access policies. The resulting application cannot perform the corresponding Azure collection unless equivalent rights already exist.
 - `-SkipLegacyKeyVaultAccessPolicies`: retain the default Azure RBAC grants but do not add list-only key and secret permissions to non-RBAC Key Vaults. Use only when legacy-vault metadata collection is deliberately excluded or equivalent access already exists.
 - `-NoGrant`: configure the requested API permissions without creating app-role assignments. The script prints an administrator-consent URL instead.
@@ -193,7 +192,8 @@ Important behaviour:
 
 - Without `-NoGrant`, application-permission grants take effect immediately. Review the selected profiles before approving the operation.
 - A normal run grants every collection-required permission. The Graph `All` profile is selected and granted by default; Azure subscription role assignments and legacy Key Vault list-only policies are also default. `-Profiles`, `-NoGrant`, `-SkipAzureRoleAssignments`, and `-SkipLegacyKeyVaultAccessPolicies` are explicit restrictions. No required permission depends on an opt-in parameter.
-- `Reader` supports ARM inventory and Azure-resource PIM reads; `Key Vault Reader` exposes key and secret metadata but not values; the custom role contains only NIC read plus the effective NSG and effective route-table actions.
+- `Reader` supports general ARM inventory and Azure-resource PIM reads. `Security Reader` supports Microsoft Defender for Cloud inventory. `Key Vault Reader` exposes key and secret metadata but not values.
+- The fixed Azure Assess specialised-collection role contains the collector's remaining required operations: NIC effective NSG and route calculation, VM run-command metadata reads, Cost Management and Application Insights queries, Key Vault secret metadata reads, App Service configuration-list operations, storage account key listing, and storage blob reads. Storage keys and blob contents are sensitive evidence; grant this role only for an authorised assessment and remove it after collection. The role does not contain write, delete, recovery, cryptographic or secret-value Key Vault data actions.
 - The Azure roles are assigned to the new service principal. They apply to `--auth-method service-principal`; they do not add rights to a user or managed identity used with `--auth-method existing`.
 - RBAC-enabled Key Vaults use `Key Vault Reader`. By default, access-policy vaults receive equivalent list-only key and secret metadata permissions. This never grants secret `Get`, key recovery, cryptographic, write or delete permissions. Use `-SkipLegacyKeyVaultAccessPolicies` to opt out, and review the `-WhatIf` output because the default changes every applicable legacy vault in the selected subscriptions.
 - The script validates every requested permission against the enabled Microsoft Graph application roles exposed by the tenant before creating the application. Availability can vary by cloud and workload; review the current [Microsoft Graph permissions reference](https://learn.microsoft.com/graph/permissions-reference).
@@ -202,7 +202,7 @@ Important behaviour:
 - The generated connection details are operational engagement data and should still be stored and transferred appropriately.
 - Linux collection uses the combined `collector-auth.pem` credential directly through Azure CLI.
 - If the script fails after reporting an application or service-principal object ID, inspect and remove any partially created tenant objects before retrying.
-- Remove the application registration, enterprise application, Graph permission grants, Azure role assignments, any no-longer-used YGHT custom network role, local certificate, and generated connection details when the assessment is complete, subject to the engagement's evidence-retention requirements.
+- Remove the application registration, enterprise application, Graph permission grants, Azure role assignments, the YGHT Azure Assessment Collector custom role when no longer used, local certificate, and generated connection details when the assessment is complete, subject to the engagement's evidence-retention requirements.
 
 ### `azure-collect.py`
 

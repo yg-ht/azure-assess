@@ -73,9 +73,6 @@ param(
     [string[]]$Profiles = @("All"),
 
     [Parameter(Mandatory = $false)]
-    [string[]]$AdditionalApplicationPermissions = @(),
-
-    [Parameter(Mandatory = $false)]
     [switch]$NoGrant,
 
     [Parameter(Mandatory = $false)]
@@ -187,29 +184,43 @@ function Grant-AzureRoleIfMissing {
     }
 }
 
-function Get-OrCreate-NetworkEffectiveConfigurationReaderRole {
+function Get-OrCreate-AzureAssessmentCollectorRole {
     [CmdletBinding(SupportsShouldProcess = $true)]
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$SubscriptionScopes
     )
 
-    $roleName = "YGHT Azure Assessment Network Effective Configuration Reader"
+    $roleName = "YGHT Azure Assessment Collector"
     $requiredActions = @(
+        "Microsoft.Compute/virtualMachines/runCommands/read",
+        "Microsoft.CostManagement/query/action",
+        "Microsoft.Insights/Components/Query/Read",
+        "Microsoft.Insights/Components/Read",
+        "Microsoft.KeyVault/vaults/secrets/read",
         "Microsoft.Network/networkInterfaces/read",
         "Microsoft.Network/networkInterfaces/effectiveNetworkSecurityGroups/action",
-        "Microsoft.Network/networkInterfaces/effectiveRouteTable/action"
+        "Microsoft.Network/networkInterfaces/effectiveRouteTable/action",
+        "Microsoft.Storage/storageAccounts/listkeys/action",
+        "Microsoft.Web/sites/config/list/Action",
+        "Microsoft.Web/sites/slots/config/list/Action"
+    )
+    $requiredDataActions = @(
+        "Microsoft.Storage/storageAccounts/blobServices/containers/blobs/read"
     )
     $role = Get-AzRoleDefinition -Name $roleName -ErrorAction SilentlyContinue
 
     if ($role) {
         $missingActions = @($requiredActions | Where-Object { $_ -notin $role.Actions })
         $unexpectedActions = @($role.Actions | Where-Object { $_ -notin $requiredActions })
+        $missingDataActions = @($requiredDataActions | Where-Object { $_ -notin $role.DataActions })
+        $unexpectedDataActions = @($role.DataActions | Where-Object { $_ -notin $requiredDataActions })
         $missingScopes = @($SubscriptionScopes | Where-Object { $_ -notin $role.AssignableScopes })
         if (
             $missingActions.Count -gt 0 -or
             $unexpectedActions.Count -gt 0 -or
-            @($role.DataActions).Count -gt 0
+            $missingDataActions.Count -gt 0 -or
+            $unexpectedDataActions.Count -gt 0
         ) {
             throw "The existing custom role '$roleName' does not have the expected least-privilege action set. Review it manually rather than assigning a broader or incompatible role."
         }
@@ -225,11 +236,11 @@ function Get-OrCreate-NetworkEffectiveConfigurationReaderRole {
 
     $role = [Microsoft.Azure.Commands.Resources.Models.Authorization.PSRoleDefinition]::new()
     $role.Name = $roleName
-    $role.Description = "Read-only Azure Assess access to NIC effective NSG and route-table calculations."
+    $role.Description = "Azure Assess access to specialised read and query operations not included in Reader."
     $role.IsCustom = $true
     $role.Actions = $requiredActions
     $role.NotActions = @()
-    $role.DataActions = @()
+    $role.DataActions = $requiredDataActions
     $role.NotDataActions = @()
     $role.AssignableScopes = @($SubscriptionScopes)
 
@@ -328,7 +339,6 @@ foreach ($profile in $SelectedProfiles) {
     $RequestedPermissionNames += $PermissionProfiles[$profile]
 }
 
-$RequestedPermissionNames += $AdditionalApplicationPermissions
 $RequestedPermissionNames = Get-UniqueValues -Values $RequestedPermissionNames
 
 if ($RequestedPermissionNames.Count -eq 0) {
@@ -404,7 +414,7 @@ This usually means one of the following:
   2. The permission has been renamed, retired, or is not available in this cloud.
   3. The tenant does not expose that workload permission.
 
-Retry with a smaller profile set, or pass only confirmed app-only permissions using -AdditionalApplicationPermissions.
+Retry with a smaller profile set after confirming which workload is unavailable in this tenant.
 "@
 }
 
@@ -544,7 +554,7 @@ if (-not $SkipAzureRoleAssignments) {
         -SubscriptionId $UniqueAzureSubscriptionIds[0] `
         -Tenant $Context.TenantId | Out-Null
     $SubscriptionScopes = @($UniqueAzureSubscriptionIds | ForEach-Object { "/subscriptions/$_" })
-    $networkRoleName = Get-OrCreate-NetworkEffectiveConfigurationReaderRole `
+    $collectorRoleName = Get-OrCreate-AzureAssessmentCollectorRole `
         -SubscriptionScopes $SubscriptionScopes
 
     foreach ($subscriptionId in $UniqueAzureSubscriptionIds) {
@@ -558,12 +568,16 @@ if (-not $SkipAzureRoleAssignments) {
             -Scope $subscriptionScope
         Grant-AzureRoleIfMissing `
             -ObjectId $ServicePrincipal.Id `
+            -RoleDefinitionName "Security Reader" `
+            -Scope $subscriptionScope
+        Grant-AzureRoleIfMissing `
+            -ObjectId $ServicePrincipal.Id `
             -RoleDefinitionName "Key Vault Reader" `
             -Scope $subscriptionScope
 
         Grant-AzureRoleIfMissing `
             -ObjectId $ServicePrincipal.Id `
-            -RoleDefinitionName $networkRoleName `
+            -RoleDefinitionName $collectorRoleName `
             -Scope $subscriptionScope
 
         if (-not $SkipLegacyKeyVaultAccessPolicies) {
