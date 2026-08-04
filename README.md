@@ -56,9 +56,9 @@ Remove and reinstall the Azure CLI extensions used by `azure-collect.py`, then v
 ### `scripts/Azure-Graph-Collect-App.ps1`
 
 Purpose:
-Create a temporary, single-tenant Microsoft Entra application and service principal that can authenticate using an X.509 certificate. The script configures Microsoft Graph application permissions from predefined collection profiles and can optionally grant the Azure subscription roles required by `azure-collect.py`.
+Create a temporary, single-tenant Microsoft Entra application and service principal that can authenticate using an X.509 certificate. By default, the script configures and grants the complete Microsoft Graph `All` permission profile, Azure subscription roles, and list-only metadata access for non-RBAC Key Vaults required by `azure-collect.py`.
 
-This is a customer helper intended to be run by a tenant administrator on Windows. Graph consent and Azure role assignment are separate operations and can require different administrator accounts. Azure roles are configured only when `-AzureSubscriptionIds` is supplied; without that parameter the helper retains its historical Graph-only behaviour.
+This is a customer helper intended to be run by tenant and subscription administrators on Windows. Graph consent and Azure role assignment are separate operations and can require different administrator accounts. A normal run requires `-AzureSubscriptionIds`; use the explicit skip switches only for deliberately restricted provisioning.
 
 Prerequisites:
 
@@ -66,8 +66,8 @@ Prerequisites:
 - The `Microsoft.Graph.Authentication` and `Microsoft.Graph.Applications` modules. Install the Microsoft Graph module for the current user with `Install-Module Microsoft.Graph -Scope CurrentUser`.
 - A tenant administrator account. Privileged Role Administrator is the recommended role.
 - Delegated `Application.ReadWrite.All` and `AppRoleAssignment.ReadWrite.All` scopes for the administrator running the script.
-- When `-AzureSubscriptionIds` is used, the `Az.Accounts` and `Az.Resources` modules and Azure rights to create role definitions and role assignments at each requested subscription.
-- When `-ConfigureLegacyKeyVaultAccessPolicies` is used, the `Az.KeyVault` module and `Microsoft.KeyVault/vaults/accessPolicies/write` rights for the applicable vaults.
+- Unless `-SkipAzureRoleAssignments` is used, the `Az.Accounts`, `Az.Resources`, and `Az.KeyVault` modules and Azure rights to create role definitions and role assignments at each requested subscription.
+- Unless `-SkipAzureRoleAssignments` or `-SkipLegacyKeyVaultAccessPolicies` is used, `Microsoft.KeyVault/vaults/accessPolicies/write` rights for applicable non-RBAC vaults.
 - An X.509 public certificate in a format such as `.cer`, `.crt`, or `.pem`. Keep the matching private key on the authorised collector host; do not give the script a `.pfx` or `.p12` file.
 
 Creating the collector certificate on Linux:
@@ -103,9 +103,11 @@ Transfer only `collector-public.cer` to the customer administrator. The administ
   -AzureSubscriptionIds "66665555-7777-4444-8888-555999666000"
 ```
 
-After the Windows administrator returns the generated connection details, choose one authentication workflow. Existing Azure CLI sessions and tool-managed service-principal login are deliberately separate modes.
+After the Windows administrator returns the generated connection details, choose exactly one collector authentication mode. The modes are mutually exclusive for a collection run; there is one Azure CLI account context, and Azure Resource Manager and Microsoft Graph calls both use tokens obtained from that context.
 
-To reuse an existing Azure CLI session, authenticate before starting the collector. The existing session may itself use a user, managed identity, client secret or certificate; the collector does not replace it or inspect configured service-principal credential variables in this mode:
+`--auth-method existing` is the normal, non-invasive mode. It reuses whichever user, managed identity, client-secret, or certificate identity is already signed in to Azure CLI. The collector does not log in again and ignores the tool-managed service-principal credential variables. That existing identity must itself have the required Azure rights and Microsoft Graph permissions; permissions assigned by the setup helper to a different application do not transfer to the signed-in identity.
+
+To use the normal existing-session mode, authenticate before starting the collector:
 
 ```bash
 az login
@@ -120,7 +122,7 @@ pipenv run python azure-collect.py --auth-method existing
 
 Current Azure CLI accepts an unencrypted combined PEM for this manual certificate-login command and has no certificate-password option. Protect that file with mode `0600` and remove any short-lived decrypted copy after login. To keep the stored combined PEM encrypted, use the tool-managed certificate workflow below instead.
 
-The Azure CLI certificate command requires a combined PEM containing the private key followed by the public certificate. For tool-managed login with the encrypted combined PEM created above, configure the tenant ID, application client ID, subscription ID, combined PEM path and certificate passphrase:
+`--auth-method service-principal` is the tool-managed alternative. It starts a new Azure CLI service-principal session and therefore must not be combined with `--auth-method existing`. The Azure CLI certificate command requires a combined PEM containing the private key followed by the public certificate. For tool-managed login with the encrypted combined PEM created above, configure the tenant ID, application client ID, subscription ID, combined PEM path and certificate passphrase:
 
 ```bash
 export AZURE_TENANT_ID="<tenant-id>"
@@ -155,9 +157,9 @@ pipenv run python azure-collect.py --auth-method service-principal
 unset AZURE_CLIENT_SECRET
 ```
 
-Do not configure both `AZURE_CLIENT_SECRET` and `AZURE_CLIENT_CERTIFICATE_PATH` for service-principal mode. The collector rejects this ambiguous combination instead of silently selecting one credential. Credential variables do not trigger a login when `--auth-method existing` is selected.
+Do not configure both `AZURE_CLIENT_SECRET` and `AZURE_CLIENT_CERTIFICATE_PATH` for service-principal mode. The collector rejects this ambiguous combination instead of silently selecting one credential. Credential variables do not trigger a login when `--auth-method existing` is selected. The administrator sessions used by `Azure-Graph-Collect-App.ps1` to create permissions and role assignments are provisioning sessions only; they are separate from either collector authentication mode.
 
-A customer certificate-authority-issued certificate may be used instead when required by organisational policy. If `-AzureSubscriptionIds` is omitted, separately assign the Azure rights needed by the collector before using the service-principal authentication mode.
+A customer certificate-authority-issued certificate may be used instead when required by organisational policy.
 
 Permission profiles:
 
@@ -179,9 +181,10 @@ Parameters:
 - `-TenantId`: tenant to connect to. When omitted, Microsoft Graph prompts for tenant selection during sign-in.
 - `-CertificatePath`: required path to the public certificate. Private-key containers with `.pfx` or `.p12` extensions are rejected.
 - `-Profiles`: one or more predefined permission profiles. Default: `All`.
-- `-AdditionalApplicationPermissions`: additional Microsoft Graph application-permission names to request.
-- `-AzureSubscriptionIds`: optional subscription IDs on which to grant `Reader`, `Key Vault Reader`, and the narrowly scoped custom NIC effective-configuration role. Supplying this parameter causes a separate Azure Resource Manager administrator login when required.
-- `-ConfigureLegacyKeyVaultAccessPolicies`: for non-RBAC Key Vaults in the selected subscriptions, add list-only key and secret permissions to the service principal. This never grants secret `Get`, key recovery, cryptographic, write or delete permissions.
+- `-AdditionalApplicationPermissions`: extra Microsoft Graph application-permission names for another authorised tool. Azure Assess does not rely on this parameter for any registered collection endpoint.
+- `-AzureSubscriptionIds`: subscription IDs on which to grant `Reader`, `Key Vault Reader`, and the narrowly scoped custom NIC effective-configuration role. Required unless `-SkipAzureRoleAssignments` is used. Supplying it causes a separate Azure Resource Manager administrator login when required.
+- `-SkipAzureRoleAssignments`: explicitly create a Graph-only application without assigning Azure roles or legacy Key Vault access policies. The resulting application cannot perform the corresponding Azure collection unless equivalent rights already exist.
+- `-SkipLegacyKeyVaultAccessPolicies`: retain the default Azure RBAC grants but do not add list-only key and secret permissions to non-RBAC Key Vaults. Use only when legacy-vault metadata collection is deliberately excluded or equivalent access already exists.
 - `-NoGrant`: configure the requested API permissions without creating app-role assignments. The script prints an administrator-consent URL instead.
 - `-AllowDuplicateDisplayName`: allow creation when an application with the same display name already exists.
 - `-WhatIf`: show the proposed application-registration creation without changing the tenant.
@@ -189,9 +192,10 @@ Parameters:
 Important behaviour:
 
 - Without `-NoGrant`, application-permission grants take effect immediately. Review the selected profiles before approving the operation.
-- Azure subscription role assignments are made only when `-AzureSubscriptionIds` is supplied. `Reader` supports ARM inventory and Azure-resource PIM reads; `Key Vault Reader` exposes key and secret metadata but not values; the custom role contains only NIC read plus the effective NSG and effective route-table actions.
+- A normal run grants every collection-required permission. The Graph `All` profile is selected and granted by default; Azure subscription role assignments and legacy Key Vault list-only policies are also default. `-Profiles`, `-NoGrant`, `-SkipAzureRoleAssignments`, and `-SkipLegacyKeyVaultAccessPolicies` are explicit restrictions. No required permission depends on an opt-in parameter.
+- `Reader` supports ARM inventory and Azure-resource PIM reads; `Key Vault Reader` exposes key and secret metadata but not values; the custom role contains only NIC read plus the effective NSG and effective route-table actions.
 - The Azure roles are assigned to the new service principal. They apply to `--auth-method service-principal`; they do not add rights to a user or managed identity used with `--auth-method existing`.
-- RBAC-enabled Key Vaults use `Key Vault Reader`. Access-policy vaults require `-ConfigureLegacyKeyVaultAccessPolicies` or an equivalent pre-existing list-only access policy. The switch changes every applicable legacy vault in the selected subscriptions, so review the `-WhatIf` output first.
+- RBAC-enabled Key Vaults use `Key Vault Reader`. By default, access-policy vaults receive equivalent list-only key and secret metadata permissions. This never grants secret `Get`, key recovery, cryptographic, write or delete permissions. Use `-SkipLegacyKeyVaultAccessPolicies` to opt out, and review the `-WhatIf` output because the default changes every applicable legacy vault in the selected subscriptions.
 - The script validates every requested permission against the enabled Microsoft Graph application roles exposed by the tenant before creating the application. Availability can vary by cloud and workload; review the current [Microsoft Graph permissions reference](https://learn.microsoft.com/graph/permissions-reference).
 - Only the certificate's public bytes are uploaded. The private key is neither read from a public certificate nor written to the output.
 - The generated `<display-name>.connection-details.json` file contains tenant, application, service-principal, certificate, profile, and permission identifiers, plus an optional `Connect-MgGraph` command for a Windows Graph client. It does not contain a client secret or private key.

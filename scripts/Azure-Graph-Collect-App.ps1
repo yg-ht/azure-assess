@@ -10,9 +10,12 @@ This script creates:
   2. A matching enterprise application / service principal.
   3. Microsoft Graph application permissions from one or more predefined profiles.
   4. A public X.509 certificate credential for app-only authentication.
-  5. Optional programmatic admin consent by creating app role assignments.
-  6. Optional Azure subscription role assignments for ARM inventory, Key Vault
-     metadata and NIC effective-configuration collection.
+  5. Programmatic admin consent by creating app role assignments unless -NoGrant is used.
+  6. Azure subscription role assignments for ARM inventory, Key Vault metadata
+     and NIC effective-configuration collection unless -SkipAzureRoleAssignments
+     is used.
+  7. List-only metadata access policies on non-RBAC Key Vaults unless
+     -SkipLegacyKeyVaultAccessPolicies is used.
 
 The script is intended to be run by the tenant administrator.
 All permission profiles are selected by default. Use -Profiles only when the assessment requires a deliberately restricted permission set.
@@ -30,7 +33,7 @@ The private key is never uploaded by this script. Only the public certificate is
 .\scripts\Azure-Graph-Collect-App.ps1 `
   -TenantId "11111111-2222-3333-4444-555555555555" `
   -CertificatePath ".\collector-public.cer" `
-  -Profiles All
+  -AzureSubscriptionIds "66665555-7777-4444-8888-555999666000"
 
 #>
 
@@ -82,11 +85,18 @@ param(
     [string[]]$AzureSubscriptionIds = @(),
 
     [Parameter(Mandatory = $false)]
-    [switch]$ConfigureLegacyKeyVaultAccessPolicies
+    [switch]$SkipAzureRoleAssignments,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipLegacyKeyVaultAccessPolicies
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+if (-not $SkipAzureRoleAssignments -and $AzureSubscriptionIds.Count -eq 0) {
+    throw "AzureSubscriptionIds is required for the default full provisioning workflow. Supply one or more subscription IDs, or explicitly use -SkipAzureRoleAssignments to create a Graph-only application."
+}
 
 function Assert-Module {
     param(
@@ -516,10 +526,10 @@ else {
 }
 
 $ConfiguredAzureSubscriptions = @()
-if ($AzureSubscriptionIds.Count -gt 0) {
+if (-not $SkipAzureRoleAssignments) {
     Assert-Module -Name "Az.Accounts"
     Assert-Module -Name "Az.Resources"
-    if ($ConfigureLegacyKeyVaultAccessPolicies) {
+    if (-not $SkipLegacyKeyVaultAccessPolicies) {
         Assert-Module -Name "Az.KeyVault"
     }
 
@@ -556,7 +566,7 @@ if ($AzureSubscriptionIds.Count -gt 0) {
             -RoleDefinitionName $networkRoleName `
             -Scope $subscriptionScope
 
-        if ($ConfigureLegacyKeyVaultAccessPolicies) {
+        if (-not $SkipLegacyKeyVaultAccessPolicies) {
             foreach ($vault in @(Get-AzKeyVault)) {
                 if ($vault.EnableRbacAuthorization) {
                     continue
@@ -592,7 +602,9 @@ $Output = [ordered]@{
     Profiles                   = $SelectedProfiles
     GraphApplicationPermissions = $RequestedPermissionNames
     AzureSubscriptionIds        = $ConfiguredAzureSubscriptions
-    LegacyKeyVaultAccessPoliciesConfigured = [bool]$ConfigureLegacyKeyVaultAccessPolicies
+    AzureRoleAssignmentsSkipped = [bool]$SkipAzureRoleAssignments
+    LegacyKeyVaultAccessPoliciesConfigured = [bool](-not $SkipAzureRoleAssignments -and -not $SkipLegacyKeyVaultAccessPolicies)
+    LegacyKeyVaultAccessPoliciesSkipped = [bool]($SkipAzureRoleAssignments -or $SkipLegacyKeyVaultAccessPolicies)
     NoGrant                    = [bool]$NoGrant
     AppOnlyConnectCommand      = "Connect-MgGraph -TenantId `"$($Context.TenantId)`" -ClientId `"$($Application.AppId)`" -CertificateThumbprint `"$($Certificate.Thumbprint)`""
 }

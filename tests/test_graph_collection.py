@@ -138,6 +138,21 @@ class GraphRegistryTests(unittest.TestCase):
         self.assertIn("-PermissionsToSecrets List", script)
         self.assertNotIn("-PermissionsToSecrets Get", script)
 
+    def test_setup_helper_defaults_to_complete_permission_provisioning(self):
+        script = (PROJECT / "scripts/Azure-Graph-Collect-App.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("[switch]$SkipAzureRoleAssignments", script)
+        self.assertIn("[switch]$SkipLegacyKeyVaultAccessPolicies", script)
+        self.assertNotIn("ConfigureLegacyKeyVaultAccessPolicies", script)
+        self.assertIn(
+            "if (-not $SkipAzureRoleAssignments -and "
+            "$AzureSubscriptionIds.Count -eq 0)",
+            script,
+        )
+        self.assertIn("if (-not $SkipAzureRoleAssignments) {", script)
+        self.assertIn("if (-not $SkipLegacyKeyVaultAccessPolicies) {", script)
+
     def test_legacy_graph_names_and_commands_select_native_endpoints(self):
         for selector, endpoint_id in (
             ("Active Directory Users", "users"),
