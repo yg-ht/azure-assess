@@ -3,93 +3,28 @@
 """Conservative, manifest-backed Microsoft Graph workload findings."""
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+import json
+from typing import Any, Dict, Iterable, Mapping, Optional
 
+from .finding_inventory import inventory, manifest
 from .graph_endpoints import GRAPH_ENDPOINTS, HUNTING_QUERY_PACK
 from .graph_guidance import GUIDANCE_BY_ID, GUIDANCE_BY_TITLE
 
 
 OUTPUT_BY_ID = {item["id"]: item["output"] for item in GRAPH_ENDPOINTS}
-COMPLETE_STATUSES = {"success", "empty"}
-POSITIVE_EVIDENCE_STATUSES = COMPLETE_STATUSES | {"incomplete"}
-
-
-def _manifest(catalog: Mapping[str, Any]) -> Mapping[str, Any]:
-    manifests = [
-        payload for name, payload in catalog.items()
-        if "manifest" in str(name) and isinstance(payload, dict)
-    ]
-    return manifests[-1] if manifests else {}
-
-
-def _manifest_statuses(catalog: Mapping[str, Any]) -> Dict[str, str]:
-    grouped: Dict[str, list] = {}
-    for run in _manifest(catalog).get("endpoint_runs", []):
-        if isinstance(run, dict) and run.get("endpoint_id"):
-            grouped.setdefault(str(run["endpoint_id"]), []).append(
-                str(run.get("status") or "unknown")
-            )
-    precedence = (
-        "not_attempted", "failed", "unauthorised", "incomplete",
-        "tenant_unavailable", "skipped", "not_applicable", "unknown",
-        "success", "empty",
-    )
-    statuses = {}
-    for endpoint_id, values in grouped.items():
-        statuses[endpoint_id] = next(
-            (status for status in precedence if status in values), "unknown"
-        )
-    return statuses
-
-
-def _current_filenames(catalog: Mapping[str, Any]) -> set:
-    return {
-        str(item["filename"])
-        for item in _manifest(catalog).get("datasets", [])
-        if isinstance(item, dict) and item.get("filename")
-    }
-
-
-def _records(catalog: Mapping[str, Any], prefix: str) -> Tuple[list, list]:
-    records, files = [], []
-    current = _current_filenames(catalog)
-    for filename, payload in catalog.items():
-        name = str(filename)
-        if not name.startswith(prefix + "_"):
-            continue
-        if current and name not in current:
-            continue
-        files.append(name)
-        values = payload.get("value") if isinstance(payload, dict) else payload
-        if isinstance(values, list):
-            records.extend(item for item in values if isinstance(item, dict))
-        elif isinstance(values, dict):
-            records.append(values)
-    return records, files
-
-
 def graph_collection_present(catalog: Mapping[str, Any]) -> bool:
     if any(str(name).startswith("graph_") for name in catalog):
         return True
     return any(
         run.get("category") == "microsoft_graph"
-        for run in _manifest(catalog).get("endpoint_runs", [])
+        for run in manifest(catalog).get("endpoint_runs", [])
         if isinstance(run, dict)
     )
 
 
 def _inventory(catalog: Mapping[str, Any], endpoint_id: str, prefix: str = None) -> dict:
     output = prefix or OUTPUT_BY_ID.get(endpoint_id, endpoint_id)
-    records, files = _records(catalog, output)
-    status = _manifest_statuses(catalog).get(output)
-    return {
-        "endpoint_id": output,
-        "records": records,
-        "files": files,
-        "status": status,
-        "complete": bool(files) and status in COMPLETE_STATUSES,
-        "positive_usable": bool(files) and status in POSITIVE_EVIDENCE_STATUSES,
-    }
+    return inventory(catalog, output, output)
 
 
 def _state(record: Mapping[str, Any], *paths: str) -> str:
@@ -129,11 +64,11 @@ def _parse_time(value: Any) -> Optional[datetime]:
 
 
 def _assessment_time(catalog: Mapping[str, Any]) -> datetime:
-    manifest = _manifest(catalog)
+    collection_manifest = manifest(catalog)
     candidates = [
-        (manifest.get("options") or {}).get("graph_lookback_end"),
-        manifest.get("completed_at"),
-        manifest.get("started_at"),
+        (collection_manifest.get("options") or {}).get("graph_lookback_end"),
+        collection_manifest.get("completed_at"),
+        collection_manifest.get("started_at"),
     ]
     return next((value for item in candidates if (value := _parse_time(item))),
                 datetime.now(timezone.utc))
@@ -178,6 +113,7 @@ def _no_expiration(record: Mapping[str, Any]) -> bool:
         _state(record, "scheduleInfo.expiration.type"),
         _state(record, "expiration.type"),
         _state(record, "properties.expiration.type"),
+        _state(record, "properties.scheduleInfo.expiration.type"),
     )
     return any(value in {"noexpiration", "permanent"} for value in values)
 
@@ -191,6 +127,57 @@ def _wildcard_intune_role(record: Mapping[str, Any]) -> bool:
             allowed = action.get("allowedResourceActions", []) if isinstance(action, dict) else []
             if any("*" in str(value) for value in allowed):
                 return True
+    return False
+
+
+def _audit_operation(record: Mapping[str, Any]) -> str:
+    return _state(record, "operation", "activityDisplayName", "activity")
+
+
+def _audit_data(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = record.get("auditData")
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, Mapping) else {}
+    return {}
+
+
+def _audit_has_parameter(record: Mapping[str, Any], names: set) -> bool:
+    """Match an explicitly named audit parameter without interpreting its value."""
+    details = _audit_data(record)
+    parameters = details.get("Parameters") or details.get("parameters") or []
+    if not isinstance(parameters, list):
+        return False
+    expected = {name.casefold() for name in names}
+    return any(
+        isinstance(parameter, Mapping)
+        and str(parameter.get("Name") or parameter.get("name") or "").casefold()
+        in expected
+        for parameter in parameters
+    )
+
+
+def _explicitly_disabled_security_control(value: Any) -> bool:
+    """Find a small allowlist of explicit disabled Intune security controls."""
+    keys = {
+        "antivirusenabled", "bitlockerenabled", "defenderrealtimescan",
+        "encryptionenabled", "firewallenabled", "realtimeprotectionenabled",
+    }
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if str(key).replace("_", "").lower() in keys and str(child).lower() in {
+                "false", "0", "disabled",
+            }:
+                return True
+            if _explicitly_disabled_security_control(child):
+                return True
+    elif isinstance(value, list):
+        return any(_explicitly_disabled_security_control(item) for item in value)
     return False
 
 
@@ -235,6 +222,37 @@ def evaluate_graph_findings(catalog, result, unsupported):
         if _state(record, "statusInfo.status", "provisioningStatusInfo.status", "status") in unhealthy
         or _state(record, "statusInfo.errorCode", "provisioningStatusInfo.errorInformation.errorCode") not in {"", "0", "none"}
     ], "Provisioning records explicitly reported failure or an error code.")
+
+    sign_ins = _inventory(catalog, "sign_ins")
+    legacy_clients = {
+        "authenticated smtp", "autodiscover", "exchange activesync",
+        "exchange online powershell", "imap", "imap4", "mapi",
+        "mapi over http", "other clients", "pop", "pop3", "smtp",
+    }
+    add("Successful Microsoft Entra legacy-authentication sign-ins", "High", [sign_ins], [
+        record for record in sign_ins["records"]
+        if _state(record, "clientAppUsed") in legacy_clients
+        and _state(record, "status.errorCode", "errorCode") == "0"
+    ], "Successful sign-ins using a legacy authentication client were directly observed.")
+
+    directory_audits = _inventory(catalog, "directory_audits")
+    sensitive_directory_operations = {
+        "add app role assignment to service principal",
+        "add eligible member to role",
+        "add member to role",
+        "add owner to application",
+        "add owner to service principal",
+        "add password credential",
+        "add service principal credentials",
+        "delete conditional access policy",
+        "remove strong authentication",
+        "update application – certificates and secrets management",
+        "update conditional access policy",
+    }
+    add("Security-sensitive Microsoft Entra directory changes", "Medium", [directory_audits], [
+        record for record in directory_audits["records"]
+        if _audit_operation(record) in sensitive_directory_operations
+    ], "Security-sensitive directory changes were directly observed in the assessment window.")
 
     users = _inventory(catalog, "users")
     assignments = _inventory(catalog, "directory_role_assignments")
@@ -323,6 +341,43 @@ def evaluate_graph_findings(catalog, result, unsupported):
         [sharepoint, apps_settings, forms_settings], unsafe_m365,
         "SharePoint settings explicitly enabled anonymous sharing or anonymous default links.")
 
+    exchange_audit = _inventory(catalog, "audit_exchange")
+    delegation_operations = {"add-mailboxpermission", "add-recipientpermission"}
+    inbox_forwarding_parameters = {
+        "forwardasattachmentto", "forwardto", "redirectto",
+    }
+    mailbox_forwarding_parameters = {
+        "delivertomailboxandforward", "forwardingaddress",
+        "forwardingsmtpaddress",
+    }
+    add("Security-sensitive Exchange mailbox forwarding or delegation changes", "Medium",
+        [exchange_audit], [
+            record for record in exchange_audit["records"]
+            if (
+                (operation := _audit_operation(record).replace(" ", ""))
+                in delegation_operations
+                or operation in {"new-inboxrule", "set-inboxrule"}
+                and _audit_has_parameter(record, inbox_forwarding_parameters)
+                or operation == "set-mailbox"
+                and _audit_has_parameter(record, mailbox_forwarding_parameters)
+            )
+        ], "Mailbox forwarding, inbox-rule or delegation changes were directly observed.")
+
+    sharepoint_audit = _inventory(catalog, "audit_sharepoint")
+    anonymous_operations = {
+        "anonymouslinkcreated", "anonymouslinkupdated", "anonymouslinkused",
+    }
+    external_sharing = []
+    for record in sharepoint_audit["records"]:
+        operation = _audit_operation(record).replace(" ", "")
+        details = _audit_data(record)
+        target_type = _state(details, "TargetUserOrGroupType", "targetUserOrGroupType")
+        if operation in anonymous_operations or target_type in {"guest", "external"}:
+            external_sharing.append(record)
+    add("Anonymous or external SharePoint sharing activity", "High",
+        [sharepoint_audit], external_sharing,
+        "Anonymous-link or explicitly external sharing activity was directly observed.")
+
     devices = _inventory(catalog, "managed_devices")
     stale_days = GUIDANCE_BY_ID["intune_compliance"]["parameters"]["stale_after_days"]
     assessed_at = _assessment_time(catalog)
@@ -370,6 +425,29 @@ def evaluate_graph_findings(catalog, result, unsupported):
         [role_definitions, role_assignments], excessive_rbac,
         "Assignments to custom Intune roles containing wildcard resource actions were observed.")
 
+    device_configurations = _inventory(catalog, "device_configurations")
+    settings_catalog = _inventory(catalog, "settings_catalog")
+    weakened_policies = [
+        record
+        for record in device_configurations["records"] + settings_catalog["records"]
+        if _explicitly_disabled_security_control(record)
+    ]
+    add("Intune policy explicitly disables a core endpoint security control", "High",
+        [device_configurations, settings_catalog], weakened_policies,
+        "An Intune policy explicitly disabled firewall, antivirus, real-time protection or encryption.")
+
+    security_connectors = _inventory(catalog, "security_connectors")
+    unhealthy_connectors = [
+        record for record in security_connectors["records"]
+        if _truth(record, "enabled", "isEnabled") is False
+        or _state(record, "status", "connectionStatus", "healthStatus") in {
+            "disabled", "error", "failed", "unavailable", "unhealthy",
+        }
+    ]
+    add("Intune security-service connectors are disabled or unhealthy", "High",
+        [security_connectors], unhealthy_connectors,
+        "Disabled or unhealthy Intune security-service connectors were directly observed.")
+
     bitlocker = _inventory(catalog, "bitlocker_key_metadata")
     key_device_ids = {
         str(item.get("deviceId")).lower() for item in bitlocker["records"]
@@ -416,6 +494,54 @@ def evaluate_graph_findings(catalog, result, unsupported):
         add(title, "High", [gsa_status, inventory], evidence,
             "An enabled Global Secure Access tenant lacked the applicable control inventory.",
             absence=True)
+
+    gsa_branches = _inventory(catalog, "gsa_branches")
+    gsa_connectors = _inventory(catalog, "gsa_connectors")
+    unhealthy_gsa_connectivity = [
+        record
+        for item in (gsa_branches, gsa_connectors)
+        for record in item["records"]
+        if _truth(record, "enabled", "isEnabled") is False
+        or _state(record, "status", "state", "healthStatus") in {
+            "degraded", "disabled", "error", "failed", "inactive", "offline", "unhealthy",
+        }
+    ]
+    add("Global Secure Access branches or connectors are unhealthy", "High",
+        [gsa_branches, gsa_connectors], unhealthy_gsa_connectivity,
+        "Disabled, offline, failed or unhealthy connectivity components were directly observed.")
+
+    enabled_unassociated_profiles = []
+    for record in gsa_profiles["records"]:
+        enabled = (
+            _truth(record, "enabled", "isEnabled") is True
+            or _state(record, "state", "status") == "enabled"
+        )
+        associations = record.get("associations")
+        if enabled and isinstance(associations, list) and not associations:
+            enabled_unassociated_profiles.append(record)
+    add("Enabled Global Secure Access forwarding profiles have no associations", "Medium",
+        [gsa_profiles], enabled_unassociated_profiles,
+        "Enabled forwarding profiles with an explicitly empty association collection were observed.")
+
+    pim_directory_requests = _inventory(catalog, "pim_directory_requests")
+    pim_group_requests = _inventory(catalog, "pim_group_requests")
+    pim_azure_requests = _inventory(
+        catalog, "arm_pim_azure_resource_assignment_requests",
+        prefix="arm_pim_azure_resource_assignment_requests",
+    )
+    permanent_requests = [
+        record
+        for item in (pim_directory_requests, pim_group_requests, pim_azure_requests)
+        for record in item["records"]
+        if _no_expiration(record)
+        and _state(record, "status", "properties.status") not in {
+            "cancelled", "denied", "failed", "revoked",
+        }
+    ]
+    add("Privileged activation or assignment requests seek permanent access", "High",
+        [pim_directory_requests, pim_group_requests, pim_azure_requests],
+        permanent_requests,
+        "Non-rejected privileged requests explicitly seeking no-expiration access were observed.")
 
     for title, inventory, control in (
         ("Applicable Intune estate has no compliance policy", compliance, "compliance_policy"),

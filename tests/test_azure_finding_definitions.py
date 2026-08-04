@@ -1,4 +1,6 @@
 import importlib.util
+import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -40,6 +42,20 @@ class FindingDefinitionIdentityTests(unittest.TestCase):
         )
         self.assertIn("phishing-resistant", definition["report"]["description"])
 
+    def test_collection_surface_definition_embeds_microsoft_guidance(self):
+        definition = finding_definition(
+            "Application Gateway WAF is disabled or not enforcing full prevention",
+            "High",
+        )
+        self.assertIn(
+            "microsoft_guidance:application_gateway_waf",
+            definition["check_ids"],
+        )
+        self.assertIn(
+            "zero-trust-application-gateway-waf",
+            definition["report"]["references"][0],
+        )
+
     @classmethod
     def setUpClass(cls):
         cls.findings = azure_findings.evaluate_findings({})
@@ -48,7 +64,7 @@ class FindingDefinitionIdentityTests(unittest.TestCase):
     def test_every_current_finding_has_a_unique_canonical_id(self):
         finding_ids = [finding["finding_id"] for finding in self.findings]
 
-        self.assertEqual(len(finding_ids), 215)
+        self.assertEqual(len(finding_ids), 232)
         self.assertEqual(len(finding_ids), len(set(finding_ids)))
         self.assertTrue(all(finding_id == finding_id.lower() for finding_id in finding_ids))
 
@@ -234,6 +250,85 @@ class FindingDefinitionOutputTests(unittest.TestCase):
             if item["ruleId"] == "entra_active_risk_detections"
         )
         self.assertEqual("risk", result["properties"]["evidence"][0]["id"])
+
+    def test_collection_surface_finding_flows_through_normalisation_and_sarif(self):
+        filename = "az_security_alert_list_20260804.json"
+        catalog = {
+            filename: [{
+                "id": "security-alert",
+                "severity": "High",
+                "status": "Active",
+            }],
+            "azure-collection-manifest.json": {
+                "schema_version": "2.5",
+                "endpoint_runs": [{
+                    "category": "base",
+                    "endpoint_id": "az_security_alert_list",
+                    "status": "success",
+                }],
+                "datasets": [{
+                    "filename": filename,
+                    "source_endpoint_id": "az_security_alert_list",
+                }],
+            },
+        }
+        findings = azure_findings.evaluate_findings(catalog)
+        finding = next(
+            item for item in findings
+            if item["title"] == "Unresolved significant Defender for Cloud alerts"
+        )
+
+        self.assertEqual("found", finding["status"])
+        for field in (
+            "definition", "reporting", "context", "coverage", "review", "triage"
+        ):
+            self.assertIsInstance(finding[field], dict)
+        self.assertEqual([filename], finding["references"]["source_files"])
+
+        output = azure_findings.sarif_output("/tmp/input", catalog, findings)
+        result = next(
+            item for item in output["runs"][0]["results"]
+            if item["ruleId"] == "defender_cloud_unresolved_significant_alerts"
+        )
+        self.assertEqual(
+            "security-alert", result["properties"]["evidence"][0]["id"]
+        )
+
+    def test_graph_finding_reads_the_real_cli_catalogue_shape(self):
+        filename = "graph_identity_baseline_risk_detections_20260804-120000.json"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / filename).write_text(
+                json.dumps([{"id": "real-risk", "riskState": "atRisk"}]),
+                encoding="utf-8",
+            )
+            (root / "azure-collection-manifest.json").write_text(
+                json.dumps({
+                    "schema_version": "2.5",
+                    "endpoint_runs": [{
+                        "category": "microsoft_graph",
+                        "endpoint_id": "graph_identity_baseline_risk_detections",
+                        "status": "success",
+                    }],
+                    "datasets": [{
+                        "filename": filename,
+                        "source_endpoint_id": (
+                            "graph_identity_baseline_risk_detections"
+                        ),
+                    }],
+                }),
+                encoding="utf-8",
+            )
+
+            catalog = azure_findings.load_catalog(root)
+            findings = azure_findings.evaluate_findings(catalog)
+
+        finding = next(
+            item for item in findings
+            if item["title"] == "Active Microsoft Entra risk detections"
+        )
+        self.assertEqual("found", finding["status"])
+        self.assertEqual("real-risk", finding["evidence"][0]["id"])
 
 
 if __name__ == "__main__":

@@ -371,6 +371,119 @@ class GraphFindingTests(unittest.TestCase):
             by_title["Unresolved significant Microsoft security incidents"]["status"],
         )
 
+    def test_security_sensitive_identity_and_m365_activity_is_reported(self):
+        catalog = {
+            "graph_identity_baseline_sign_ins_20260804.json": [{
+                "id": "legacy", "clientAppUsed": "IMAP",
+                "status": {"errorCode": 0},
+            }],
+            "graph_identity_baseline_directory_audits_20260804.json": [{
+                "id": "role-change", "activityDisplayName": "Add member to role",
+            }],
+            "graph_m365_audit_audit_exchange_20260804.json": [{
+                "id": "inbox", "operation": "New-InboxRule",
+                "auditData": (
+                    '{"Parameters":[{"Name":"ForwardTo",'
+                    '"Value":"external@example.invalid"}]}'
+                ),
+            }],
+            "graph_m365_audit_audit_sharepoint_20260804.json": [{
+                "id": "share", "operation": "AnonymousLinkCreated",
+            }],
+            "azure-collection-manifest.json": graph_manifest(
+                "graph_identity_baseline_sign_ins",
+                "graph_identity_baseline_directory_audits",
+                "graph_m365_audit_audit_exchange",
+                "graph_m365_audit_audit_sharepoint",
+            ),
+        }
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        by_title = {item["title"]: item for item in findings}
+        for title in (
+            "Successful Microsoft Entra legacy-authentication sign-ins",
+            "Security-sensitive Microsoft Entra directory changes",
+            "Security-sensitive Exchange mailbox forwarding or delegation changes",
+            "Anonymous or external SharePoint sharing activity",
+        ):
+            self.assertEqual("finding", by_title[title]["status"])
+
+    def test_non_forwarding_exchange_changes_are_not_reported(self):
+        catalog = {
+            "graph_m365_audit_audit_exchange_20260804.json": [{
+                "id": "ordinary-change",
+                "operation": "Set-Mailbox",
+                "auditData": (
+                    '{"Parameters":[{"Name":"DisplayName","Value":"Example"}]}'
+                ),
+            }],
+            "azure-collection-manifest.json": graph_manifest(
+                "graph_m365_audit_audit_exchange"
+            ),
+        }
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        finding = next(
+            item for item in findings
+            if item["title"] == (
+                "Security-sensitive Exchange mailbox forwarding or delegation changes"
+            )
+        )
+        self.assertEqual("not_found", finding["status"])
+
+    def test_intune_and_gsa_direct_security_states_are_reported(self):
+        catalog = {
+            "graph_endpoint_intune_device_configurations_20260804.json": [{
+                "id": "policy", "firewallEnabled": False,
+            }],
+            "graph_endpoint_intune_settings_catalog_20260804.json": [],
+            "graph_endpoint_intune_security_connectors_20260804.json": [{
+                "id": "connector", "connectionStatus": "error",
+            }],
+            "graph_global_secure_access_gsa_branches_20260804.json": [{
+                "id": "branch", "status": "offline",
+            }],
+            "graph_global_secure_access_gsa_connectors_20260804.json": [],
+            "graph_global_secure_access_gsa_forwarding_profiles_20260804.json": [{
+                "id": "profile", "state": "enabled", "associations": [],
+            }],
+            "azure-collection-manifest.json": graph_manifest(
+                "graph_endpoint_intune_device_configurations",
+                "graph_endpoint_intune_settings_catalog",
+                "graph_endpoint_intune_security_connectors",
+                "graph_global_secure_access_gsa_branches",
+                "graph_global_secure_access_gsa_connectors",
+                "graph_global_secure_access_gsa_forwarding_profiles",
+            ),
+        }
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        by_title = {item["title"]: item for item in findings}
+        for title in (
+            "Intune policy explicitly disables a core endpoint security control",
+            "Intune security-service connectors are disabled or unhealthy",
+            "Global Secure Access branches or connectors are unhealthy",
+            "Enabled Global Secure Access forwarding profiles have no associations",
+        ):
+            self.assertEqual("finding", by_title[title]["status"])
+
+    def test_permanent_privileged_request_is_reported(self):
+        catalog = {
+            "graph_p_i_m_pim_directory_requests_20260804.json": [{
+                "id": "request", "status": "Provisioned",
+                "scheduleInfo": {"expiration": {"type": "noExpiration"}},
+            }],
+            "azure-collection-manifest.json": graph_manifest(
+                "graph_p_i_m_pim_directory_requests"
+            ),
+        }
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        finding = next(
+            item for item in findings
+            if item["title"] == (
+                "Privileged activation or assignment requests seek permanent access"
+            )
+        )
+        self.assertEqual("finding", finding["status"])
+        self.assertEqual("request", finding["evidence"][0]["id"])
+
 
 if __name__ == "__main__":
     unittest.main()

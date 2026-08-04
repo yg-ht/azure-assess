@@ -2,7 +2,11 @@
 
 import re
 
-from .graph_guidance import GUIDANCE_BY_TITLE
+from .graph_guidance import GUIDANCE_BY_TITLE as GRAPH_GUIDANCE_BY_TITLE
+from .surface_guidance import GUIDANCE_BY_TITLE as SURFACE_GUIDANCE_BY_TITLE
+
+
+GUIDANCE_BY_TITLE = {**GRAPH_GUIDANCE_BY_TITLE, **SURFACE_GUIDANCE_BY_TITLE}
 
 REQUESTED_HEADLINES = [
     "aisearch_service_not_publicly_accessible",
@@ -959,21 +963,57 @@ FINDING_ID_OVERRIDES = {
     "Applicable Global Secure Access tenant has no filtering policy": "global_secure_access_filtering_policy_missing",
     "Applicable Global Secure Access tenant has no TLS inspection policy": "global_secure_access_tls_policy_missing",
     "Applicable Global Secure Access tenant has no policy assignment": "global_secure_access_policy_assignment_missing",
+    "Unresolved significant Defender for Cloud alerts": "defender_cloud_unresolved_significant_alerts",
+    "Security-sensitive Azure control-plane changes": "azure_activity_security_sensitive_changes",
+    "Application Gateway WAF is disabled or not enforcing full prevention": "application_gateway_waf_prevention_not_enforced",
+    "Application Gateway exposes plaintext HTTP listeners": "application_gateway_plaintext_http_listener",
+    "Azure App Configuration permits public network access": "appconfig_public_network_access_enabled",
+    "Azure App Configuration permits local access-key authentication": "appconfig_local_authentication_enabled",
+    "Log Analytics workspaces permit public query or ingestion": "log_analytics_public_query_or_ingestion_enabled",
+    "Application Insights permits public query or ingestion": "application_insights_public_query_or_ingestion_enabled",
+    "Trusted Launch virtual machines disable Secure Boot or vTPM": "vm_trusted_launch_security_feature_disabled",
+    "Managed disks or snapshots permit unrestricted network export": "disk_or_snapshot_unrestricted_network_export",
+    "Azure Monitor alert rules have no effective action group": "monitor_alert_action_group_missing",
+    "API Management permits deprecated TLS protocols": "apim_deprecated_tls_enabled",
+    "API Management services lack a managed identity": "apim_managed_identity_missing",
+    "Azure messaging services permit local authentication": "messaging_local_authentication_enabled",
+    "Azure messaging services permit unrestricted public network access": "messaging_public_network_access_enabled",
+    "Azure messaging services permit deprecated TLS versions": "messaging_deprecated_tls_enabled",
+    "Assigned custom Azure roles contain wildcard permissions": "iam_assigned_custom_role_wildcard_permissions",
+    "Successful Microsoft Entra legacy-authentication sign-ins": "entra_successful_legacy_authentication_signins",
+    "Security-sensitive Microsoft Entra directory changes": "entra_security_sensitive_directory_changes",
+    "Security-sensitive Exchange mailbox forwarding or delegation changes": "m365_exchange_security_sensitive_mailbox_changes",
+    "Anonymous or external SharePoint sharing activity": "sharepoint_anonymous_or_external_sharing_activity",
+    "Intune policy explicitly disables a core endpoint security control": "intune_core_endpoint_security_control_disabled",
+    "Intune security-service connectors are disabled or unhealthy": "intune_security_connector_unhealthy",
+    "Global Secure Access branches or connectors are unhealthy": "global_secure_access_connectivity_unhealthy",
+    "Enabled Global Secure Access forwarding profiles have no associations": "global_secure_access_enabled_profile_unassociated",
+    "Privileged activation or assignment requests seek permanent access": "pim_permanent_access_request",
 }
 
 CATEGORY_PREFIXES = (
     (("entra_", "iam_", "pim_"), "Identity and access management"),
-    (("network_",), "Network security"),
-    (("storage_",), "Storage security"),
+    (("network_", "application_gateway_"), "Network security"),
+    (("storage_", "disk_"), "Storage security"),
     (("keyvault_",), "Secrets and key management"),
-    (("monitor_",), "Logging and monitoring"),
-    (("defender_", "intune_", "sharepoint_"), "Security posture management"),
+    (("monitor_", "log_analytics_", "application_insights_"), "Logging and monitoring"),
+    (
+        (
+            "defender_",
+            "global_secure_access_",
+            "intune_",
+            "m365_",
+            "sharepoint_",
+        ),
+        "Security posture management",
+    ),
     (("advisor_",), "Security posture management"),
-    (("policy_", "resource_lock_"), "Governance and compliance"),
+    (("policy_", "resource_lock_", "azure_activity_"), "Governance and compliance"),
     (("aks_", "kubernetes_", "containerregistry_"), "Containers and Kubernetes"),
     (
         (
             "app_",
+            "appconfig_",
             "appinsights_",
             "apim_",
             "aisearch_",
@@ -984,7 +1024,7 @@ CATEGORY_PREFIXES = (
     ),
     (("vm_", "machine_learning_", "databricks_", "hdinsight_", "synapse_"), "Compute and analytics"),
     (("sql_", "sqlserver_", "mysql_", "postgresql_", "cosmosdb_", "redis_"), "Database security"),
-    (("eventgrid_", "servicebus_", "signalr_", "iot_"), "Integration and messaging"),
+    (("eventgrid_", "servicebus_", "signalr_", "iot_", "messaging_"), "Integration and messaging"),
 )
 
 

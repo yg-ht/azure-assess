@@ -91,6 +91,19 @@ FAMILY_DEFINITIONS = {
 
 
 SERVICE_DEFINITIONS = {
+    "application_gateway_": ("application_gateway", "Azure Application Gateway", "gateway or listener"),
+    "application_insights_": ("application_insights", "Application Insights", "component"),
+    "azure_activity_": ("azure_activity_log", "Azure Activity Log", "control-plane operation"),
+    "log_analytics_": ("log_analytics", "Log Analytics", "workspace"),
+    "appconfig_": ("app_configuration", "Azure App Configuration", "configuration store"),
+    "messaging_": ("azure_messaging", "Azure messaging services", "messaging resource"),
+    "disk_": ("managed_disks", "Azure managed disks", "disk or snapshot"),
+    "global_secure_access_": (
+        "global_secure_access",
+        "Microsoft Entra Global Secure Access",
+        "tenant network-access control",
+    ),
+    "m365_": ("microsoft_365", "Microsoft 365", "tenant workload activity"),
     "resource_lock_": ("resource_locks", "Azure resource locks", "protected resource"),
     "advisor_": ("azure_advisor", "Azure Advisor", "recommendation"),
     "policy_": ("azure_policy", "Azure Policy", "assignment or resource"),
