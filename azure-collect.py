@@ -63,6 +63,7 @@ import threading
 import urllib.parse
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import datetime, timezone
 from itertools import product
@@ -1475,13 +1476,16 @@ def parse_arguments():
     parser.add_argument(
         "--client-certificate",
         type=str,
-        help="Client certificate path for service principal auth. Defaults to AZURE_CLIENT_CERTIFICATE_PATH."
+        help=(
+            "Combined PEM private-key and certificate path for service principal auth. "
+            "Defaults to AZURE_CLIENT_CERTIFICATE_PATH."
+        )
     )
     parser.add_argument(
         "--client-certificate-password",
         type=str,
         help=(
-            "Client certificate password for service principal auth. "
+            "Password used locally through OpenSSL to unlock an encrypted combined PEM. "
             "Defaults to AZURE_CLIENT_CERTIFICATE_PASSWORD."
         )
     )
@@ -1586,6 +1590,119 @@ def build_auth_config(args):
         ),
         "continue_with_missing_permissions": args.continue_with_missing_permissions,
     }
+
+
+def service_principal_login_command(auth_config, certificate_path=None):
+    """Build an Azure CLI service-principal login without mixing credential types."""
+    tenant_id = auth_config.get("tenant_id")
+    client_id = auth_config.get("client_id")
+    client_secret = auth_config.get("client_secret")
+    client_certificate = auth_config.get("client_certificate")
+    if not tenant_id:
+        raise ValueError("Service principal auth requires --tenant-id or AZURE_TENANT_ID")
+    if not client_id:
+        raise ValueError("Service principal auth requires --client-id or AZURE_CLIENT_ID")
+    if client_secret and client_certificate:
+        raise ValueError(
+            "Service principal auth accepts either a client secret or a certificate, not both"
+        )
+    if not client_secret and not client_certificate:
+        raise ValueError(
+            "Service principal auth requires either --client-secret/AZURE_CLIENT_SECRET "
+            "or --client-certificate/AZURE_CLIENT_CERTIFICATE_PATH"
+        )
+    command = [
+        "az", "login", "--service-principal", "--username", str(client_id),
+        "--tenant", str(tenant_id),
+    ]
+    if client_secret:
+        return command + ["--password", str(client_secret)]
+    return command + ["--certificate", str(certificate_path or client_certificate)]
+
+
+def validate_client_certificate_path(value):
+    """Validate the combined PEM accepted by current Azure CLI certificate login."""
+    path = Path(value).expanduser()
+    if path.suffix.lower() in {".pfx", ".p12"}:
+        raise ValueError(
+            "Azure CLI certificate login requires a combined PEM; PKCS#12 files are unsupported"
+        )
+    if not path.is_file():
+        raise ValueError(f"Client certificate file does not exist: {path}")
+    try:
+        pem_bytes = path.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"Client certificate file could not be read: {path}") from exc
+    private_key_index = pem_bytes.find(b"PRIVATE KEY-----")
+    certificate_index = pem_bytes.find(b"-----BEGIN CERTIFICATE-----")
+    if private_key_index < 0:
+        raise ValueError("Client certificate PEM does not contain a private key")
+    if certificate_index < 0:
+        raise ValueError("Client certificate PEM does not contain a public certificate")
+    if private_key_index > certificate_index:
+        raise ValueError(
+            "Client certificate PEM must contain the private key before the public certificate"
+        )
+    return path
+
+
+@contextmanager
+def prepared_client_certificate(value, password=None):
+    """Yield an Azure CLI-ready PEM, decrypting to a protected temporary file if needed."""
+    source = validate_client_certificate_path(value)
+    if not password:
+        yield source
+        return
+
+    try:
+        source_bytes = source.read_bytes()
+    except OSError as exc:
+        raise ValueError(f"Client certificate file could not be read: {source}") from exc
+    certificate_blocks = re.findall(
+        rb"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+        source_bytes,
+        re.DOTALL,
+    )
+    if not certificate_blocks:
+        raise ValueError("Client certificate PEM does not contain a public certificate")
+    try:
+        decrypted = subprocess.run(
+            ["openssl", "pkey", "-in", str(source), "-passin", "stdin"],
+            input=str(password) + "\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise ValueError(
+            "OpenSSL is required to prepare an encrypted client certificate"
+        ) from exc
+    if decrypted.returncode != 0 or "PRIVATE KEY-----" not in decrypted.stdout:
+        raise ValueError(
+            "Could not unlock the encrypted client certificate with the supplied password"
+        )
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix="azure-assess-client-certificate-", suffix=".pem"
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(decrypted.stdout.encode("utf-8"))
+            if not decrypted.stdout.endswith("\n"):
+                handle.write(b"\n")
+            for block in certificate_blocks:
+                handle.write(block)
+                handle.write(b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, 0o600)
+        yield temporary_path
+    finally:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def shell_quote(value):
@@ -2764,51 +2881,45 @@ def authenticate_with_selected_method(auth_config):
         return
 
     if method == "device-code":
-        login_cmd = "az login --use-device-code"
+        login_cmd = ["az", "login", "--use-device-code"]
         if tenant_id:
-            login_cmd = f"{login_cmd} --tenant {shell_quote(tenant_id)}"
+            login_cmd.extend(["--tenant", str(tenant_id)])
     elif method == "browser":
-        login_cmd = "az login"
+        login_cmd = ["az", "login"]
         if tenant_id:
-            login_cmd = f"{login_cmd} --tenant {shell_quote(tenant_id)}"
+            login_cmd.extend(["--tenant", str(tenant_id)])
     elif method == "service-principal":
-        if not tenant_id:
-            print("[ERROR] Service principal auth requires --tenant-id or AZURE_TENANT_ID.")
-            exit(1)
-        if not client_id:
-            print("[ERROR] Service principal auth requires --client-id or AZURE_CLIENT_ID.")
-            exit(1)
-        if not client_secret and not client_certificate:
-            print(
-                "[ERROR] Service principal auth requires either "
-                "--client-secret/AZURE_CLIENT_SECRET or "
-                "--client-certificate/AZURE_CLIENT_CERTIFICATE_PATH."
-            )
-            exit(1)
-
-        login_cmd = (
-            "az login --service-principal "
-            f"--username {shell_quote(client_id)} "
-            f"--tenant {shell_quote(tenant_id)}"
-        )
-        if client_secret:
-            login_cmd = f"{login_cmd} --password {shell_quote(client_secret)}"
-        else:
-            login_cmd = f"{login_cmd} --password {shell_quote(client_certificate)}"
-            if client_certificate_password:
-                login_cmd = f"{login_cmd} --certificate-password {shell_quote(client_certificate_password)}"
+        try:
+            login_cmd = service_principal_login_command(auth_config)
+        except ValueError as exc:
+            print(f"[ERROR] {exc}.")
+            raise SystemExit(1) from exc
     elif method == "managed-identity":
-        login_cmd = "az login --identity"
+        login_cmd = ["az", "login", "--identity"]
         if client_id:
-            login_cmd = f"{login_cmd} --username {shell_quote(client_id)}"
+            login_cmd.extend(["--username", str(client_id)])
         if tenant_id:
-            login_cmd = f"{login_cmd} --tenant {shell_quote(tenant_id)}"
+            login_cmd.extend(["--tenant", str(tenant_id)])
     else:
         print(f"[ERROR] Unsupported auth method: {method}")
         exit(1)
 
     print(f"[*] Authenticating to Azure using '{method}' mode...")
-    login_result = run_az_command(login_cmd)
+    try:
+        if method == "service-principal" and client_certificate:
+            with prepared_client_certificate(
+                client_certificate, client_certificate_password
+            ) as prepared_certificate:
+                login_result = run_az_command(
+                    service_principal_login_command(
+                        auth_config, certificate_path=prepared_certificate
+                    )
+                )
+        else:
+            login_result = run_az_command(login_cmd)
+    except ValueError as exc:
+        print(f"[ERROR] {exc}.")
+        raise SystemExit(1) from exc
     if login_result.returncode != 0:
         print("[ERROR] Azure authentication failed. Exiting.")
         exit(1)

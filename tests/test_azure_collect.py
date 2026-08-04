@@ -117,11 +117,162 @@ class AuthenticationContextTests(unittest.TestCase):
         }
 
         with mock.patch.object(azure_collect, "run_az_command", return_value=account_result):
-            with mock.patch.object(azure_collect, "validate_access_token", return_value=True):
+            with mock.patch.object(
+                azure_collect, "validate_access_token", return_value=True
+            ) as validate_token:
                 self.assertTrue(azure_collect.validate_auth_session())
 
         self.assertEqual(azure_collect.AUTH_CONFIG["tenant_id"], "tenant-active")
         self.assertEqual(azure_collect.AUTH_CONFIG["subscription_id"], "sub-active")
+        self.assertEqual(
+            [call.args[0] for call in validate_token.call_args_list],
+            ["https://management.azure.com/", "https://graph.microsoft.com/"],
+        )
+
+    def test_existing_mode_ignores_configured_service_principal_credentials(self):
+        azure_collect.AUTH_CONFIG = {
+            "auth_method": "existing",
+            "tenant_id": None,
+            "subscription_id": None,
+            "client_id": "stale-client",
+            "client_secret": "stale-secret",
+            "client_certificate": "/not/read/certificate.pem",
+            "client_certificate_password": "stale-password",
+        }
+        with mock.patch.object(azure_collect, "validate_auth_session", return_value=True):
+            with mock.patch.object(azure_collect, "set_az_account_context"):
+                with mock.patch.object(azure_collect, "ensure_required_permission_baseline"):
+                    with mock.patch.object(azure_collect, "run_az_command") as run_command:
+                        azure_collect.ensure_az_login()
+        run_command.assert_not_called()
+
+
+class ServicePrincipalAuthenticationTests(unittest.TestCase):
+    def auth_config(self, **overrides):
+        config = {
+            "auth_method": "service-principal",
+            "tenant_id": "tenant-one",
+            "subscription_id": None,
+            "client_id": "client-one",
+            "client_secret": None,
+            "client_certificate": None,
+            "client_certificate_password": None,
+        }
+        config.update(overrides)
+        return config
+
+    def test_client_secret_and_certificate_commands_are_distinct(self):
+        secret = azure_collect.service_principal_login_command(
+            self.auth_config(client_secret="secret-value")
+        )
+        certificate = azure_collect.service_principal_login_command(
+            self.auth_config(client_certificate="collector.pem")
+        )
+        self.assertEqual(secret[-2:], ["--password", "secret-value"])
+        self.assertEqual(certificate[-2:], ["--certificate", "collector.pem"])
+        self.assertNotIn("--certificate", secret)
+        self.assertNotIn("--password", certificate)
+
+    def test_conflicting_service_principal_credentials_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "either a client secret or a certificate"):
+            azure_collect.service_principal_login_command(
+                self.auth_config(
+                    client_secret="secret-value",
+                    client_certificate="collector.pem",
+                )
+            )
+
+    def test_certificate_auth_uses_current_azure_cli_argument(self):
+        with tempfile.TemporaryDirectory() as directory:
+            certificate = Path(directory) / "collector.pem"
+            certificate.write_text(
+                "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n"
+                "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----\n",
+                encoding="utf-8",
+            )
+            completed = mock.Mock(returncode=0)
+            with mock.patch.object(
+                azure_collect, "run_az_command", return_value=completed
+            ) as run_command:
+                with mock.patch.object(azure_collect, "set_az_account_context"):
+                    azure_collect.authenticate_with_selected_method(
+                        self.auth_config(client_certificate=str(certificate))
+                    )
+        command = run_command.call_args.args[0]
+        self.assertEqual(command[-2:], ["--certificate", str(certificate)])
+        self.assertNotIn("--certificate-password", command)
+
+    def test_encrypted_certificate_is_prepared_with_protected_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            certificate = Path(directory) / "collector.pem"
+            certificate.write_text(
+                "-----BEGIN ENCRYPTED PRIVATE KEY-----\nkey\n"
+                "-----END ENCRYPTED PRIVATE KEY-----\n"
+                "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----\n",
+                encoding="utf-8",
+            )
+            openssl_result = mock.Mock(
+                returncode=0,
+                stdout="-----BEGIN PRIVATE KEY-----\nunlocked\n-----END PRIVATE KEY-----\n",
+            )
+            with mock.patch.object(
+                azure_collect.subprocess, "run", return_value=openssl_result
+            ) as openssl:
+                with azure_collect.prepared_client_certificate(
+                    certificate, "passphrase"
+                ) as prepared:
+                    prepared = Path(prepared)
+                    self.assertTrue(prepared.exists())
+                    self.assertEqual(0o600, prepared.stat().st_mode & 0o777)
+                    content = prepared.read_text(encoding="utf-8")
+                    self.assertIn("BEGIN PRIVATE KEY", content)
+                    self.assertIn("BEGIN CERTIFICATE", content)
+                self.assertFalse(prepared.exists())
+        self.assertEqual("passphrase\n", openssl.call_args.kwargs["input"])
+        self.assertNotIn("passphrase", openssl.call_args.args[0])
+
+    def test_pkcs12_certificate_is_rejected_before_login(self):
+        with tempfile.TemporaryDirectory() as directory:
+            certificate = Path(directory) / "collector.pfx"
+            certificate.write_bytes(b"not-a-supported-certificate")
+            with self.assertRaisesRegex(ValueError, "combined PEM"):
+                with azure_collect.prepared_client_certificate(certificate):
+                    pass
+
+    def test_encrypted_temporary_certificate_is_removed_when_login_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            certificate = Path(directory) / "collector.pem"
+            certificate.write_text(
+                "-----BEGIN ENCRYPTED PRIVATE KEY-----\nkey\n"
+                "-----END ENCRYPTED PRIVATE KEY-----\n"
+                "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----\n",
+                encoding="utf-8",
+            )
+            openssl_result = mock.Mock(
+                returncode=0,
+                stdout="-----BEGIN PRIVATE KEY-----\nunlocked\n-----END PRIVATE KEY-----\n",
+            )
+            prepared_paths = []
+            def failed_login(command, capture_output=False):
+                self.assertEqual("--certificate", command[-2])
+                prepared_paths.append(Path(command[-1]))
+                self.assertTrue(prepared_paths[-1].exists())
+                return mock.Mock(returncode=1)
+            with mock.patch.object(
+                azure_collect.subprocess, "run", return_value=openssl_result
+            ):
+                with mock.patch.object(
+                    azure_collect, "run_az_command", side_effect=failed_login
+                ):
+                    with self.assertRaises(SystemExit):
+                        azure_collect.authenticate_with_selected_method(
+                            self.auth_config(
+                                client_certificate=str(certificate),
+                                client_certificate_password="passphrase",
+                            )
+                        )
+        self.assertEqual(1, len(prepared_paths))
+        self.assertFalse(prepared_paths[0].exists())
 
 
 class DefenderAssessmentsEndpointTests(unittest.TestCase):

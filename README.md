@@ -100,7 +100,24 @@ Transfer only `collector-public.cer` to the customer administrator. The administ
   -CertificatePath ".\collector-public.cer"
 ```
 
-After the Windows administrator returns the generated connection details, configure the Linux collector with the tenant ID, application client ID, subscription ID, combined PEM path, and certificate passphrase:
+After the Windows administrator returns the generated connection details, choose one authentication workflow. Existing Azure CLI sessions and tool-managed service-principal login are deliberately separate modes.
+
+To reuse an existing Azure CLI session, authenticate before starting the collector. The existing session may itself use a user, managed identity, client secret or certificate; the collector does not replace it or inspect configured service-principal credential variables in this mode:
+
+```bash
+az login
+# Or, for a certificate-authenticated existing session:
+az login --service-principal \
+  --username "<application-client-id>" \
+  --certificate "/secure/path/collector-auth-unencrypted.pem" \
+  --tenant "<tenant-id>"
+
+pipenv run python azure-collect.py --auth-method existing
+```
+
+Current Azure CLI accepts an unencrypted combined PEM for this manual certificate-login command and has no certificate-password option. Protect that file with mode `0600` and remove any short-lived decrypted copy after login. To keep the stored combined PEM encrypted, use the tool-managed certificate workflow below instead.
+
+The Azure CLI certificate command requires a combined PEM containing the private key followed by the public certificate. For tool-managed login with the encrypted combined PEM created above, configure the tenant ID, application client ID, subscription ID, combined PEM path and certificate passphrase:
 
 ```bash
 export AZURE_TENANT_ID="<tenant-id>"
@@ -116,6 +133,26 @@ pipenv run python azure-collect.py --auth-method service-principal
 
 unset AZURE_CLIENT_CERTIFICATE_PASSWORD
 ```
+
+The collector unlocks an encrypted PEM through OpenSSL, writes the decrypted key and certificate to a mode-`0600` temporary PEM, supplies that path to Azure CLI's `--certificate` option, and removes the temporary file immediately after `az login` completes. The passphrase is passed to OpenSSL through standard input and is not forwarded to Azure CLI. An unencrypted combined PEM can be used by omitting `AZURE_CLIENT_CERTIFICATE_PASSWORD`; Azure CLI then receives the original PEM path directly.
+
+Client-secret service-principal login remains available as a distinct alternative:
+
+```bash
+export AZURE_TENANT_ID="<tenant-id>"
+export AZURE_CLIENT_ID="<application-client-id>"
+export AZURE_SUBSCRIPTION_ID="<subscription-id>"
+
+read -rsp "Client secret: " AZURE_CLIENT_SECRET
+echo
+export AZURE_CLIENT_SECRET
+
+pipenv run python azure-collect.py --auth-method service-principal
+
+unset AZURE_CLIENT_SECRET
+```
+
+Do not configure both `AZURE_CLIENT_SECRET` and `AZURE_CLIENT_CERTIFICATE_PATH` for service-principal mode. The collector rejects this ambiguous combination instead of silently selecting one credential. Credential variables do not trigger a login when `--auth-method existing` is selected.
 
 A customer certificate-authority-issued certificate may be used instead when required by organisational policy. The same application also needs separately assigned Azure RBAC access for the subscriptions assessed; the PowerShell helper grants Microsoft Graph permissions only.
 
@@ -183,8 +220,8 @@ Parameters:
 - `--subscription-id`: Azure subscription ID to select after authentication. Defaults to `AZURE_SUBSCRIPTION_ID`
 - `--client-id`: service principal or user-assigned managed identity client ID. Defaults to `AZURE_CLIENT_ID`
 - `--client-secret`: service principal client secret. Defaults to `AZURE_CLIENT_SECRET`
-- `--client-certificate`: certificate path for service principal auth. Defaults to `AZURE_CLIENT_CERTIFICATE_PATH`
-- `--client-certificate-password`: certificate password for service principal auth. Defaults to `AZURE_CLIENT_CERTIFICATE_PASSWORD`
+- `--client-certificate`: combined PEM path for tool-managed service-principal certificate authentication. The PEM must contain the private key followed by the public certificate. Defaults to `AZURE_CLIENT_CERTIFICATE_PATH`
+- `--client-certificate-password`: optional password used locally to unlock an encrypted combined PEM through OpenSSL. Prefer `AZURE_CLIENT_CERTIFICATE_PASSWORD` so the value is not exposed in command-line arguments
 
 Notes:
 
@@ -193,6 +230,8 @@ Notes:
 - Some collection endpoints require Azure CLI extensions, such as `application-insights` and `azure-iot`. The script enables Azure CLI dynamic extension install and will also try `az extension add --name <extension>` when Azure CLI reports a missing extension.
 - The default authentication mode is `existing`, which reuses the current Azure CLI session and does not trigger a login flow.
 - If `--auth-method existing` is used and no valid Azure CLI session is present, the tool exits with guidance instead of forcing device code authentication.
+- Existing mode does not read or validate client-secret or certificate files. Tool-managed service-principal mode requires exactly one of a client secret or combined PEM certificate and uses Azure CLI's distinct `--password` and `--certificate` options respectively.
+- Encrypted combined PEM use requires OpenSSL. Temporary decrypted PEM files are created with owner-only permissions and removed after the login attempt. Azure CLI does not accept `.pfx` or `.p12` files for this login path.
 - Authentication validation checks both the current Azure account context and token acquisition for Azure Resource Manager and Microsoft Graph before collection starts.
 - `--subscription-id` applies the Azure CLI account context after authentication and can also be supplied through `AZURE_SUBSCRIPTION_ID`.
 - Output files are timestamped in their filenames, which is used by the dashboard to track dataset history.
