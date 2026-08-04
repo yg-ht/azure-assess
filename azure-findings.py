@@ -41,6 +41,7 @@ from azure_assess.findings_triage import (
     normalise_finding_triage,
     validate_finding_triage,
 )
+from azure_assess.findings_graph import evaluate_graph_findings
 from azure_assess.findings_correlation import (
     AnalysisInputs,
     CorrelationResult,
@@ -3627,6 +3628,10 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "Virtual machines are not using approved base images": source_map["vm_details"],
         "Virtual machine backup policies do not retain daily restore points long enough": source_map["backup_items"] + source_map["backup_policies"],
     }
+
+    graph_findings, graph_sources = evaluate_graph_findings(catalog, result, unsupported)
+    findings.extend(graph_findings)
+    reference_sources.update(graph_sources)
 
     correlation_sources = {
         finding["title"]: SourceReferences(
