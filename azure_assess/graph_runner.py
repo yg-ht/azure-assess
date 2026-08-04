@@ -24,10 +24,11 @@ CAPABILITY_STATUS = {402, 404, 409, 422, 501}
 class GraphError(RuntimeError):
     """A classified Graph request failure."""
 
-    def __init__(self, message: str, *, status: Optional[int] = None, body: str = ""):
+    def __init__(self, message: str, *, status: Optional[int] = None, body: str = "", headers: Optional[Mapping[str, str]] = None):
         super().__init__(message)
         self.status = status
         self.body = body
+        self.headers = dict(headers or {})
 
     @property
     def outcome(self) -> str:
@@ -124,7 +125,12 @@ class GraphTransport:
                 return response.status, dict(response.headers), decoded
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            raise GraphError(f"Microsoft Graph returned HTTP {exc.code}", status=exc.code, body=raw) from exc
+            raise GraphError(
+                f"Microsoft Graph returned HTTP {exc.code}",
+                status=exc.code,
+                body=raw,
+                headers=dict(exc.headers or {}),
+            ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise GraphError(f"Microsoft Graph request failed: {exc}") from exc
 
@@ -190,7 +196,12 @@ class GraphRunner:
             try:
                 status, headers, payload = self.transport(method, url, body)
                 if status >= 400:
-                    raise GraphError(f"Microsoft Graph returned HTTP {status}", status=status, body=str(payload))
+                    raise GraphError(
+                        f"Microsoft Graph returned HTTP {status}",
+                        status=status,
+                        body=str(payload),
+                        headers=headers,
+                    )
                 if not isinstance(payload, (dict, list)):
                     raise GraphError("Microsoft Graph returned malformed JSON")
                 return payload, attempt
@@ -248,7 +259,7 @@ class GraphRunner:
             result.status, result.error, result.error_status = exc.outcome, str(exc), exc.status
             result.incomplete = result.pages > 0
             if result.incomplete:
-                result.status = "failed"
+                result.status = "incomplete"
         result.contexts.append({"duration_ms": round((monotonic() - started) * 1000)})
         return result
 
@@ -276,4 +287,3 @@ class GraphRunner:
                 raise GraphError(f"Audit query finished with status {status}")
             self.sleeper(self.poll_interval)
         raise GraphError("Audit query polling timed out")
-

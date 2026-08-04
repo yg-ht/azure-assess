@@ -391,3 +391,11 @@ pipenv run python azure-present.py -i ~/azure-collect-data
 ```
 
 Then open `http://127.0.0.1:5000/` in a browser.
+
+## Microsoft Graph workload collection
+
+The default collection now uses the application permissions created by `scripts/Azure-Graph-Collect-App.ps1` across Identity Baseline, PIM, Microsoft 365 Audit, Endpoint/Intune, Global Secure Access and Defender Hunting. Inventory endpoints collect every available page. Activity, audit and hunting data use a resolved UTC interval controlled by `--graph-lookback-days` (30 days by default); the exact start and end are recorded in the schema 2.5 collection manifest.
+
+Datasets use stable `graph_<profile>_<dataset>_<timestamp>.json` names. Records include `_collectionContext` provenance. Endpoints that require Microsoft Graph beta are explicitly labelled in the manifest limitations. Unauthorised requests, unavailable tenant/licence capabilities, inapplicable endpoints, failures and incomplete collection remain distinct assessment states.
+
+Use `--endpoint` with a friendly endpoint name, stable Graph endpoint ID, profile, permission or URL fragment. BitLocker collection requests metadata only and never requests recovery key material. The built-in Defender query pack is fixed and versioned; missing tables or licences affect only the relevant query.

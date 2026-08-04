@@ -6,6 +6,7 @@ Endpoints in this registry are assessment reads.  Beta entries are deliberately
 labelled and are used only where Microsoft Graph has no equivalent v1.0 API.
 """
 
+import re
 from typing import Dict, Iterable, List, Mapping
 
 
@@ -24,6 +25,7 @@ def _endpoint(
     body: Mapping = None,
     fan_out: Mapping = None,
 ) -> Dict:
+    profile_slug = re.sub(r"(?<!^)(?=[A-Z])", "_", profile).lower()
     return {
         "id": endpoint_id,
         "name": name,
@@ -33,7 +35,7 @@ def _endpoint(
         "method": method,
         "path": path,
         "pagination": pagination,
-        "output": f"graph_{profile.lower()}_{endpoint_id}",
+        "output": f"graph_{profile_slug}_{endpoint_id}",
         "licence": licence,
         "mode": mode,
         **({"body": dict(body)} if body else {}),

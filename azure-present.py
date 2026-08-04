@@ -1648,6 +1648,7 @@ def load_collect_endpoint_name_map():
 
     base_endpoints = getattr(module, "AZURE_CLI_ENDPOINTS", [])
     parameterized_endpoints = getattr(module, "AZURE_CLI_ENDPOINTS_PARAMS", [])
+    graph_endpoints = getattr(module, "GRAPH_ENDPOINTS", [])
 
     # Retain legacy aliases so datasets collected before the canonical filename
     # sanitiser was introduced continue to receive their friendly names.
@@ -1661,6 +1662,9 @@ def load_collect_endpoint_name_map():
     if callable(endpoint_output_prefix):
         for endpoint in base_endpoints + parameterized_endpoints:
             endpoint_map[endpoint_output_prefix(endpoint)] = endpoint["name"]
+
+    for endpoint in graph_endpoints:
+        endpoint_map[endpoint["output"]] = endpoint["name"]
 
     endpoint_map["role_enriched"] = "Role Assignments Enriched"
     endpoint_map["az_ams_account_list"] = "Media Services"

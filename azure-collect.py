@@ -77,6 +77,10 @@ from azure_assess.collection_manifest import (
     result_item_count,
     utc_timestamp,
 )
+from azure_assess.graph_collection import collect_registered_graph
+from azure_assess.graph_collection import selected_graph_endpoints
+from azure_assess.graph_endpoints import GRAPH_ENDPOINTS
+from azure_assess.graph_runner import utc_interval
 
 AUTH_CONFIG = {}
 DEBUG = False
@@ -1488,6 +1492,10 @@ def parse_arguments():
             "Non-interactively confirm that collection should continue when the initial "
             "permission baseline check reports missing or unverifiable permissions."
         )
+    )
+    parser.add_argument(
+        "--graph-lookback-days", type=int, default=30,
+        help="UTC lookback interval for time-bounded Microsoft Graph activity (default: 30).",
     )
     return parser.parse_args()
 
@@ -3934,7 +3942,7 @@ def collect_data(endpoints, max_workers=1):
     run_tasks(tasks, bounded_worker_count(max_workers))
 
 
-def filter_endpoints(keyword=None, endpoints=None):
+def filter_endpoints(keyword=None, endpoints=None, allow_empty=False):
     """
     Filter the endpoints list based on selected endpoint name.
     Matching is case-insensitive.
@@ -3953,7 +3961,7 @@ def filter_endpoints(keyword=None, endpoints=None):
         if str(keyword_lowered) in ep["cli_command"].lower():
             filtered.append(ep)
             print(f"Selecting {ep['name']} endpoint")
-    if not filtered:
+    if not filtered and not allow_empty:
         print(f"No matching endpoints found for selection: {keyword}")
         exit(1)
     return filtered
@@ -4009,8 +4017,15 @@ def execute_collection(args, max_workers):
                 f"Could not determine Azure CLI version: {version_error}"
             )
 
+    graph_successful = collect_registered_graph(
+        output_dir=OUTPUT_DIR, run_id=START_TIMESTAMP,
+        lookback_days=args.graph_lookback_days, endpoint_filter=args.endpoint,
+        manifest=COLLECTION_MANIFEST,
+    )
+
+    base_endpoints = []
     if not args.paramendpointsonly:
-        base_endpoints = filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS)
+        base_endpoints = filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS, allow_empty=True)
         if COLLECTION_MANIFEST is not None:
             COLLECTION_MANIFEST.register_endpoints(base_endpoints, "base")
         collect_data(base_endpoints, max_workers=max_workers)
@@ -4022,7 +4037,10 @@ def execute_collection(args, max_workers):
     if args.paramendpointsonly:
         print("[~] Parameter-only mode enabled: allowing existing source files from previous runs.")
 
-    parameterised_endpoints = filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS_PARAMS)
+    parameterised_endpoints = filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS_PARAMS, allow_empty=True)
+    if args.endpoint and not base_endpoints and not parameterised_endpoints and not selected_graph_endpoints(args.endpoint):
+        print(f"No matching endpoints found for selection: {args.endpoint}")
+        exit(1)
     if COLLECTION_MANIFEST is not None:
         COLLECTION_MANIFEST.register_endpoints(parameterised_endpoints, "parameterised")
     collect_data_with_params(
@@ -4076,7 +4094,7 @@ def execute_collection(args, max_workers):
         print_timing_summary()
 
     print_collection_error_summary()
-    if COLLECTION_ERRORS:
+    if COLLECTION_ERRORS or not graph_successful:
         return False
 
     print("[✓] Azure audit data collection complete.")
@@ -4087,6 +4105,7 @@ if __name__ == "__main__":
     global START_TIMESTAMP
     START_TIMESTAMP = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     args = parse_arguments()
+    graph_interval = utc_interval(args.graph_lookback_days)
     AUTH_CONFIG = build_auth_config(args)
     max_workers = bounded_worker_count(args.max_workers)
 
@@ -4114,6 +4133,9 @@ if __name__ == "__main__":
             "parameter_endpoints_only": args.paramendpointsonly,
             "enrichment_enabled": not args.donotenrich,
             "max_workers": max_workers,
+            "graph_lookback_days": args.graph_lookback_days,
+            "graph_lookback_start": graph_interval[0],
+            "graph_lookback_end": graph_interval[1],
         },
         project_dir=Path(__file__).resolve().parent,
     )

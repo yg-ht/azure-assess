@@ -38,6 +38,7 @@ VALID_ENDPOINT_STATUSES = {
     "not_applicable",
     "skipped",
     "not_attempted",
+    "incomplete",
 }
 LEGACY_ENDPOINT_STATUSES = VALID_ENDPOINT_STATUSES - {
     "not_applicable",
@@ -597,14 +598,17 @@ class CollectionManifestRecorder:
         diagnostic_text: Optional[str] = None,
         endpoint_identifier: Optional[str] = None,
         access_verification: Optional[Mapping[str, Any]] = None,
+        status_override: Optional[str] = None,
     ) -> None:
         """Record one completed Azure CLI execution."""
-        status = classify_execution_status(
+        status = status_override or classify_execution_status(
             returncode,
             result_count,
             error_message=error_message,
             diagnostic_text=diagnostic_text,
         )
+        if status not in VALID_ENDPOINT_STATUSES:
+            raise ValueError(f"Invalid endpoint execution status: {status}")
         record = {
             "endpoint_id": endpoint_id(endpoint_identifier or command_template),
             "endpoint_name": str(endpoint_name or "unknown"),
@@ -632,7 +636,7 @@ class CollectionManifestRecorder:
         with self._lock:
             self.endpoint_runs.append(record)
             self._observed_endpoints.add((record["category"], record["endpoint_name"]))
-            if status in {"failed", "unauthorised", "tenant_unavailable"}:
+            if status in {"failed", "incomplete", "unauthorised", "tenant_unavailable"}:
                 self.errors.append(
                     {
                         "endpoint_name": record["endpoint_name"],
@@ -769,7 +773,7 @@ class CollectionManifestRecorder:
 
             statuses = {item["status"] for item in self.endpoint_runs}
             failures = statuses.intersection(
-                {"failed", "unauthorised", "tenant_unavailable", "not_attempted"}
+                {"failed", "incomplete", "unauthorised", "tenant_unavailable", "not_attempted"}
             )
             successes = statuses.intersection({"success", "empty"})
             if not execution_successful and not successes:
