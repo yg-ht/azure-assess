@@ -83,6 +83,21 @@ class GraphRunnerTests(unittest.TestCase):
         self.assertEqual("empty", result.status)
         self.assertEqual(2, result.attempts)
 
+    def test_retry_after_header_is_honoured(self):
+        delays = []
+        calls = []
+        def transport(method, url, body):
+            calls.append(url)
+            if len(calls) == 1:
+                return 429, {"Retry-After": "3"}, {"error": {"code": "TooManyRequests"}}
+            return 200, {}, {"value": []}
+        with tempfile.TemporaryDirectory() as directory:
+            result = GraphRunner(transport, sleeper=delays.append).collect(
+                {"id": "x", "name": "X", "profile": "T", "api": "v1.0", "method": "GET", "path": "/x", "pagination": True},
+                Path(directory) / "x.json", {"start": "s", "end": "e"})
+        self.assertEqual("empty", result.status)
+        self.assertEqual([3.0], delays)
+
     def test_unauthorised_and_capability_are_distinct(self):
         for status, expected in ((403, "unauthorised"), (404, "tenant_unavailable")):
             def transport(method, url, body, status=status):

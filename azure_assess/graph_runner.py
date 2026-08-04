@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -63,7 +64,12 @@ def utc_interval(days: int, now: Optional[datetime] = None) -> Tuple[str, str]:
 
 
 def endpoint_url(endpoint: Mapping[str, Any], context: Mapping[str, Any]) -> str:
-    path = str(endpoint["path"]).format(**context)
+    resolved_context = dict(context)
+    if resolved_context.get("parent_id") is not None:
+        resolved_context["parent_id"] = urllib.parse.quote(
+            str(resolved_context["parent_id"]), safe=""
+        )
+    path = str(endpoint["path"]).format(**resolved_context)
     if path.startswith("https://"):
         return path
     return f"{GRAPH_ROOT}/{endpoint['api']}{path}"
