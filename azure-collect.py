@@ -710,7 +710,11 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "VM Scale Sets", "cli_command": "az vmss list", "needs_pagination": False},
     {"name": "Web Apps", "cli_command": "az webapp list", "needs_pagination": False},
     {"name": "Kubernetes Environments", "cli_command": "az resource list --resource-type Microsoft.Web/kubeEnvironments", "needs_pagination": False},
-    {"name": "Management Groups", "cli_command": "az account management-group list", "needs_pagination": False},
+    {
+        "name": "Management Groups",
+        "cli_command": "az account management-group list --no-register",
+        "needs_pagination": False,
+    },
     {"name": "Workspaces", "cli_command": "az monitor account list", "needs_pagination": False},
     {"name": "Action Groups", "cli_command": "az monitor action-group list", "needs_pagination": False},
     {"name": "Data Collection", "cli_command": "az monitor data-collection endpoint list", "needs_pagination": False},
@@ -964,6 +968,14 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "required_source_values": {
             "az_network_application-gateway_list": {
                 "sku.tier": {"WAF", "WAF_v2"},
+            }
+        },
+        # Policy-backed gateways have no inline WAF configuration. Calling
+        # `waf-config show` for those gateways currently crashes Azure CLI;
+        # their configuration is collected by the WAF policy inventory.
+        "required_source_non_null": {
+            "az_network_application-gateway_list": {
+                "webApplicationFirewallConfiguration",
             }
         },
     },
@@ -3444,6 +3456,7 @@ def filter_source_records_for_endpoint(endpoint, source, records):
     required_source_types = endpoint.get("required_source_types", {})
     allowed_types = required_source_types.get(source)
     required_values = endpoint.get("required_source_values", {}).get(source, {})
+    required_non_null = endpoint.get("required_source_non_null", {}).get(source, set())
 
     if allowed_types:
         allowed_types = {resource_type.lower() for resource_type in allowed_types}
@@ -3470,6 +3483,8 @@ def filter_source_records_for_endpoint(endpoint, source, records):
             str(nested_value(item, field_path) or "").strip().lower() not in allowed_values
             for field_path, allowed_values in normalised_required_values.items()
         ):
+            continue
+        if any(nested_value(item, field_path) is None for field_path in required_non_null):
             continue
         filtered_records.append(item)
     return filtered_records

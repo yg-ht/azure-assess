@@ -397,6 +397,52 @@ class CorrectedAzureEndpointTests(unittest.TestCase):
             endpoints["Application Gateway WAF Config"]["required_source_values"],
             {"az_network_application-gateway_list": {"sku.tier": {"WAF", "WAF_v2"}}},
         )
+        self.assertEqual(
+            endpoints["Application Gateway WAF Config"]["required_source_non_null"],
+            {"az_network_application-gateway_list": {"webApplicationFirewallConfiguration"}},
+        )
+
+    def test_policy_backed_application_gateway_skips_inline_waf_collection(self):
+        endpoint = next(
+            item for item in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if item["name"] == "Application Gateway WAF Config"
+        )
+        records = [
+            {
+                "name": "inline",
+                "sku": {"tier": "WAF_v2"},
+                "webApplicationFirewallConfiguration": {"enabled": True},
+            },
+            {
+                "name": "policy-backed",
+                "sku": {"tier": "WAF_v2"},
+                "webApplicationFirewallConfiguration": None,
+                "firewallPolicy": {
+                    "id": "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies/policy"
+                },
+            },
+        ]
+
+        self.assertEqual(
+            ["inline"],
+            [
+                item["name"]
+                for item in azure_collect.filter_source_records_for_endpoint(
+                    endpoint, "az_network_application-gateway_list", records
+                )
+            ],
+        )
+
+    def test_management_groups_collection_never_registers_the_provider(self):
+        endpoint = next(
+            item for item in azure_collect.AZURE_CLI_ENDPOINTS
+            if item["name"] == "Management Groups"
+        )
+
+        self.assertEqual(
+            "az account management-group list --no-register",
+            endpoint["cli_command"],
+        )
 
     def test_diagnostic_settings_follow_successful_category_discovery(self):
         endpoints = azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
