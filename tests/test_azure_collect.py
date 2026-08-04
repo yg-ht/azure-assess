@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -126,7 +127,7 @@ class AuthenticationContextTests(unittest.TestCase):
         self.assertEqual(azure_collect.AUTH_CONFIG["subscription_id"], "sub-active")
         self.assertEqual(
             [call.args[0] for call in validate_token.call_args_list],
-            ["https://management.azure.com/", "https://graph.microsoft.com/"],
+            ["https://management.azure.com/"],
         )
 
     def test_existing_mode_ignores_configured_service_principal_credentials(self):
@@ -273,6 +274,59 @@ class ServicePrincipalAuthenticationTests(unittest.TestCase):
                         )
         self.assertEqual(1, len(prepared_paths))
         self.assertFalse(prepared_paths[0].exists())
+
+
+class SplitGraphAuthenticationTests(unittest.TestCase):
+    def test_graph_certificate_login_uses_isolated_temporary_cli_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            certificate = Path(directory) / "collector.pem"
+            certificate.write_text(
+                "-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n"
+                "-----BEGIN CERTIFICATE-----\ncert\n-----END CERTIFICATE-----\n",
+                encoding="utf-8",
+            )
+            calls = []
+
+            def runner(command, **kwargs):
+                config_dir = Path(kwargs["env"]["AZURE_CONFIG_DIR"])
+                self.assertTrue(config_dir.is_dir())
+                self.assertNotEqual(
+                    kwargs["env"].get("AZURE_CONFIG_DIR"),
+                    os.environ.get("AZURE_CONFIG_DIR"),
+                )
+                calls.append((command, config_dir))
+                if command[1] == "login":
+                    return mock.Mock(returncode=0, stdout="", stderr="")
+                return mock.Mock(
+                    returncode=0,
+                    stdout=json.dumps({"accessToken": "graph-token"}),
+                    stderr="",
+                )
+
+            token = azure_collect.acquire_isolated_graph_token(
+                {
+                    "graph_client_id": "graph-client",
+                    "graph_tenant_id": "tenant-one",
+                    "graph_client_certificate": str(certificate),
+                    "graph_client_certificate_password": None,
+                },
+                command_runner=runner,
+            )
+
+        self.assertEqual("graph-token", token)
+        self.assertEqual(2, len(calls))
+        self.assertIn("--allow-no-subscriptions", calls[0][0])
+        self.assertEqual("https://graph.microsoft.com/", calls[1][0][4])
+        self.assertFalse(calls[0][1].exists())
+
+    def test_partial_graph_certificate_configuration_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "graph-client-certificate"):
+            azure_collect.acquire_isolated_graph_token(
+                {
+                    "graph_client_id": "graph-client",
+                    "graph_tenant_id": "tenant-one",
+                }
+            )
 
 
 class DefenderAssessmentsEndpointTests(unittest.TestCase):
@@ -3305,6 +3359,51 @@ class CollectDataWithParamsTests(unittest.TestCase):
 
 
 class PermissionBaselineTests(unittest.TestCase):
+    def test_separate_graph_identity_does_not_require_arm_user_directory_role(self):
+        original_token = azure_collect.GRAPH_ACCESS_TOKEN
+        original_checked = azure_collect.PERMISSION_BASELINE_CHECKED
+        original_config = azure_collect.AUTH_CONFIG
+        azure_collect.GRAPH_ACCESS_TOKEN = "graph-token"
+        azure_collect.PERMISSION_BASELINE_CHECKED = False
+        azure_collect.AUTH_CONFIG = {
+            "subscription_id": "subscription-1",
+            "continue_with_missing_permissions": False,
+        }
+        try:
+            with mock.patch.object(
+                azure_collect,
+                "get_current_principal_context",
+                return_value=({
+                    "object_id": "arm-user",
+                    "subscription_id": "subscription-1",
+                    "principal_name": "user@example.test",
+                    "principal_type": "user",
+                }, None),
+            ), mock.patch.object(
+                azure_collect, "get_transitive_group_ids", return_value=(set(), None)
+            ), mock.patch.object(
+                azure_collect, "get_directory_role_names_for_principal_ids"
+            ) as directory_roles, mock.patch.object(
+                azure_collect,
+                "get_subscription_role_names_for_principal_ids",
+                return_value=({"Reader", "Security Reader"}, []),
+            ), mock.patch.object(
+                azure_collect,
+                "check_custom_role_permissions",
+                return_value={
+                    "present_custom_roles": ["YGHT Azure Assessment Collector"],
+                    "missing_actions": [],
+                    "missing_data_actions": [],
+                    "errors": [],
+                },
+            ):
+                azure_collect.ensure_required_permission_baseline()
+            directory_roles.assert_not_called()
+        finally:
+            azure_collect.GRAPH_ACCESS_TOKEN = original_token
+            azure_collect.PERMISSION_BASELINE_CHECKED = original_checked
+            azure_collect.AUTH_CONFIG = original_config
+
     def test_directory_role_names_include_direct_and_group_assignments(self):
         assignments = [
             {

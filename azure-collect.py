@@ -86,6 +86,8 @@ from azure_assess.graph_endpoints import GRAPH_ENDPOINTS
 from azure_assess.graph_runner import GraphError, GraphRunner, GraphTransport, utc_interval
 
 AUTH_CONFIG = {}
+GRAPH_ACCESS_TOKEN = None
+GRAPH_AUTH_ERROR = None
 DEBUG = False
 MAX_DEBUG_STDOUT_CHARS = 8000
 DEFAULT_MAX_WORKERS = 4
@@ -1540,6 +1542,38 @@ def parse_arguments():
         )
     )
     parser.add_argument(
+        "--graph-client-id",
+        type=str,
+        help=(
+            "Application client ID for isolated Microsoft Graph certificate authentication. "
+            "Defaults to AZURE_GRAPH_CLIENT_ID."
+        )
+    )
+    parser.add_argument(
+        "--graph-tenant-id",
+        type=str,
+        help=(
+            "Tenant ID for isolated Microsoft Graph certificate authentication. "
+            "Defaults to AZURE_GRAPH_TENANT_ID and then the primary tenant ID."
+        )
+    )
+    parser.add_argument(
+        "--graph-client-certificate",
+        type=str,
+        help=(
+            "Combined PEM private-key and certificate path used only for Microsoft Graph. "
+            "Defaults to AZURE_GRAPH_CLIENT_CERTIFICATE_PATH."
+        )
+    )
+    parser.add_argument(
+        "--graph-client-certificate-password",
+        type=str,
+        help=(
+            "Password used locally to unlock the Graph certificate PEM. "
+            "Defaults to AZURE_GRAPH_CLIENT_CERTIFICATE_PASSWORD."
+        )
+    )
+    parser.add_argument(
         "--continue-with-missing-permissions",
         action="store_true",
         help=(
@@ -1627,9 +1661,10 @@ def get_argument_or_env(argument_value, env_name):
     return os.getenv(env_name)
 
 def build_auth_config(args):
+    tenant_id = get_argument_or_env(args.tenant_id, "AZURE_TENANT_ID")
     return {
         "auth_method": args.auth_method,
-        "tenant_id": get_argument_or_env(args.tenant_id, "AZURE_TENANT_ID"),
+        "tenant_id": tenant_id,
         "subscription_id": get_argument_or_env(args.subscription_id, "AZURE_SUBSCRIPTION_ID"),
         "client_id": get_argument_or_env(args.client_id, "AZURE_CLIENT_ID"),
         "client_secret": get_argument_or_env(args.client_secret, "AZURE_CLIENT_SECRET"),
@@ -1637,6 +1672,20 @@ def build_auth_config(args):
         "client_certificate_password": get_argument_or_env(
             args.client_certificate_password,
             "AZURE_CLIENT_CERTIFICATE_PASSWORD"
+        ),
+        "graph_client_id": get_argument_or_env(
+            args.graph_client_id, "AZURE_GRAPH_CLIENT_ID"
+        ),
+        "graph_tenant_id": (
+            get_argument_or_env(args.graph_tenant_id, "AZURE_GRAPH_TENANT_ID")
+            or tenant_id
+        ),
+        "graph_client_certificate": get_argument_or_env(
+            args.graph_client_certificate, "AZURE_GRAPH_CLIENT_CERTIFICATE_PATH"
+        ),
+        "graph_client_certificate_password": get_argument_or_env(
+            args.graph_client_certificate_password,
+            "AZURE_GRAPH_CLIENT_CERTIFICATE_PASSWORD",
         ),
         "continue_with_missing_permissions": args.continue_with_missing_permissions,
     }
@@ -1753,6 +1802,83 @@ def prepared_client_certificate(value, password=None):
             temporary_path.unlink()
         except FileNotFoundError:
             pass
+
+
+def acquire_isolated_graph_token(auth_config, command_runner=subprocess.run):
+    """Obtain a Graph app token without replacing the primary Azure CLI session."""
+    client_id = auth_config.get("graph_client_id")
+    tenant_id = auth_config.get("graph_tenant_id")
+    certificate = auth_config.get("graph_client_certificate")
+    password = auth_config.get("graph_client_certificate_password")
+    supplied = any((client_id, certificate, password))
+    if not supplied:
+        return None
+    if not tenant_id:
+        raise ValueError(
+            "Graph certificate auth requires --graph-tenant-id, --tenant-id, "
+            "AZURE_GRAPH_TENANT_ID or AZURE_TENANT_ID"
+        )
+    if not client_id:
+        raise ValueError(
+            "Graph certificate auth requires --graph-client-id or AZURE_GRAPH_CLIENT_ID"
+        )
+    if not certificate:
+        raise ValueError(
+            "Graph certificate auth requires --graph-client-certificate or "
+            "AZURE_GRAPH_CLIENT_CERTIFICATE_PATH"
+        )
+
+    with tempfile.TemporaryDirectory(prefix="azure-assess-graph-cli-") as directory:
+        os.chmod(directory, 0o700)
+        environment = os.environ.copy()
+        environment["AZURE_CONFIG_DIR"] = directory
+        environment["AZURE_CORE_COLLECT_TELEMETRY"] = "no"
+        with prepared_client_certificate(certificate, password) as prepared:
+            login = command_runner(
+                [
+                    "az", "login", "--service-principal",
+                    "--username", str(client_id),
+                    "--certificate", str(prepared),
+                    "--tenant", str(tenant_id),
+                    "--allow-no-subscriptions",
+                    "--output", "none",
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if login.returncode != 0:
+                diagnostic = (login.stderr or login.stdout or "Azure CLI login failed").strip()
+                raise RuntimeError(
+                    "Isolated Microsoft Graph certificate login failed: "
+                    + diagnostic[:2000]
+                )
+            token_result = command_runner(
+                [
+                    "az", "account", "get-access-token",
+                    "--resource", "https://graph.microsoft.com/",
+                    "--output", "json",
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        try:
+            payload = json.loads(token_result.stdout or "{}")
+        except ValueError as exc:
+            raise RuntimeError(
+                "Isolated Azure CLI returned malformed Graph authentication data"
+            ) from exc
+        token = payload.get("accessToken")
+        if token_result.returncode != 0 or not token:
+            diagnostic = (
+                token_result.stderr
+                or "Isolated Azure CLI did not return a Microsoft Graph access token"
+            ).strip()
+            raise RuntimeError(diagnostic[:2000])
+        return token
 
 
 def shell_quote(value):
@@ -2053,10 +2179,10 @@ def validate_auth_session(subscription_id=None):
         )
         return False
 
-    for resource in ("https://management.azure.com/", "https://graph.microsoft.com/"):
-        if not validate_access_token(resource):
-            print(f"[!] Azure CLI could not obtain an access token for {resource}")
-            return False
+    resource = "https://management.azure.com/"
+    if not validate_access_token(resource):
+        print(f"[!] Azure CLI could not obtain an access token for {resource}")
+        return False
 
     AUTH_CONFIG["tenant_id"] = account.get("tenantId") or AUTH_CONFIG.get("tenant_id")
     AUTH_CONFIG["subscription_id"] = account.get("id") or AUTH_CONFIG.get("subscription_id")
@@ -2087,12 +2213,16 @@ def run_json_command(command):
 
 def graph_rest_json(url):
     """Run a diagnostic Graph read through the native Graph transport."""
-    token_response, token_error = run_json_command(
-        "az account get-access-token --resource https://graph.microsoft.com/ --output json"
-    )
-    if token_error:
-        return None, token_error
-    token = token_response.get("accessToken") if isinstance(token_response, dict) else None
+    if GRAPH_AUTH_ERROR:
+        return None, GRAPH_AUTH_ERROR
+    token = GRAPH_ACCESS_TOKEN
+    if not token:
+        token_response, token_error = run_json_command(
+            "az account get-access-token --resource https://graph.microsoft.com/ --output json"
+        )
+        if token_error:
+            return None, token_error
+        token = token_response.get("accessToken") if isinstance(token_response, dict) else None
     if not token:
         return None, "Azure CLI did not return a Microsoft Graph access token"
     try:
@@ -2125,7 +2255,7 @@ def get_current_principal_context(subscription_id=None):
         return None, account_error
 
     token_response, token_error = run_json_command(
-        "az account get-access-token --resource https://graph.microsoft.com/ --output json"
+        "az account get-access-token --resource https://management.azure.com/ --output json"
     )
     if token_error:
         return None, token_error
@@ -2137,7 +2267,7 @@ def get_current_principal_context(subscription_id=None):
 
     object_id = claims.get("oid")
     if not object_id:
-        return None, "Could not determine current principal object ID from Graph token claim 'oid'."
+        return None, "Could not determine current principal object ID from ARM token claim 'oid'."
 
     user_info = account.get("user") or {}
 
@@ -2376,7 +2506,7 @@ def collect_arm_access_verification(principal_object_id):
     return record
 
 
-def collect_automatic_access_verification():
+def collect_automatic_access_verification(graph_token=None, graph_auth_error=None):
     """Collect non-secret ARM and Graph access evidence without prompting."""
 
     graph_record = {
@@ -2386,26 +2516,31 @@ def collect_automatic_access_verification():
         "token_type": "unknown",
         "granted_permissions": [],
     }
-    token_response, token_error = run_json_command(
-        "az account get-access-token "
-        "--resource https://graph.microsoft.com/ "
-        "--output json"
-    )
-    claims = {}
+    token_response = None
+    token_error = graph_auth_error
+    if graph_token:
+        token_response = {"accessToken": graph_token}
+    elif not token_error:
+        token_response, token_error = run_json_command(
+            "az account get-access-token "
+            "--resource https://graph.microsoft.com/ "
+            "--output json"
+        )
+    graph_claims = {}
     if not token_error:
         try:
-            claims = decode_jwt_payload(token_response["accessToken"])
+            graph_claims = decode_jwt_payload(token_response["accessToken"])
         except (KeyError, ValueError):
-            claims = {}
+            graph_claims = {}
         roles = sorted(
-            {str(item) for item in claims.get("roles", []) if item}
+            {str(item) for item in graph_claims.get("roles", []) if item}
         )
         scopes = sorted(
-            {item for item in str(claims.get("scp") or "").split() if item}
+            {item for item in str(graph_claims.get("scp") or "").split() if item}
         )
         token_type = (
             "application"
-            if claims.get("idtyp") == "app" or (roles and not scopes)
+            if graph_claims.get("idtyp") == "app" or (roles and not scopes)
             else "delegated" if scopes else "unknown"
         )
         granted_permissions = roles if token_type == "application" else scopes
@@ -2432,7 +2567,18 @@ def collect_automatic_access_verification():
             "Could not inspect Microsoft Graph permission claims for visibility verification"
         )
 
-    arm_record = collect_arm_access_verification(claims.get("oid"))
+    arm_token, arm_token_error = run_json_command(
+        "az account get-access-token "
+        "--resource https://management.azure.com/ "
+        "--output json"
+    )
+    arm_claims = {}
+    if not arm_token_error:
+        try:
+            arm_claims = decode_jwt_payload(arm_token["accessToken"])
+        except (KeyError, ValueError):
+            arm_claims = {}
+    arm_record = collect_arm_access_verification(arm_claims.get("oid"))
     if (
         arm_record["status"] != "access_verified"
         and COLLECTION_MANIFEST is not None
@@ -2889,8 +3035,18 @@ def ensure_required_permission_baseline():
     group_ids, group_membership_error = get_transitive_group_ids(principal["object_id"])
     principal_ids.update(group_ids)
 
-    directory_role_names, directory_role_errors = get_directory_role_names_for_principal_ids(principal_ids)
-    missing_directory_roles = sorted(REQUIRED_DIRECTORY_ROLES - directory_role_names)
+    if GRAPH_ACCESS_TOKEN:
+        # Graph uses the separately permissioned application. The primary ARM
+        # principal does not also need a directory role merely for collection.
+        directory_role_errors = []
+        missing_directory_roles = []
+    else:
+        directory_role_names, directory_role_errors = (
+            get_directory_role_names_for_principal_ids(principal_ids)
+        )
+        missing_directory_roles = sorted(
+            REQUIRED_DIRECTORY_ROLES - directory_role_names
+        )
 
     subscription_role_names, subscription_role_errors = get_subscription_role_names_for_principal_ids(
         principal["subscription_id"],
@@ -4211,7 +4367,8 @@ def filter_endpoints(keyword=None, endpoints=None, allow_empty=False):
 
 def execute_collection(args, max_workers):
     """Run the selected collection workflow and return whether it completed cleanly."""
-    ensure_az_login(skip_permission_baseline=args.collect_managed_role_definitions_cache)
+    global GRAPH_ACCESS_TOKEN, GRAPH_AUTH_ERROR
+    ensure_az_login(skip_permission_baseline=True)
     if COLLECTION_MANIFEST is not None:
         COLLECTION_MANIFEST.update_context(
             {
@@ -4237,8 +4394,25 @@ def execute_collection(args, max_workers):
             print_timing_summary()
         return True
 
+    GRAPH_ACCESS_TOKEN = None
+    GRAPH_AUTH_ERROR = None
+    try:
+        GRAPH_ACCESS_TOKEN = acquire_isolated_graph_token(AUTH_CONFIG)
+    except (RuntimeError, ValueError) as exc:
+        GRAPH_AUTH_ERROR = str(exc)
+        print(f"[!] Microsoft Graph certificate authentication failed: {exc}")
+        if COLLECTION_MANIFEST is not None:
+            COLLECTION_MANIFEST.add_limitation(
+                "The separately configured Microsoft Graph certificate identity could not authenticate"
+            )
+
+    ensure_required_permission_baseline()
+
     print("[*] Verifying collection visibility without additional user input...")
-    access_verification = collect_automatic_access_verification()
+    access_verification = collect_automatic_access_verification(
+        graph_token=GRAPH_ACCESS_TOKEN,
+        graph_auth_error=GRAPH_AUTH_ERROR,
+    )
     print(
         "[~] Azure subscription read visibility: "
         f"{access_verification['arm']['status']}"
@@ -4263,6 +4437,8 @@ def execute_collection(args, max_workers):
         output_dir=OUTPUT_DIR, run_id=START_TIMESTAMP,
         lookback_days=args.graph_lookback_days, endpoint_filter=args.endpoint,
         manifest=COLLECTION_MANIFEST,
+        token=GRAPH_ACCESS_TOKEN,
+        authentication_error=GRAPH_AUTH_ERROR,
     )
 
     base_endpoints = []
@@ -4367,6 +4543,11 @@ if __name__ == "__main__":
         output_dir=OUTPUT_DIR,
         context={
             "auth_method": AUTH_CONFIG.get("auth_method"),
+            "graph_auth_method": (
+                "certificate"
+                if AUTH_CONFIG.get("graph_client_certificate")
+                else "primary_azure_cli"
+            ),
             "tenant_id": AUTH_CONFIG.get("tenant_id"),
             "subscription_id": AUTH_CONFIG.get("subscription_id"),
         },
@@ -4425,6 +4606,8 @@ if __name__ == "__main__":
             print(f"[+] Saved collection manifest: {manifest_path}")
         except (OSError, TypeError, ValueError) as exc:
             print(f"[ERROR] Failed to save collection manifest: {exc}")
+        GRAPH_ACCESS_TOKEN = None
+        GRAPH_AUTH_ERROR = None
 
     if not collection_successful or not manifest_written:
         exit(1)

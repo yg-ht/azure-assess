@@ -698,7 +698,9 @@ class CollectionManifestIntegrationTests(unittest.TestCase):
                     "roles": ["Policy.Read.All", "Directory.Read.All"],
                 },
             ):
-                verification = azure_collect.collect_automatic_access_verification()
+                verification = azure_collect.collect_automatic_access_verification(
+                    graph_token="header.payload.signature"
+                )
 
         self.assertEqual(verification["arm"]["status"], "access_verified")
         self.assertTrue(verification["arm"]["broad_read_granted"])

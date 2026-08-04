@@ -166,6 +166,7 @@ def acquire_graph_token(command_runner=subprocess.run) -> str:
 def collect_registered_graph(
     *, output_dir: Path, run_id: str, lookback_days: int, endpoint_filter: Optional[str],
     manifest, token: Optional[str] = None, runner: Optional[GraphRunner] = None,
+    authentication_error: Optional[str] = None,
 ) -> bool:
     """Collect selected endpoints and attach page/query/parent provenance."""
     endpoints = selected_graph_endpoints(endpoint_filter)
@@ -177,6 +178,8 @@ def collect_registered_graph(
     start, end = utc_interval(lookback_days)
     granted_permissions = token_permissions(token) if token else None
     try:
+        if authentication_error:
+            raise RuntimeError(authentication_error)
         if runner is not None:
             graph_runner = runner
         else:

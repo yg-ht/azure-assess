@@ -103,9 +103,9 @@ Transfer only `collector-public.cer` to the customer administrator. The administ
   -AzureSubscriptionIds "66665555-7777-4444-8888-555999666000"
 ```
 
-After the Windows administrator returns the generated connection details, choose exactly one collector authentication mode. The modes are mutually exclusive for a collection run; there is one Azure CLI account context, and Azure Resource Manager and Microsoft Graph calls both use tokens obtained from that context.
+After the Windows administrator returns the generated connection details, choose the primary Azure authentication mode and, when required, configure the certificate identity separately for Microsoft Graph. Azure Resource Manager and Microsoft Graph can use different identities in the same collection run.
 
-`--auth-method existing` is the normal, non-invasive mode. It reuses whichever user, managed identity, client-secret, or certificate identity is already signed in to Azure CLI. The collector does not log in again and ignores the tool-managed service-principal credential variables. That existing identity must itself have the required Azure rights and Microsoft Graph permissions; permissions assigned by the setup helper to a different application do not transfer to the signed-in identity.
+`--auth-method` controls the primary Azure Resource Manager session. `existing` reuses whichever user, managed identity, client-secret, or certificate identity is already signed in to Azure CLI; `device-code`, `browser`, `managed-identity`, and `service-principal` can establish that primary session. If no separate Graph certificate is configured, Microsoft Graph also uses the primary session for backwards compatibility, so that identity must have both sets of rights.
 
 To use the normal existing-session mode, authenticate before starting the collector:
 
@@ -120,9 +120,28 @@ az login --service-principal \
 pipenv run python azure-collect.py --auth-method existing
 ```
 
-Current Azure CLI accepts an unencrypted combined PEM for this manual certificate-login command and has no certificate-password option. Protect that file with mode `0600` and remove any short-lived decrypted copy after login. To keep the stored combined PEM encrypted, use the tool-managed certificate workflow below instead.
+Current Azure CLI accepts an unencrypted combined PEM for this manual certificate-login command and has no certificate-password option. Protect that file with mode `0600` and remove any short-lived decrypted copy after login.
 
-`--auth-method service-principal` is the tool-managed alternative. It starts a new Azure CLI service-principal session and therefore must not be combined with `--auth-method existing`. The Azure CLI certificate command requires a combined PEM containing the private key followed by the public certificate. For tool-managed login with the encrypted combined PEM created above, configure the tenant ID, application client ID, subscription ID, combined PEM path and certificate passphrase:
+To use the certificate application only for Microsoft Graph while Azure uses device-code authentication, configure the separate Graph credential variables. The collector authenticates this identity in a mode-`0700` temporary Azure CLI configuration directory, obtains the Graph token, and deletes the isolated CLI state immediately. It never replaces the primary Azure CLI account context:
+
+```bash
+export AZURE_TENANT_ID="<tenant-id>"
+export AZURE_SUBSCRIPTION_ID="<subscription-id>"
+export AZURE_GRAPH_CLIENT_ID="<application-client-id>"
+export AZURE_GRAPH_CLIENT_CERTIFICATE_PATH="$PWD/azure-assess-certificate/collector-auth.pem"
+
+read -rsp "Certificate passphrase: " AZURE_GRAPH_CLIENT_CERTIFICATE_PASSWORD
+echo
+export AZURE_GRAPH_CLIENT_CERTIFICATE_PASSWORD
+
+pipenv run python azure-collect.py --auth-method device-code
+
+unset AZURE_GRAPH_CLIENT_CERTIFICATE_PASSWORD
+```
+
+The equivalent command-line parameters are `--graph-client-id`, `--graph-tenant-id`, `--graph-client-certificate`, and `--graph-client-certificate-password`. Prefer the environment variable for the password so it is not exposed in process arguments.
+
+The certificate application can instead be used as the primary identity for both Azure and Graph. For this single-identity workflow, configure the existing service-principal variables:
 
 ```bash
 export AZURE_TENANT_ID="<tenant-id>"
@@ -139,7 +158,7 @@ pipenv run python azure-collect.py --auth-method service-principal
 unset AZURE_CLIENT_CERTIFICATE_PASSWORD
 ```
 
-The collector unlocks an encrypted PEM through OpenSSL, writes the decrypted key and certificate to a mode-`0600` temporary PEM, supplies that path to Azure CLI's `--certificate` option, and removes the temporary file immediately after `az login` completes. The passphrase is passed to OpenSSL through standard input and is not forwarded to Azure CLI. An unencrypted combined PEM can be used by omitting `AZURE_CLIENT_CERTIFICATE_PASSWORD`; Azure CLI then receives the original PEM path directly.
+For either certificate workflow, the collector unlocks an encrypted PEM through OpenSSL, writes the decrypted key and certificate to a mode-`0600` temporary PEM, supplies that path to Azure CLI's `--certificate` option, and removes the temporary file immediately after login completes. The passphrase is passed to OpenSSL through standard input and is not forwarded to Azure CLI. An unencrypted combined PEM can be used by omitting the corresponding certificate-password variable.
 
 Client-secret service-principal login remains available as a distinct alternative:
 
@@ -157,7 +176,7 @@ pipenv run python azure-collect.py --auth-method service-principal
 unset AZURE_CLIENT_SECRET
 ```
 
-Do not configure both `AZURE_CLIENT_SECRET` and `AZURE_CLIENT_CERTIFICATE_PATH` for service-principal mode. The collector rejects this ambiguous combination instead of silently selecting one credential. Credential variables do not trigger a login when `--auth-method existing` is selected. The administrator sessions used by `Azure-Graph-Collect-App.ps1` to create permissions and role assignments are provisioning sessions only; they are separate from either collector authentication mode.
+Do not configure both `AZURE_CLIENT_SECRET` and `AZURE_CLIENT_CERTIFICATE_PATH` for the primary service-principal identity. The separate `AZURE_GRAPH_*` certificate variables are not a conflicting primary credential and may be used with any primary `--auth-method`. The administrator sessions used by `Azure-Graph-Collect-App.ps1` to create permissions and role assignments are provisioning sessions only; they are separate from collector authentication.
 
 A customer certificate-authority-issued certificate may be used instead when required by organisational policy.
 
@@ -236,6 +255,10 @@ Parameters:
 - `--client-secret`: service principal client secret. Defaults to `AZURE_CLIENT_SECRET`
 - `--client-certificate`: combined PEM path for tool-managed service-principal certificate authentication. The PEM must contain the private key followed by the public certificate. Defaults to `AZURE_CLIENT_CERTIFICATE_PATH`
 - `--client-certificate-password`: optional password used locally to unlock an encrypted combined PEM through OpenSSL. Prefer `AZURE_CLIENT_CERTIFICATE_PASSWORD` so the value is not exposed in command-line arguments
+- `--graph-client-id`: client ID for a certificate-authenticated identity used only for Microsoft Graph. Defaults to `AZURE_GRAPH_CLIENT_ID`
+- `--graph-tenant-id`: tenant for the separate Graph identity. Defaults to `AZURE_GRAPH_TENANT_ID`, then the primary tenant
+- `--graph-client-certificate`: combined PEM for the separate Graph identity. Defaults to `AZURE_GRAPH_CLIENT_CERTIFICATE_PATH`
+- `--graph-client-certificate-password`: optional local PEM password. Defaults to `AZURE_GRAPH_CLIENT_CERTIFICATE_PASSWORD`
 
 Notes:
 
