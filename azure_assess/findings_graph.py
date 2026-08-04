@@ -82,15 +82,19 @@ def _guidance(finding: dict, title: str) -> None:
 
 def _emit(result, unsupported, title: str, severity: str,
           inventories: Iterable[dict], observations: list, reason: str,
-          absence: bool = False):
+          absence: bool = False, positive_supported: Optional[bool] = None,
+          complete_supported: Optional[bool] = None):
     inventories = list(inventories)
-    positive_supported = observations and (
-        all(item["complete"] for item in inventories)
-        if absence else any(item["positive_usable"] for item in inventories)
-    )
+    if positive_supported is None:
+        positive_supported = bool(observations) and (
+            all(item["complete"] for item in inventories)
+            if absence else any(item["positive_usable"] for item in inventories)
+        )
+    if complete_supported is None:
+        complete_supported = all(item["complete"] for item in inventories)
     if positive_supported:
         finding = result(title, severity, reason, observations)
-    elif all(item["complete"] for item in inventories):
+    elif complete_supported:
         finding = result(title, severity, reason, [])
     else:
         states = ", ".join(
@@ -181,16 +185,65 @@ def _explicitly_disabled_security_control(value: Any) -> bool:
     return False
 
 
+def _settings_catalog_control_disabled(record: Mapping[str, Any]) -> bool:
+    """Recognise explicit disabled values for a narrow set of core controls."""
+    instances = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            if value.get("settingDefinitionId"):
+                instances.append(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(record)
+    control_fragments = {
+        "allowrealtimemonitoring",
+        "enablefirewall",
+        "requiredeviceencryption",
+    }
+    disabled_values = {"0", "disabled", "false"}
+    for instance in instances:
+        definition = "".join(
+            character for character in str(instance.get("settingDefinitionId"))
+            if character.isalnum()
+        ).casefold()
+        if not any(fragment in definition for fragment in control_fragments):
+            continue
+        for value_key in ("choiceSettingValue", "simpleSettingValue"):
+            setting_value = instance.get(value_key) or {}
+            raw_value = (
+                setting_value.get("value")
+                if isinstance(setting_value, Mapping) else None
+            )
+            normalised = str(
+                raw_value if raw_value is not None else ""
+            ).strip().casefold()
+            if (
+                normalised in disabled_values
+                or normalised.rsplit("_", 1)[-1] in disabled_values
+            ):
+                return True
+    return False
+
+
 def evaluate_graph_findings(catalog, result, unsupported):
     if not graph_collection_present(catalog):
         return [], {}
 
     findings, sources = [], {}
 
-    def add(title, severity, inventories, observations, reason, absence=False):
+    def add(
+        title, severity, inventories, observations, reason, absence=False,
+        positive_supported=None, complete_supported=None,
+    ):
         finding, files = _emit(
             result, unsupported, title, severity, inventories, observations,
-            reason, absence=absence,
+            reason, absence=absence, positive_supported=positive_supported,
+            complete_supported=complete_supported,
         )
         findings.append(finding)
         sources[title] = files
@@ -427,22 +480,66 @@ def evaluate_graph_findings(catalog, result, unsupported):
 
     device_configurations = _inventory(catalog, "device_configurations")
     settings_catalog = _inventory(catalog, "settings_catalog")
-    weakened_policies = [
-        record
-        for record in device_configurations["records"] + settings_catalog["records"]
+    settings_catalog_settings = _inventory(catalog, "settings_catalog_settings")
+    weakened_legacy_policies = [
+        record for record in device_configurations["records"]
         if _explicitly_disabled_security_control(record)
     ]
+    weakened_catalogue_settings = [
+        record for record in settings_catalog_settings["records"]
+        if _settings_catalog_control_disabled(record)
+    ]
+    weakened_policies = weakened_legacy_policies + weakened_catalogue_settings
+    settings_inventories = [device_configurations, settings_catalog]
+    if settings_catalog["records"]:
+        settings_inventories.append(settings_catalog_settings)
+    weakened_positive_supported = bool(weakened_policies) and (
+        (
+            bool(weakened_legacy_policies)
+            and device_configurations["positive_usable"]
+        )
+        or (
+            bool(weakened_catalogue_settings)
+            and settings_catalog_settings["positive_usable"]
+        )
+    )
+    weakened_complete_supported = (
+        device_configurations["complete"]
+        and settings_catalog["complete"]
+        and (
+            not settings_catalog["records"]
+            or settings_catalog_settings["complete"]
+        )
+    )
     add("Intune policy explicitly disables a core endpoint security control", "High",
-        [device_configurations, settings_catalog], weakened_policies,
-        "An Intune policy explicitly disabled firewall, antivirus, real-time protection or encryption.")
+        settings_inventories,
+        weakened_policies,
+        "An Intune policy explicitly disabled firewall, antivirus, real-time protection or encryption.",
+        positive_supported=weakened_positive_supported,
+        complete_supported=weakened_complete_supported)
 
     security_connectors = _inventory(catalog, "security_connectors")
+    connector_enable_fields = (
+        "androidEnabled", "iosEnabled", "windowsEnabled",
+        "androidMobileApplicationManagementEnabled",
+        "iosMobileApplicationManagementEnabled",
+    )
     unhealthy_connectors = [
         record for record in security_connectors["records"]
         if _truth(record, "enabled", "isEnabled") is False
-        or _state(record, "status", "connectionStatus", "healthStatus") in {
-            "disabled", "error", "failed", "unavailable", "unhealthy",
+        or _state(
+            record, "partnerState", "status", "connectionStatus", "healthStatus"
+        ) in {
+            "disabled", "error", "failed", "notsetup",
+            "unavailable", "unhealthy", "unresponsive",
         }
+        or (
+            (enable_states := [
+                _truth(record, field) for field in connector_enable_fields
+                if _state(record, field)
+            ])
+            and all(state is False for state in enable_states)
+        )
     ]
     add("Intune security-service connectors are disabled or unhealthy", "High",
         [security_connectors], unhealthy_connectors,
@@ -502,7 +599,9 @@ def evaluate_graph_findings(catalog, result, unsupported):
         for item in (gsa_branches, gsa_connectors)
         for record in item["records"]
         if _truth(record, "enabled", "isEnabled") is False
-        or _state(record, "status", "state", "healthStatus") in {
+        or _state(
+            record, "connectivityState", "status", "state", "healthStatus"
+        ) in {
             "degraded", "disabled", "error", "failed", "inactive", "offline", "unhealthy",
         }
     ]

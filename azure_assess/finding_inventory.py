@@ -44,17 +44,26 @@ def manifest_statuses(catalog: Mapping[str, Any]) -> Dict[str, str]:
             grouped.setdefault(str(run["endpoint_id"]), []).append(
                 str(run.get("status") or "unknown")
             )
-    precedence = (
-        "not_attempted", "failed", "unauthorised", "incomplete",
-        "tenant_unavailable", "skipped", "not_applicable", "unknown",
-        "success", "empty",
+    unavailable_precedence = (
+        "not_attempted", "failed", "unauthorised", "tenant_unavailable",
+        "skipped", "not_applicable", "unknown",
     )
-    return {
-        endpoint_id: next(
-            (status for status in precedence if status in values), "unknown"
-        )
-        for endpoint_id, values in grouped.items()
-    }
+    statuses = {}
+    for endpoint_id, values in grouped.items():
+        completed = [status for status in values if status in COMPLETE_STATUSES]
+        unfinished = [status for status in values if status not in COMPLETE_STATUSES]
+        if "incomplete" in values or completed and unfinished:
+            # Retain evidence from successful parents/pages without allowing a
+            # mixed endpoint to establish a clean conclusion.
+            statuses[endpoint_id] = "incomplete"
+        elif completed:
+            statuses[endpoint_id] = "success" if "success" in completed else "empty"
+        else:
+            statuses[endpoint_id] = next(
+                (status for status in unavailable_precedence if status in values),
+                "unknown",
+            )
+    return statuses
 
 def current_filenames(catalog: Mapping[str, Any]) -> set:
     return {

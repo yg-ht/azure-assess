@@ -129,6 +129,7 @@ GRAPH_ENDPOINTS: List[Dict] = [
     E("device_configurations", "Intune Device Configurations", "EndpointIntune", "DeviceManagementConfiguration.Read.All", "/deviceManagement/deviceConfigurations"),
     E("compliance_policies", "Intune Compliance Policies", "EndpointIntune", "DeviceManagementConfiguration.Read.All", "/deviceManagement/deviceCompliancePolicies"),
     E("settings_catalog", "Intune Settings Catalog Policies", "EndpointIntune", "DeviceManagementConfiguration.Read.All", "/deviceManagement/configurationPolicies", api="beta"),
+    E("settings_catalog_settings", "Intune Settings Catalog Policy Settings", "EndpointIntune", "DeviceManagementConfiguration.Read.All", "/deviceManagement/configurationPolicies/{parent_id}/settings", api="beta", fan_out={"parent": "settings_catalog", "id": "id"}),
     E("intune_role_definitions", "Intune Role Definitions", "EndpointIntune", "DeviceManagementRBAC.Read.All", "/deviceManagement/roleDefinitions"),
     E("intune_role_assignments", "Intune Role Assignments", "EndpointIntune", "DeviceManagementRBAC.Read.All", "/deviceManagement/roleAssignments"),
     E("intune_scope_tags", "Intune Scope Tags", "EndpointIntune", "DeviceManagementRBAC.Read.All", "/deviceManagement/roleScopeTags"),

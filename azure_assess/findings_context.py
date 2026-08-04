@@ -120,6 +120,12 @@ SERVICE_DEFINITIONS = {
     "keyvault_": ("key_vault", "Azure Key Vault", "vault"),
     "hdinsight_": ("hdinsight", "Azure HDInsight", "cluster"),
     "defender_": ("defender_for_cloud", "Microsoft Defender for Cloud", "subscription plan"),
+    "defender_hunting_": ("defender_xdr", "Microsoft Defender XDR", "hunting result"),
+    "defender_identity_": (
+        "defender_for_identity",
+        "Microsoft Defender for Identity",
+        "sensor or health issue",
+    ),
     "monitor_": ("azure_monitor", "Azure Monitor", "monitored scope"),
     "storage_": ("storage", "Azure Storage", "storage account or data service"),
     "network_": ("networking", "Azure networking", "network resource"),
@@ -141,6 +147,26 @@ SERVICE_DEFINITIONS = {
     "app_": ("app_service", "Azure App Service", "application"),
     "vm_": ("virtual_machines", "Azure Virtual Machines", "virtual machine"),
     "iot_": ("iot", "Azure IoT", "IoT service"),
+}
+
+
+GRAPH_CONTROL_PLANE_PREFIXES = (
+    "defender_hunting_",
+    "defender_identity_",
+    "global_secure_access_",
+    "intune_",
+    "m365_",
+    "sharepoint_",
+)
+GRAPH_CONTROL_PLANE_FINDING_IDS = {
+    "defender_unresolved_significant_incidents",
+}
+GRAPH_SERVICE_OVERRIDES = {
+    "defender_unresolved_significant_incidents": (
+        "defender_xdr",
+        "Microsoft Defender XDR",
+        "security incident",
+    ),
 }
 
 
@@ -369,11 +395,18 @@ def family_context(finding: Mapping[str, Any]) -> Dict[str, Any]:
         )
     )
     finding_id = str(finding.get("finding_id") or "")
+    if (
+        finding_id.startswith(GRAPH_CONTROL_PLANE_PREFIXES)
+        or finding_id in GRAPH_CONTROL_PLANE_FINDING_IDS
+    ):
+        family["control_plane"] = "microsoft_graph"
+        family["default_scope"] = "tenant"
     service = ("azure", "Azure", "Azure configuration item")
     for prefix in sorted(SERVICE_DEFINITIONS, key=len, reverse=True):
         if finding_id.startswith(prefix):
             service = SERVICE_DEFINITIONS[prefix]
             break
+    service = GRAPH_SERVICE_OVERRIDES.get(finding_id, service)
     family.update(
         {
             "service_id": service[0],

@@ -118,7 +118,8 @@ class CollectionSurfaceFindingTests(unittest.TestCase):
                 },
             }],
             f"{disk_output}_20260804.json": [{
-                "id": "disk", "networkAccessPolicy": "AllowAll",
+                "id": "disk", "publicNetworkAccess": "Enabled",
+                "networkAccessPolicy": "AllowAll",
             }],
             "az_snapshot_list_20260804.json": [],
         }, **{
@@ -231,6 +232,73 @@ class CollectionSurfaceFindingTests(unittest.TestCase):
                 "Azure messaging services permit unrestricted public network access"
             ]["status"],
         )
+
+    def test_attached_and_unattached_weak_waf_policies_are_distinct(self):
+        inline_output = (
+            "az_network_application-gateway_waf-config_show_--gateway-name_name_"
+            "--resource-group_resourcegroup"
+        )
+        attached_id = (
+            "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/"
+            "ApplicationGatewayWebApplicationFirewallPolicies/attached"
+        )
+        unattached_id = attached_id.rsplit("/", 1)[0] + "/unattached"
+        data = catalogue({
+            f"{inline_output}_20260804.json": [],
+            "az_network_application-gateway_waf-policy_list_20260804.json": [
+                {
+                    "id": attached_id,
+                    "policySettings": {"state": "Enabled", "mode": "Detection"},
+                },
+                {
+                    "id": unattached_id,
+                    "policySettings": {"state": "Disabled", "mode": "Prevention"},
+                },
+            ],
+            "az_network_application-gateway_list_20260804.json": [{
+                "id": "gateway", "firewallPolicy": {"id": attached_id},
+            }],
+        }, **{
+            inline_output: "failed",
+            "az_network_application-gateway_waf-policy_list": "success",
+            "az_network_application-gateway_list": "success",
+        })
+        findings, _ = evaluate_collection_surface_findings(
+            data, result, unsupported
+        )
+        by_title = {item["title"]: item for item in findings}
+        attached = by_title[
+            "Application Gateway WAF is disabled or not enforcing full prevention"
+        ]
+        unattached = by_title[
+            "Unattached Application Gateway WAF policies are not enforcing full prevention"
+        ]
+        self.assertEqual("finding", attached["status"])
+        self.assertEqual("High", attached["severity"])
+        self.assertEqual(attached_id, attached["evidence"][0]["policy"]["id"])
+        self.assertEqual("finding", unattached["status"])
+        self.assertEqual("Medium", unattached["severity"])
+        self.assertEqual(unattached_id, unattached["evidence"][0]["id"])
+
+    def test_publicly_disabled_disk_is_not_reported_when_policy_is_allow_all(self):
+        disk_output = "az_disk_list_--resource-group_name"
+        data = catalogue({
+            f"{disk_output}_20260804.json": [{
+                "id": "disk", "publicNetworkAccess": "Disabled",
+                "networkAccessPolicy": "AllowAll",
+            }],
+            "az_snapshot_list_20260804.json": [],
+        }, **{disk_output: "success", "az_snapshot_list": "empty"})
+        findings, _ = evaluate_collection_surface_findings(
+            data, result, unsupported
+        )
+        finding = next(
+            item for item in findings
+            if item["title"] == (
+                "Managed disks or snapshots permit unrestricted network export"
+            )
+        )
+        self.assertEqual("not_found", finding["status"])
 
     def test_monitor_network_and_action_group_findings(self):
         insights_output = (

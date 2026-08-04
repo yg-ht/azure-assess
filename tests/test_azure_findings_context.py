@@ -191,6 +191,37 @@ class FindingContextNormalisationTests(unittest.TestCase):
             ["admin@example.test"],
         )
 
+    def test_intune_context_identifies_graph_control_plane(self):
+        finding = context_finding(
+            "Intune security-service connectors are disabled or unhealthy",
+            [{"id": "connector", "partnerState": "unresponsive"}],
+            severity="High",
+        )
+        normalise_finding_reporting(finding)
+
+        normalise_finding_context(finding)
+
+        family = finding["context"]["family"]
+        self.assertEqual("microsoft_graph", family["control_plane"])
+        self.assertEqual("microsoft_intune", family["service_id"])
+        self.assertEqual("tenant", finding["context"]["scope"]["level"])
+
+    def test_defender_incident_context_identifies_graph_xdr_service(self):
+        finding = context_finding(
+            "Unresolved significant Microsoft security incidents",
+            [{"id": "incident-one", "status": "active"}],
+            severity="High",
+        )
+        normalise_finding_reporting(finding)
+
+        normalise_finding_context(finding)
+
+        family = finding["context"]["family"]
+        self.assertEqual("microsoft_graph", family["control_plane"])
+        self.assertEqual("defender_xdr", family["service_id"])
+        self.assertEqual("Microsoft Defender XDR", family["service_label"])
+        self.assertEqual("tenant", finding["context"]["scope"]["level"])
+
     def test_parent_subscription_asset_does_not_make_resource_scope_mixed(self):
         finding = context_finding(
             "Azure blob container permits public access",

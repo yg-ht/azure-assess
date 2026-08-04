@@ -64,7 +64,7 @@ class FindingDefinitionIdentityTests(unittest.TestCase):
     def test_every_current_finding_has_a_unique_canonical_id(self):
         finding_ids = [finding["finding_id"] for finding in self.findings]
 
-        self.assertEqual(len(finding_ids), 232)
+        self.assertEqual(len(finding_ids), 233)
         self.assertEqual(len(finding_ids), len(set(finding_ids)))
         self.assertTrue(all(finding_id == finding_id.lower() for finding_id in finding_ids))
 
@@ -243,6 +243,10 @@ class FindingDefinitionOutputTests(unittest.TestCase):
         ):
             self.assertIsInstance(finding[field], dict)
         self.assertEqual([filename], finding["references"]["source_files"])
+        self.assertEqual(
+            ["graph_identity_baseline_risk_detections"],
+            finding["references"]["required_endpoint_ids"],
+        )
 
         output = azure_findings.sarif_output("/tmp/input", catalog, findings)
         result = next(
@@ -284,6 +288,10 @@ class FindingDefinitionOutputTests(unittest.TestCase):
         ):
             self.assertIsInstance(finding[field], dict)
         self.assertEqual([filename], finding["references"]["source_files"])
+        self.assertEqual(
+            ["az_security_alert_list"],
+            finding["references"]["required_endpoint_ids"],
+        )
 
         output = azure_findings.sarif_output("/tmp/input", catalog, findings)
         result = next(
@@ -329,6 +337,15 @@ class FindingDefinitionOutputTests(unittest.TestCase):
         )
         self.assertEqual("found", finding["status"])
         self.assertEqual("real-risk", finding["evidence"][0]["id"])
+        self.assertEqual(
+            ["graph_identity_baseline_risk_detections"],
+            [
+                endpoint["endpoint_id"]
+                for endpoint in finding["reporting"]["provenance"][
+                    "required_endpoints"
+                ]
+            ],
+        )
 
 
 if __name__ == "__main__":

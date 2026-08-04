@@ -148,6 +148,35 @@ class GraphFindingTests(unittest.TestCase):
         )
         self.assertEqual("no_data_to_assess", finding["status"])
 
+    def test_mixed_endpoint_status_retains_directly_observed_evidence(self):
+        catalog = {
+            "graph_identity_baseline_risk_detections_20260804.json": [{
+                "id": "observed", "riskState": "atRisk",
+            }],
+            "azure-collection-manifest.json": {
+                "schema_version": "2.5",
+                "endpoint_runs": [
+                    {
+                        "category": "microsoft_graph",
+                        "endpoint_id": "graph_identity_baseline_risk_detections",
+                        "status": "success",
+                    },
+                    {
+                        "category": "microsoft_graph",
+                        "endpoint_id": "graph_identity_baseline_risk_detections",
+                        "status": "failed",
+                    },
+                ],
+            },
+        }
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        finding = next(
+            item for item in findings
+            if item["title"] == "Active Microsoft Entra risk detections"
+        )
+        self.assertEqual("finding", finding["status"])
+        self.assertEqual("observed", finding["evidence"][0]["id"])
+
     def test_failed_provisioning_activity_is_reported(self):
         catalog = {
             "graph_identity_baseline_provisioning_logs_20260804.json": [
@@ -436,10 +465,10 @@ class GraphFindingTests(unittest.TestCase):
             }],
             "graph_endpoint_intune_settings_catalog_20260804.json": [],
             "graph_endpoint_intune_security_connectors_20260804.json": [{
-                "id": "connector", "connectionStatus": "error",
+                "id": "connector", "partnerState": "unresponsive",
             }],
             "graph_global_secure_access_gsa_branches_20260804.json": [{
-                "id": "branch", "status": "offline",
+                "id": "branch", "connectivityState": "error",
             }],
             "graph_global_secure_access_gsa_connectors_20260804.json": [],
             "graph_global_secure_access_gsa_forwarding_profiles_20260804.json": [{
@@ -463,6 +492,79 @@ class GraphFindingTests(unittest.TestCase):
             "Enabled Global Secure Access forwarding profiles have no associations",
         ):
             self.assertEqual("finding", by_title[title]["status"])
+
+    def test_settings_catalog_setting_is_assessed_from_fan_out_records(self):
+        catalog = {
+            "graph_endpoint_intune_device_configurations_20260804.json": [],
+            "graph_endpoint_intune_settings_catalog_20260804.json": [{
+                "id": "policy",
+            }],
+            "graph_endpoint_intune_settings_catalog_settings_20260804.json": [{
+                "id": "setting",
+                "settingInstance": {
+                    "settingDefinitionId": (
+                        "device_vendor_msft_policy_config_defender_"
+                        "allowrealtimemonitoring"
+                    ),
+                    "choiceSettingValue": {
+                        "value": (
+                            "device_vendor_msft_policy_config_defender_"
+                            "allowrealtimemonitoring_0"
+                        ),
+                    },
+                },
+                "_collectionContext": {"parent_id": "policy"},
+            }],
+            "azure-collection-manifest.json": graph_manifest(
+                "graph_endpoint_intune_device_configurations",
+                "graph_endpoint_intune_settings_catalog",
+                "graph_endpoint_intune_settings_catalog_settings",
+            ),
+        }
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        finding = next(
+            item for item in findings
+            if item["title"] == (
+                "Intune policy explicitly disables a core endpoint security control"
+            )
+        )
+        self.assertEqual("finding", finding["status"])
+        self.assertEqual("setting", finding["evidence"][0]["id"])
+
+    def test_settings_catalog_boolean_value_identifies_disabled_encryption(self):
+        catalog = {
+            "graph_endpoint_intune_device_configurations_20260804.json": [],
+            "graph_endpoint_intune_settings_catalog_20260804.json": [{
+                "id": "policy",
+            }],
+            "graph_endpoint_intune_settings_catalog_settings_20260804.json": [{
+                "id": "setting",
+                "settingInstance": {
+                    "settingDefinitionId": (
+                        "device_vendor_msft_policy_config_security_"
+                        "requiredeviceencryption"
+                    ),
+                    "simpleSettingValue": {"value": False},
+                },
+                "_collectionContext": {"parent_id": "policy"},
+            }],
+            "azure-collection-manifest.json": graph_manifest(
+                "graph_endpoint_intune_device_configurations",
+                "graph_endpoint_intune_settings_catalog",
+                "graph_endpoint_intune_settings_catalog_settings",
+            ),
+        }
+
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+
+        finding = next(
+            item for item in findings
+            if item["title"] == (
+                "Intune policy explicitly disables a core endpoint security control"
+            )
+        )
+        self.assertEqual("finding", finding["status"])
+        self.assertEqual("setting", finding["evidence"][0]["id"])
 
     def test_permanent_privileged_request_is_reported(self):
         catalog = {

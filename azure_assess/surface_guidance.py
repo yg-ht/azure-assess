@@ -43,7 +43,10 @@ SURFACE_GUIDANCE_BASELINE = {
             "Application Gateway WAF operates in Prevention mode without unjustified exclusions.",
             "Application Gateway WAF is applicable and its configuration is collected.",
             "WAF is enabled in Prevention mode and managed-rule exclusions are reviewed.",
-            ["Application Gateway WAF is disabled or not enforcing full prevention"],
+            [
+                "Application Gateway WAF is disabled or not enforcing full prevention",
+                "Unattached Application Gateway WAF policies are not enforcing full prevention",
+            ],
         ),
         _requirement(
             "application_gateway_https",

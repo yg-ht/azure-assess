@@ -966,6 +966,7 @@ FINDING_ID_OVERRIDES = {
     "Unresolved significant Defender for Cloud alerts": "defender_cloud_unresolved_significant_alerts",
     "Security-sensitive Azure control-plane changes": "azure_activity_security_sensitive_changes",
     "Application Gateway WAF is disabled or not enforcing full prevention": "application_gateway_waf_prevention_not_enforced",
+    "Unattached Application Gateway WAF policies are not enforcing full prevention": "application_gateway_unattached_waf_policy_not_enforcing",
     "Application Gateway exposes plaintext HTTP listeners": "application_gateway_plaintext_http_listener",
     "Azure App Configuration permits public network access": "appconfig_public_network_access_enabled",
     "Azure App Configuration permits local access-key authentication": "appconfig_local_authentication_enabled",

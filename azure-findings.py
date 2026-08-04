@@ -3666,7 +3666,15 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     findings = annotate_finding_definitions(findings)
 
     for finding in findings:
-        source_files = reference_sources.get(finding["title"], [])
+        existing_sources = reference_sources.get(finding["title"], [])
+        source_files = SourceReferences(
+            existing_sources,
+            required_patterns=getattr(existing_sources, "required_patterns", ()),
+            required_endpoint_ids=(
+                tuple(getattr(existing_sources, "required_endpoint_ids", ()))
+                + tuple(finding.get("_required_endpoint_ids") or ())
+            ),
+        )
         attach_references(finding, source_files)
         normalise_finding_reporting(finding, catalog=catalog)
         normalise_finding_context(finding, catalog=catalog)

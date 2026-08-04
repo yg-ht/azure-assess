@@ -186,7 +186,7 @@ GRAPH_GUIDANCE_BASELINE = {
             "intune_endpoint_security_policy",
             "https://learn.microsoft.com/intune/intune-service/protect/endpoint-security-policy",
             "Intune endpoint security policies enable applicable core protections.",
-            "Device configuration or settings-catalog policy inventory is available.",
+            "Device configuration inventory and, where Settings Catalog policies exist, their settings are completely collected.",
             "Firewall, antivirus, real-time protection and encryption are not explicitly disabled.",
             ["Intune policy explicitly disables a core endpoint security control"],
         ),

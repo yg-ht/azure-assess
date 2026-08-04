@@ -36,12 +36,13 @@ def _truth(record: Mapping[str, Any], *paths: str) -> Optional[bool]:
 
 def _emit(result, unsupported, title: str, severity: str,
           inventories: Iterable[dict], observations: list, reason: str,
-          correlated: bool = False):
+          correlated: bool = False, positive_supported: Optional[bool] = None):
     inventories = list(inventories)
-    positive_supported = observations and (
-        all(item["complete"] for item in inventories)
-        if correlated else any(item["positive_usable"] for item in inventories)
-    )
+    if positive_supported is None:
+        positive_supported = bool(observations) and (
+            all(item["complete"] for item in inventories)
+            if correlated else any(item["positive_usable"] for item in inventories)
+        )
     if positive_supported:
         finding = result(title, severity, reason, observations)
     elif all(item["complete"] for item in inventories):
@@ -112,10 +113,14 @@ def evaluate_collection_surface_findings(catalog, result, unsupported):
     def inv(output):
         return inventory(catalog, output, output)
 
-    def add(title, severity, inventories, observations, reason, correlated=False):
+    def add(
+        title, severity, inventories, observations, reason, correlated=False,
+        positive_supported=None,
+    ):
         finding, files = _emit(
             result, unsupported, title, severity, inventories, observations,
             reason, correlated=correlated,
+            positive_supported=positive_supported,
         )
         findings.append(finding)
         sources[title] = files
@@ -151,26 +156,70 @@ def evaluate_collection_surface_findings(catalog, result, unsupported):
         }
     ], "Successful security-sensitive Azure control-plane changes were directly observed.")
 
+    gateways = inv("az_network_application-gateway_list")
+    gateway_details = inv(
+        "az_network_application-gateway_show_--name_name_--resource-group_resourcegroup"
+    )
     waf_config = inv(
         "az_network_application-gateway_waf-config_show_--gateway-name_name_--resource-group_resourcegroup"
     )
     waf_policies = inv("az_network_application-gateway_waf-policy_list")
-    weak_waf = [
-        record for record in waf_config["records"] + waf_policies["records"]
+    weak_inline_waf = [
+        record for record in waf_config["records"]
         if _truth(
             record, "enabled", "policySettings.enabled", "policySettings.state"
         ) is False
         or _state(record, "firewallMode", "policySettings.mode") == "detection"
         or bool(_value(record, "managedRules.exclusions"))
     ]
-    add("Application Gateway WAF is disabled or not enforcing full prevention", "High",
-        [waf_config, waf_policies], weak_waf,
-        "WAF was disabled, configured for Detection mode, or had explicit managed-rule exclusions.")
-
-    gateways = inv("az_network_application-gateway_list")
-    gateway_details = inv(
-        "az_network_application-gateway_show_--name_name_--resource-group_resourcegroup"
+    policy_by_id = {
+        str(record.get("id") or "").rstrip("/").casefold(): record
+        for record in waf_policies["records"]
+        if record.get("id")
+    }
+    referenced_policy_ids = {
+        str(_value(gateway, "firewallPolicy.id") or "").rstrip("/").casefold()
+        for gateway in gateways["records"]
+        if _value(gateway, "firewallPolicy.id")
+    }
+    weak_policy_ids = {
+        policy_id for policy_id, record in policy_by_id.items()
+        if _truth(record, "policySettings.enabled", "policySettings.state") is False
+        or _state(record, "policySettings.mode") == "detection"
+        or bool(_value(record, "managedRules.exclusions"))
+    }
+    attached_weak_policies = [
+        {
+            "gateway": gateway,
+            "policy": policy_by_id[policy_id],
+        }
+        for gateway in gateways["records"]
+        if (policy_id := str(
+            _value(gateway, "firewallPolicy.id") or ""
+        ).rstrip("/").casefold()) in weak_policy_ids
+    ]
+    attached_weak_waf = weak_inline_waf + attached_weak_policies
+    attached_supported = bool(attached_weak_waf) and (
+        (bool(weak_inline_waf) and waf_config["positive_usable"])
+        or (
+            bool(attached_weak_policies)
+            and gateways["complete"]
+            and waf_policies["complete"]
+        )
     )
+    add("Application Gateway WAF is disabled or not enforcing full prevention", "High",
+        [waf_config, waf_policies, gateways], attached_weak_waf,
+        "An attached WAF was disabled, configured for Detection mode, or had explicit managed-rule exclusions.",
+        positive_supported=attached_supported)
+
+    unattached_weak_policies = [
+        record for policy_id, record in policy_by_id.items()
+        if policy_id in weak_policy_ids and policy_id not in referenced_policy_ids
+    ]
+    add("Unattached Application Gateway WAF policies are not enforcing full prevention", "Medium",
+        [waf_policies, gateways], unattached_weak_policies,
+        "An unattached WAF policy was disabled, configured for Detection mode, or had explicit managed-rule exclusions.",
+        correlated=True)
     plaintext_listeners = []
     for gateway in gateways["records"] + gateway_details["records"]:
         listeners = gateway.get("httpListeners") or []
@@ -263,7 +312,7 @@ def evaluate_collection_surface_findings(catalog, result, unsupported):
     exposed_exports = [
         record for record in disks["records"] + snapshots["records"]
         if _state(record, "publicNetworkAccess", "properties.publicNetworkAccess") == "enabled"
-        or _state(record, "networkAccessPolicy", "properties.networkAccessPolicy") == "allowall"
+        and _state(record, "networkAccessPolicy", "properties.networkAccessPolicy") == "allowall"
     ]
     add("Managed disks or snapshots permit unrestricted network export", "High",
         [disks, snapshots], exposed_exports,

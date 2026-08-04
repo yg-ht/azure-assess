@@ -100,6 +100,23 @@ class GraphRegistryTests(unittest.TestCase):
             self.assertEqual("groups", endpoint["fan_out"]["parent"])
             self.assertIn("$filter=groupId eq '{parent_id}'", endpoint["path"])
 
+    def test_settings_catalog_settings_are_fanned_out_per_policy(self):
+        endpoint = next(
+            item for item in GRAPH_ENDPOINTS
+            if item["id"] == "settings_catalog_settings"
+        )
+
+        self.assertEqual("beta", endpoint["api"])
+        self.assertEqual("settings_catalog", endpoint["fan_out"]["parent"])
+        self.assertEqual("id", endpoint["fan_out"]["id"])
+        self.assertEqual(
+            "/deviceManagement/configurationPolicies/{parent_id}/settings",
+            endpoint["path"],
+        )
+        self.assertEqual(
+            "DeviceManagementConfiguration.Read.All", endpoint["permission"]
+        )
+
     def test_pim_alert_inventory_is_scoped_to_directory_roles(self):
         endpoints = {item["id"]: item for item in GRAPH_ENDPOINTS}
         for endpoint_id in ("pim_alerts", "pim_alert_configurations"):
