@@ -23,6 +23,23 @@ FINDINGS_SPEC.loader.exec_module(azure_findings)
 
 
 class FindingDefinitionIdentityTests(unittest.TestCase):
+    def test_graph_definition_embeds_versioned_microsoft_guidance(self):
+        definition = finding_definition(
+            "Weak or missing privileged authentication methods", "High"
+        )
+        self.assertIn(
+            "microsoft_guidance:authentication_methods",
+            definition["check_ids"],
+        )
+        self.assertEqual(
+            [
+                "https://learn.microsoft.com/entra/identity/authentication/"
+                "concept-authentication-strength-how-it-works"
+            ],
+            definition["report"]["references"],
+        )
+        self.assertIn("phishing-resistant", definition["report"]["description"])
+
     @classmethod
     def setUpClass(cls):
         cls.findings = azure_findings.evaluate_findings({})
@@ -177,6 +194,46 @@ class FindingDefinitionOutputTests(unittest.TestCase):
             result["properties"]["definition"]["schema_version"],
             FINDING_DEFINITION_SCHEMA_VERSION,
         )
+
+    def test_graph_finding_flows_through_normalisation_and_sarif(self):
+        filename = "graph_identity_baseline_risk_detections_20260804.json"
+        catalog = {
+            filename: [{"id": "risk", "riskState": "atRisk"}],
+            "azure-collection-manifest.json": {
+                "schema_version": "2.5",
+                "endpoint_runs": [{
+                    "category": "microsoft_graph",
+                    "endpoint_id": "graph_identity_baseline_risk_detections",
+                    "status": "success",
+                }],
+                "datasets": [{
+                    "filename": filename,
+                    "source_endpoint_id": "graph_identity_baseline_risk_detections",
+                    "source_endpoint_ids": [
+                        "graph_identity_baseline_risk_detections"
+                    ],
+                }],
+            },
+        }
+        findings = azure_findings.evaluate_findings(catalog)
+        finding = next(
+            item for item in findings
+            if item["title"] == "Active Microsoft Entra risk detections"
+        )
+
+        self.assertEqual("found", finding["status"])
+        for field in (
+            "definition", "reporting", "context", "coverage", "review", "triage"
+        ):
+            self.assertIsInstance(finding[field], dict)
+        self.assertEqual([filename], finding["references"]["source_files"])
+
+        output = azure_findings.sarif_output("/tmp/input", catalog, findings)
+        result = next(
+            item for item in output["runs"][0]["results"]
+            if item["ruleId"] == "entra_active_risk_detections"
+        )
+        self.assertEqual("risk", result["properties"]["evidence"][0]["id"])
 
 
 if __name__ == "__main__":

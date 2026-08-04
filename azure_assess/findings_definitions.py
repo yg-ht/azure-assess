@@ -2,6 +2,8 @@
 
 import re
 
+from .graph_guidance import GUIDANCE_BY_TITLE
+
 REQUESTED_HEADLINES = [
     "aisearch_service_not_publicly_accessible",
     "aks_cluster_rbac_enabled",
@@ -935,6 +937,7 @@ FINDING_ID_OVERRIDES = {
     "Active Microsoft Entra risk detections": "entra_active_risk_detections",
     "Unresolved Microsoft Entra recommendations": "entra_unresolved_recommendations",
     "Unhealthy on-premises directory synchronisation": "entra_onprem_sync_unhealthy",
+    "Unhealthy Microsoft Entra provisioning activity": "entra_provisioning_activity_unhealthy",
     "Active privileged identity management alerts": "pim_active_role_management_alerts",
     "Unsafe SharePoint tenant sharing settings": "sharepoint_unsafe_tenant_sharing",
     "Non-compliant Intune managed devices": "intune_non_compliant_managed_devices",
@@ -945,12 +948,17 @@ FINDING_ID_OVERRIDES = {
     "Weak or missing privileged authentication methods": "entra_privileged_authentication_methods_weak",
     "Unsafe entitlement-management assignments or policies": "entra_entitlement_management_unsafe",
     "Permanent privileged directory assignments": "pim_permanent_directory_assignments",
+    "Permanent privileged group assignments": "pim_permanent_group_assignments",
+    "Permanent privileged Azure-resource assignments": "pim_permanent_azure_resource_assignments",
     "Unsafe Microsoft 365 sharing or tenant settings": "m365_unsafe_tenant_settings",
     "Intune estate lacks compliance or enrolment controls": "intune_compliance_or_enrolment_controls_missing",
     "Excessive Intune RBAC assignments": "intune_excessive_rbac_assignments",
     "Global Secure Access forwarding or filtering controls are absent": "global_secure_access_controls_absent",
     "Applicable Intune estate has no enrolment restriction": "intune_enrolment_restriction_missing",
     "Applicable Global Secure Access tenant has no forwarding policy": "global_secure_access_forwarding_policy_missing",
+    "Applicable Global Secure Access tenant has no filtering policy": "global_secure_access_filtering_policy_missing",
+    "Applicable Global Secure Access tenant has no TLS inspection policy": "global_secure_access_tls_policy_missing",
+    "Applicable Global Secure Access tenant has no policy assignment": "global_secure_access_policy_assignment_missing",
 }
 
 CATEGORY_PREFIXES = (
@@ -1007,6 +1015,10 @@ def finding_category(finding_id):
 def finding_definition(title, severity):
     """Build status-independent report metadata for one finding definition."""
     finding_id = canonical_finding_id(title)
+    guidance = GUIDANCE_BY_TITLE.get(title)
+    check_ids = list(dict.fromkeys(EXISTING_FINDING_HEADLINES.get(title, [])))
+    if guidance:
+        check_ids.append(f"microsoft_guidance:{guidance['id']}")
     return {
         "schema_version": FINDING_DEFINITION_SCHEMA_VERSION,
         "finding_id": finding_id,
@@ -1014,12 +1026,12 @@ def finding_definition(title, severity):
         "report_title": str(title),
         "category": finding_category(finding_id),
         "default_severity": str(severity),
-        "check_ids": list(dict.fromkeys(EXISTING_FINDING_HEADLINES.get(title, []))),
+        "check_ids": check_ids,
         "report": {
-            "description": None,
+            "description": guidance["expected_state"] if guidance else None,
             "impact": None,
-            "recommendation": None,
-            "references": [],
+            "recommendation": guidance["threshold"] if guidance else None,
+            "references": [guidance["source_url"]] if guidance else [],
             "narrative_status": "not_authored",
         },
     }
