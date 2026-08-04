@@ -3957,9 +3957,22 @@ def filter_endpoints(keyword=None, endpoints=None, allow_empty=False):
     print(f"Searching for endpoint match {keyword}.")
     filtered = []
     keyword_lowered = str(keyword).lower()
+    exact = []
     for ep in endpoints:
-        if str(keyword_lowered) in ep["cli_command"].lower():
+        candidates = {
+            str(ep.get("name") or "").lower(),
+            str(ep.get("output_prefix") or "").lower(),
+            str(ep.get("endpoint_id") or "").lower(),
+            str(ep.get("cli_command") or "").lower(),
+        }
+        if keyword_lowered in {value for value in candidates if value}:
+            exact.append(ep)
+        elif keyword_lowered in ep["cli_command"].lower():
             filtered.append(ep)
+            print(f"Selecting {ep['name']} endpoint")
+    if exact:
+        filtered = exact
+        for ep in filtered:
             print(f"Selecting {ep['name']} endpoint")
     if not filtered and not allow_empty:
         print(f"No matching endpoints found for selection: {keyword}")

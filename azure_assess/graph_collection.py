@@ -25,6 +25,12 @@ def selected_graph_endpoints(keyword: Optional[str]) -> list:
     if not keyword:
         return list(GRAPH_ENDPOINTS)
     wanted = str(keyword).lower()
+    exact = [
+        endpoint for endpoint in GRAPH_ENDPOINTS
+        if wanted in {str(endpoint.get("id", "")).lower(), str(endpoint.get("name", "")).lower(), str(endpoint.get("output", "")).lower()}
+    ]
+    if exact:
+        return exact
     return [
         endpoint for endpoint in GRAPH_ENDPOINTS
         if wanted in " ".join(str(endpoint.get(key, "")) for key in
