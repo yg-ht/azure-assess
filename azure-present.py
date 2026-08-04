@@ -33,12 +33,15 @@
 # ---------------------------------------------------------------------------
 
 import argparse
+import copy
 import importlib.util
 import json
 import re
+import secrets
+import threading
 from collections import Counter, OrderedDict
-from datetime import datetime
-from flask import Flask, jsonify, render_template_string, request
+from datetime import datetime, timezone
+from flask import Flask, Response, jsonify, render_template_string, request
 from html import escape
 from json2html import json2html
 from pathlib import Path
@@ -50,16 +53,26 @@ from azure_assess.collection_manifest import (
     is_not_applicable_error,
     is_tenant_unavailable_error,
 )
+from azure_assess.findings_review import (
+    apply_review_override,
+    load_review_overrides,
+    save_review_overrides,
+    validate_finding_review,
+)
 
 app = Flask(__name__)
 DATA_DIR = Path("azure-collect")
 FINDINGS_FLAT_FILENAME = "azure-findings-flat.json"
 FINDINGS_SARIF_FILENAME = "azure-findings-SARIF.json"
+FINDINGS_REVIEW_FILENAME = "azure-findings-review.json"
+VALIDATED_FINDINGS_SARIF_FILENAME = "azure-findings-validated-SARIF.json"
 LEGACY_FINDINGS_SARIF_FILENAME = "azure-findings.json"
 COLLECTION_MANIFEST_PREFIX = "azure-collection-manifest"
 FINDINGS_FILENAMES = {
     FINDINGS_FLAT_FILENAME,
     FINDINGS_SARIF_FILENAME,
+    FINDINGS_REVIEW_FILENAME,
+    VALIDATED_FINDINGS_SARIF_FILENAME,
     LEGACY_FINDINGS_SARIF_FILENAME,
 }
 FINDING_STATUS_OPTIONS = OrderedDict(
@@ -148,6 +161,9 @@ FINDINGS_HEADER_TOOLTIPS = {
     "review": "Analyst decision, confidence, rationale and report inclusion.",
     "triage": "Contextual severity, grouping, deduplication and retest status.",
 }
+FINDINGS_REVIEW_CSRF_TOKEN = secrets.token_urlsafe(32)
+FINDINGS_REVIEW_LOCK = threading.Lock()
+MAX_FINDING_ID_LENGTH = 500
 
 TIMESTAMP_SUFFIX_PATTERN = re.compile(r"_(\d{8}-\d{6})$")
 
@@ -395,6 +411,30 @@ HTML_TEMPLATE = """
       }
       .data-filter-actions-row .table-font-controls {
         margin-left: 0.5rem;
+      }
+      .findings-reviewer-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-left: 0.5rem;
+      }
+      .findings-reviewer-control label {
+        margin: 0;
+        white-space: nowrap;
+      }
+      .findings-reviewer-control input {
+        min-width: 12rem;
+      }
+      .finding-validation-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        margin-left: 0.5rem;
+        white-space: nowrap;
+      }
+      .finding-validation-status {
+        min-width: 3rem;
+        color: var(--dashboard-muted-text);
       }
       @media (max-width: 700px) {
         .data-inline-control {
@@ -818,6 +858,24 @@ HTML_TEMPLATE = """
                         class="btn btn-outline-secondary btn-sm"
                         aria-label="Increase table font size">A+</button>
               </div>
+              {% if findings_validation_enabled %}
+              <div class="findings-reviewer-control">
+                <label for="findingsReviewer" class="form-label">Reviewer:</label>
+                <input id="findingsReviewer"
+                       class="form-control form-control-sm"
+                       type="text"
+                       maxlength="10000"
+                       autocomplete="name"
+                       placeholder="Analyst name">
+              </div>
+              <a id="exportValidatedSarif"
+                 class="btn btn-success{% if not validated_findings_count %} disabled{% endif %}"
+                 href="/findings/export-validated-sarif"
+                 aria-disabled="{{ 'false' if validated_findings_count else 'true' }}">
+                Export Validated SARIF ({{ validated_findings_count }})
+              </a>
+              <span id="findingsValidationMessage" class="small" role="status" aria-live="polite"></span>
+              {% endif %}
             </div>
           </form>
         </div>
@@ -1188,6 +1246,51 @@ document.addEventListener('DOMContentLoaded', function () {
   const table = document.querySelector('table');
   if (!table) return;
 
+  const findingsValidationEnabled = {{ findings_validation_enabled|default(false)|tojson }};
+  const findingsReviewCsrfToken = {{ findings_review_csrf_token|default('')|tojson }};
+  const reviewerInput = document.getElementById('findingsReviewer');
+  const validationMessage = document.getElementById('findingsValidationMessage');
+  const exportValidatedButton = document.getElementById('exportValidatedSarif');
+  let validatedFindingsCount = {{ validated_findings_count|default(0)|tojson }};
+
+  if (exportValidatedButton) {
+    exportValidatedButton.addEventListener('click', function (event) {
+      if (exportValidatedButton.getAttribute('aria-disabled') === 'true') {
+        event.preventDefault();
+      }
+    });
+  }
+
+  const updateExportButton = () => {
+    if (!exportValidatedButton) return;
+    exportValidatedButton.textContent = `Export Validated SARIF (${validatedFindingsCount})`;
+    const disabled = validatedFindingsCount === 0;
+    exportValidatedButton.classList.toggle('disabled', disabled);
+    exportValidatedButton.setAttribute('aria-disabled', disabled ? 'true' : 'false');
+  };
+
+  const updateReviewSummary = (row, headerRow, review) => {
+    const reviewHeader = Array.from(headerRow.cells).find((cell) =>
+      cell.textContent.trim().toLowerCase() === 'review'
+    );
+    if (!reviewHeader) return;
+    const reviewCell = row.cells[reviewHeader.cellIndex];
+    if (!reviewCell) return;
+    const analyst = review.analyst || {};
+    const values = {
+      'review state': review.review_state === 'reviewed' ? 'Reviewed' : 'Unreviewed',
+      'disposition': review.disposition === 'confirmed' ? 'Confirmed' : 'Candidate',
+      'reviewer': analyst.reviewer || 'Unassigned',
+      'report inclusion': review.report_ready?.include ? 'Yes' : 'No'
+    };
+    reviewCell.querySelectorAll('tr').forEach((summaryRow) => {
+      const heading = summaryRow.querySelector('th');
+      const value = summaryRow.querySelector('td');
+      const replacement = values[heading?.textContent.trim().toLowerCase()];
+      if (value && replacement !== undefined) value.textContent = replacement;
+    });
+  };
+
   const headerRow = table.rows[0];
   if (!headerRow || headerRow.cells.length === 0) return;
 
@@ -1240,6 +1343,82 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     toggleCell.appendChild(toggleBtn);
+
+    if (findingsValidationEnabled) {
+      let sourceRow = null;
+      try {
+        sourceRow = JSON.parse(decodeURIComponent(jsonCell.textContent.trim()));
+      } catch (err) {
+        sourceRow = null;
+      }
+      if (sourceRow?.status === 'found' && sourceRow?.finding_id) {
+        const validationControl = document.createElement('label');
+        validationControl.className = 'finding-validation-control';
+        const validationCheckbox = document.createElement('input');
+        validationCheckbox.type = 'checkbox';
+        validationCheckbox.className = 'form-check-input';
+        validationCheckbox.checked = sourceRow.review?.disposition === 'confirmed';
+        validationCheckbox.setAttribute(
+          'aria-label',
+          `Validated finding: ${sourceRow.title || sourceRow.finding_id}`
+        );
+        const validationLabel = document.createElement('span');
+        validationLabel.textContent = 'Validated';
+        const rowStatus = document.createElement('span');
+        rowStatus.className = 'finding-validation-status small';
+        rowStatus.setAttribute('aria-live', 'polite');
+        validationControl.append(validationCheckbox, validationLabel, rowStatus);
+        toggleCell.appendChild(validationControl);
+
+        validationCheckbox.addEventListener('change', async function () {
+          const requestedState = validationCheckbox.checked;
+          const reviewer = reviewerInput?.value.trim() || '';
+          if (!reviewer) {
+            validationCheckbox.checked = !requestedState;
+            if (validationMessage) {
+              validationMessage.textContent = 'Enter the reviewer name before changing validation.';
+            }
+            reviewerInput?.focus();
+            return;
+          }
+
+          validationCheckbox.disabled = true;
+          rowStatus.textContent = 'Saving…';
+          if (validationMessage) validationMessage.textContent = '';
+          try {
+            const response = await fetch('/findings/review', {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Azure-Assess-CSRF': findingsReviewCsrfToken
+              },
+              body: JSON.stringify({
+                finding_id: sourceRow.finding_id,
+                confirmed: requestedState,
+                reviewer: reviewer
+              })
+            });
+            const responseBody = await response.json();
+            if (!response.ok) {
+              throw new Error(responseBody.error || `Request failed (${response.status})`);
+            }
+            sourceRow.review = responseBody.review;
+            jsonCell.textContent = encodeURIComponent(JSON.stringify(sourceRow));
+            validatedFindingsCount = responseBody.validated_findings;
+            updateReviewSummary(row, headerRow, responseBody.review);
+            updateExportButton();
+            rowStatus.textContent = 'Saved';
+          } catch (err) {
+            validationCheckbox.checked = !requestedState;
+            rowStatus.textContent = 'Not saved';
+            if (validationMessage) validationMessage.textContent = err.message;
+          } finally {
+            validationCheckbox.disabled = false;
+          }
+        });
+      }
+    }
   }
 
   const tableBody = table.tBodies[0];
@@ -1982,6 +2161,213 @@ def findings_flat_path():
     return DATA_DIR / FINDINGS_FLAT_FILENAME
 
 
+def findings_review_path():
+    return DATA_DIR / FINDINGS_REVIEW_FILENAME
+
+
+def findings_sarif_path():
+    current = DATA_DIR / FINDINGS_SARIF_FILENAME
+    if current.exists():
+        return current
+    legacy = DATA_DIR / LEGACY_FINDINGS_SARIF_FILENAME
+    return legacy if legacy.exists() else current
+
+
+def load_flat_finding_rows():
+    """Load and validate the current flat findings envelope."""
+    filepath = findings_flat_path()
+    data = load_json_file(filepath)
+    if data is None:
+        raise ValueError(f"Could not load findings from {filepath}")
+    if isinstance(data, dict):
+        data = data.get("rows")
+    if not isinstance(data, list) or not all(isinstance(row, dict) for row in data):
+        raise ValueError("Flat findings data must contain a rows list of objects")
+
+    rows = copy.deepcopy(data)
+    finding_ids = []
+    for row in rows:
+        finding_id = row.get("finding_id")
+        if not isinstance(finding_id, str) or not finding_id:
+            raise ValueError("Every flat finding row must have a finding_id")
+        if len(finding_id) > MAX_FINDING_ID_LENGTH:
+            raise ValueError("A flat finding_id exceeds the supported length")
+        finding_ids.append(finding_id)
+        row["status"] = canonical_finding_status(row.get("status"))
+    if len(finding_ids) != len(set(finding_ids)):
+        raise ValueError("Flat findings data contains duplicate finding_id values")
+    return rows
+
+
+def load_effective_finding_rows():
+    """Apply persisted analyst decisions to the current flat findings rows."""
+    rows = load_flat_finding_rows()
+    review_path = findings_review_path()
+    overrides = load_review_overrides(review_path) if review_path.exists() else {}
+    rows_by_id = {row["finding_id"]: row for row in rows}
+    unknown_ids = sorted(set(overrides) - set(rows_by_id))
+    if unknown_ids:
+        raise ValueError(
+            "Review file contains unknown finding IDs: " + ", ".join(unknown_ids)
+        )
+
+    for row in rows:
+        override = overrides.get(row["finding_id"])
+        if override is not None:
+            apply_review_override(row, override)
+        elif row.get("review"):
+            validate_finding_review(row)
+        else:
+            apply_review_override(row)
+    return rows, overrides
+
+
+def review_override_from_effective_review(row, reviewer, confirmed):
+    """Create a minimal override without dropping existing analyst metadata."""
+    review = row.get("review") if isinstance(row.get("review"), dict) else {}
+    analyst = review.get("analyst") if isinstance(review.get("analyst"), dict) else {}
+    override = {
+        "finding_id": row["finding_id"],
+        "disposition": "confirmed" if confirmed else "candidate",
+        "reviewer": reviewer,
+        "reviewed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    if analyst.get("notes") is not None:
+        override["notes"] = analyst["notes"]
+    if isinstance(analyst.get("contextual_severity"), dict):
+        override["contextual_severity"] = copy.deepcopy(
+            analyst["contextual_severity"]
+        )
+    confidence = review.get("confidence")
+    if isinstance(confidence, dict) and confidence.get("source") == "analyst":
+        rationale = confidence.get("rationale") or []
+        override["confidence"] = {
+            "level": confidence.get("level"),
+            "rationale": "\n".join(rationale),
+        }
+    return override
+
+
+def confirmed_finding_rows(rows):
+    """Return current raised findings carrying an analyst confirmation."""
+    return [
+        row
+        for row in rows
+        if row.get("status") == "found"
+        and isinstance(row.get("review"), dict)
+        and row["review"].get("disposition") == "confirmed"
+    ]
+
+
+def build_validated_sarif(source, confirmed_rows):
+    """Filter an existing SARIF document to confirmed current findings."""
+    if not isinstance(source, dict) or source.get("version") != "2.1.0":
+        raise ValueError("Findings SARIF must be a SARIF 2.1.0 object")
+    runs = source.get("runs")
+    if not isinstance(runs, list) or not all(isinstance(run, dict) for run in runs):
+        raise ValueError("Findings SARIF must contain a runs list")
+
+    output = copy.deepcopy(source)
+    confirmed_by_id = {row["finding_id"]: row for row in confirmed_rows}
+    matched_ids = set()
+    for run in output["runs"]:
+        results = run.get("results", [])
+        if not isinstance(results, list) or not all(
+            isinstance(result, dict) for result in results
+        ):
+            raise ValueError("Each findings SARIF run must contain a results list")
+        retained_results = []
+        run_matched_ids = set()
+        for result in results:
+            properties = result.get("properties")
+            if properties is not None and not isinstance(properties, dict):
+                raise ValueError("Each findings SARIF result properties value must be an object")
+            properties = properties or {}
+            property_finding_id = properties.get("finding_id")
+            rule_id = result.get("ruleId")
+            if property_finding_id and rule_id and property_finding_id != rule_id:
+                raise ValueError(
+                    "A findings SARIF result has conflicting finding_id and ruleId values"
+                )
+            finding_id = property_finding_id or rule_id
+            row = confirmed_by_id.get(finding_id)
+            if row is None:
+                continue
+            if "properties" not in result:
+                result["properties"] = {}
+            result["properties"]["review"] = copy.deepcopy(row["review"])
+            retained_results.append(result)
+            matched_ids.add(finding_id)
+            run_matched_ids.add(finding_id)
+        run["results"] = retained_results
+
+        tool = run.get("tool")
+        if tool is not None and not isinstance(tool, dict):
+            raise ValueError("Each findings SARIF run tool value must be an object")
+        driver = (tool or {}).get("driver")
+        if driver is not None and not isinstance(driver, dict):
+            raise ValueError("Each findings SARIF tool driver must be an object")
+        if isinstance(driver, dict):
+            rules = driver.get("rules", [])
+            if not isinstance(rules, list) or not all(
+                isinstance(rule, dict) for rule in rules
+            ):
+                raise ValueError("Each findings SARIF driver rules value must be a list")
+            retained_rule_ids = {
+                result.get("ruleId") for result in retained_results if result.get("ruleId")
+            }
+            driver["rules"] = [
+                rule
+                for rule in rules
+                if rule.get("id") in retained_rule_ids
+            ]
+        automation = run.get("automationDetails")
+        if automation is not None and not isinstance(automation, dict):
+            raise ValueError("Each findings SARIF automationDetails value must be an object")
+        if isinstance(automation, dict):
+            automation["description"] = {
+                "text": "Azure findings confirmed by an analyst in azure-present."
+            }
+        run_properties = run.get("properties")
+        if run_properties is not None and not isinstance(run_properties, dict):
+            raise ValueError("Each findings SARIF run properties value must be an object")
+        run_properties = run.setdefault("properties", {})
+        run_properties["result_origin"] = "azure-present confirmed findings only"
+        run_properties["validated_findings"] = len(run_matched_ids)
+        invocations = run.get("invocations", [])
+        if not isinstance(invocations, list) or not all(
+            isinstance(invocation, dict) for invocation in invocations
+        ):
+            raise ValueError("Each findings SARIF run invocations value must be a list")
+        for invocation in invocations:
+            invocation_properties = invocation.get("properties")
+            if invocation_properties is not None and not isinstance(
+                invocation_properties, dict
+            ):
+                raise ValueError(
+                    "Each findings SARIF invocation properties value must be an object"
+                )
+            invocation_properties = invocation.setdefault("properties", {})
+            if "found_findings" in invocation_properties:
+                invocation_properties["source_found_findings"] = (
+                    invocation_properties["found_findings"]
+                )
+                invocation_properties["found_findings"] = len(retained_results)
+            invocation_properties["validated_findings"] = len(run_matched_ids)
+
+    missing_ids = sorted(set(confirmed_by_id) - matched_ids)
+    if missing_ids:
+        raise ValueError(
+            "Confirmed findings were absent from the source SARIF: "
+            + ", ".join(missing_ids)
+        )
+    output_properties = output.get("properties")
+    if output_properties is not None and not isinstance(output_properties, dict):
+        raise ValueError("Findings SARIF properties must be an object")
+    output.setdefault("properties", {})["validated_findings"] = len(matched_ids)
+    return output
+
+
 def missing_findings_message(filepath):
     data_dir = escape(str(DATA_DIR), quote=True)
     expected_path = escape(str(filepath), quote=True)
@@ -2657,19 +3043,16 @@ def findings():
     filepath = findings_flat_path()
     if not filepath.exists():
         return missing_findings_message(filepath)
-    data = load_json_file(filepath)
-    if data is None:
-        return f"<p>Error loading data from <code>{filepath}</code>.</p>"
+    try:
+        all_data, _ = load_effective_finding_rows()
+    except (OSError, ValueError) as exc:
+        return (
+            "<p>Could not prepare findings review data: "
+            f"<code>{escape(str(exc))}</code></p>"
+        ), 500
 
-    if isinstance(data, dict) and "rows" in data:
-        data = data["rows"]
-
-    if isinstance(data, list):
-        for item in data:
-            if isinstance(item, dict):
-                item["status"] = canonical_finding_status(item.get("status"))
-
-    data = filter_findings_by_status(data, status_filter)
+    validated_rows = confirmed_finding_rows(all_data)
+    data = filter_findings_by_status(all_data, status_filter)
 
     if query_param:
         if isinstance(data, list):
@@ -2708,7 +3091,98 @@ def findings():
         search_action="/findings",
         reset_action=f"/findings?status={status_filter}",
         dashboard=False,
+        findings_validation_enabled=True,
+        findings_review_csrf_token=FINDINGS_REVIEW_CSRF_TOKEN,
+        validated_findings_count=len(validated_rows),
     )
+
+
+@app.route('/findings/review', methods=['POST'])
+def update_finding_review():
+    if request.headers.get("X-Azure-Assess-CSRF") != FINDINGS_REVIEW_CSRF_TOKEN:
+        return jsonify({"error": "The findings review request token was invalid."}), 403
+    if request.content_length is not None and request.content_length > 16_384:
+        return jsonify({"error": "The findings review request was too large."}), 413
+    if not request.is_json:
+        return jsonify({"error": "The findings review request must be JSON."}), 415
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "The findings review request was malformed."}), 400
+
+    finding_id = payload.get("finding_id")
+    confirmed = payload.get("confirmed")
+    reviewer = payload.get("reviewer")
+    if (
+        not isinstance(finding_id, str)
+        or not finding_id
+        or len(finding_id) > MAX_FINDING_ID_LENGTH
+    ):
+        return jsonify({"error": "A valid finding_id is required."}), 400
+    if not isinstance(confirmed, bool):
+        return jsonify({"error": "confirmed must be true or false."}), 400
+    if not isinstance(reviewer, str) or not reviewer.strip():
+        return jsonify({"error": "A reviewer name is required."}), 400
+    reviewer = reviewer.strip()
+
+    try:
+        with FINDINGS_REVIEW_LOCK:
+            rows, overrides = load_effective_finding_rows()
+            rows_by_id = {row["finding_id"]: row for row in rows}
+            row = rows_by_id.get(finding_id)
+            if row is None:
+                return jsonify({"error": "The finding is not in the current assessment."}), 404
+            if row.get("status") != "found":
+                return jsonify({"error": "Only raised findings can be validated."}), 409
+
+            override = review_override_from_effective_review(
+                row,
+                reviewer,
+                confirmed,
+            )
+            overrides[finding_id] = override
+            save_review_overrides(findings_review_path(), overrides)
+            apply_review_override(row, override)
+            validated_count = len(confirmed_finding_rows(rows))
+    except (OSError, ValueError) as exc:
+        return jsonify({"error": f"Could not save the findings review: {exc}"}), 500
+
+    return jsonify(
+        {
+            "finding_id": finding_id,
+            "confirmed": confirmed,
+            "review": row["review"],
+            "validated_findings": validated_count,
+        }
+    )
+
+
+@app.route('/findings/export-validated-sarif')
+def export_validated_findings_sarif():
+    try:
+        with FINDINGS_REVIEW_LOCK:
+            rows, _ = load_effective_finding_rows()
+            validated_rows = confirmed_finding_rows(rows)
+            sarif_path = findings_sarif_path()
+            source_sarif = load_json_file(sarif_path)
+            if source_sarif is None:
+                raise ValueError(f"Could not load source SARIF from {sarif_path}")
+            output = build_validated_sarif(source_sarif, validated_rows)
+    except (OSError, ValueError) as exc:
+        return (
+            "<p>Could not export validated SARIF: "
+            f"<code>{escape(str(exc))}</code></p>"
+        ), 409
+
+    response = Response(
+        json.dumps(output, indent=2) + "\n",
+        content_type="application/sarif+json; charset=utf-8",
+    )
+    response.headers["Content-Disposition"] = (
+        f'attachment; filename="{VALIDATED_FINDINGS_SARIF_FILENAME}"'
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 @app.route('/query/<filename>', methods=['GET', 'POST'])
 def query(filename):

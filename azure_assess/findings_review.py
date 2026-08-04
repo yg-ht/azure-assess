@@ -2,6 +2,8 @@
 """Analyst review dispositions and evidence-confidence metadata."""
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
@@ -262,6 +264,52 @@ def load_review_overrides(path: Path) -> Dict[str, Dict[str, Any]]:
             raise ValueError(f"Duplicate review override for {finding_id}")
         overrides[finding_id] = dict(review)
     return overrides
+
+
+def save_review_overrides(
+    path: Path,
+    overrides: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """Validate and atomically save analyst review overrides."""
+    review_path = Path(path)
+    reviews = []
+    for finding_id in sorted(overrides):
+        review = dict(overrides[finding_id])
+        validate_review_override(review)
+        if review["finding_id"] != finding_id:
+            raise ValueError(
+                f"Review override key does not match finding_id for {finding_id}"
+            )
+        reviews.append(review)
+
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=review_path.parent,
+            prefix=f".{review_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(
+                {
+                    "schema_version": REVIEW_SCHEMA_VERSION,
+                    "reviews": reviews,
+                },
+                handle,
+                indent=2,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, 0o600)
+        os.replace(temporary_path, review_path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
 
 
 def apply_review_override(

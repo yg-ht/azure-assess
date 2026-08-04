@@ -222,6 +222,22 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
 
 
 class AzurePresentDatasetIndexTests(unittest.TestCase):
+    def test_review_and_validated_export_files_are_not_data_viewer_datasets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            dataset = data_dir / "az_resource_list_20260804-120000.json"
+            dataset.write_text("[]", encoding="utf-8")
+            for filename in (
+                azure_present.FINDINGS_REVIEW_FILENAME,
+                azure_present.VALIDATED_FINDINGS_SARIF_FILENAME,
+            ):
+                (data_dir / filename).write_text("{}", encoding="utf-8")
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                files = azure_present.standard_data_files()
+
+        self.assertEqual(files, [dataset])
+
     def test_singleton_graph_object_is_rendered_as_one_horizontal_row(self):
         graph_policy = {
             "@odata.context": (
@@ -640,6 +656,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         finding_rows = {
             "rows": [
                 {
+                    "finding_id": "example_finding_with_links",
                     "title": "Example finding",
                     "severity": "medium",
                     "status": "found",
@@ -670,6 +687,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         finding_rows = {
             "rows": [
                 {
+                    "finding_id": "example_loading_finding",
                     "title": "Example finding",
                     "severity": "medium",
                     "status": "found",
@@ -719,6 +737,267 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn(">Search</button>", actions_row)
         self.assertIn(">Reset Search</a>", actions_row)
         self.assertIn('aria-label="Table font size"', actions_row)
+        self.assertIn('id="findingsReviewer"', actions_row)
+        self.assertIn('id="exportValidatedSarif"', actions_row)
+        self.assertIn("Validated finding:", body)
+        self.assertIn("/findings/review", body)
+
+    def test_findings_review_requires_csrf_and_persists_confirmation(self):
+        finding_rows = {
+            "rows": [
+                {
+                    "finding_id": "example_finding",
+                    "title": "Example finding",
+                    "severity": "High",
+                    "status": "found",
+                    "reason": "Regression test",
+                    "count": 1,
+                    "evidence": [{"name": "account-one"}],
+                    "reporting": {"assets": [], "observations": []},
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / azure_present.FINDINGS_FLAT_FILENAME).write_text(
+                json.dumps(finding_rows), encoding="utf-8"
+            )
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                rejected = client.post(
+                    "/findings/review",
+                    json={
+                        "finding_id": "example_finding",
+                        "confirmed": True,
+                        "reviewer": "A. Tester",
+                    },
+                )
+                response = client.post(
+                    "/findings/review",
+                    headers={
+                        "X-Azure-Assess-CSRF": azure_present.FINDINGS_REVIEW_CSRF_TOKEN
+                    },
+                    json={
+                        "finding_id": "example_finding",
+                        "confirmed": True,
+                        "reviewer": "A. Tester",
+                    },
+                )
+                saved = json.loads(
+                    (data_dir / azure_present.FINDINGS_REVIEW_FILENAME).read_text(
+                        encoding="utf-8"
+                    )
+                )
+
+        self.assertEqual(rejected.status_code, 403)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json()["confirmed"])
+        self.assertEqual(response.get_json()["validated_findings"], 1)
+        self.assertEqual(saved["schema_version"], "1.0")
+        self.assertEqual(saved["reviews"][0]["finding_id"], "example_finding")
+        self.assertEqual(saved["reviews"][0]["disposition"], "confirmed")
+        self.assertEqual(saved["reviews"][0]["reviewer"], "A. Tester")
+        self.assertTrue(saved["reviews"][0]["reviewed_at"].endswith("Z"))
+
+    def test_findings_review_rejects_non_findings_and_unknown_ids(self):
+        finding_rows = {
+            "rows": [
+                {
+                    "finding_id": "clear_check",
+                    "title": "Clear check",
+                    "severity": "Low",
+                    "status": "not_found",
+                    "reason": "Nothing was found",
+                    "count": 0,
+                    "evidence": [],
+                }
+            ]
+        }
+        headers = {
+            "X-Azure-Assess-CSRF": azure_present.FINDINGS_REVIEW_CSRF_TOKEN
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / azure_present.FINDINGS_FLAT_FILENAME).write_text(
+                json.dumps(finding_rows), encoding="utf-8"
+            )
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                clear_response = client.post(
+                    "/findings/review",
+                    headers=headers,
+                    json={
+                        "finding_id": "clear_check",
+                        "confirmed": True,
+                        "reviewer": "A. Tester",
+                    },
+                )
+                unknown_response = client.post(
+                    "/findings/review",
+                    headers=headers,
+                    json={
+                        "finding_id": "unknown_check",
+                        "confirmed": True,
+                        "reviewer": "A. Tester",
+                    },
+                )
+
+        self.assertEqual(clear_response.status_code, 409)
+        self.assertEqual(unknown_response.status_code, 404)
+
+    def test_validated_sarif_export_contains_only_confirmed_results(self):
+        finding_rows = {
+            "rows": [
+                {
+                    "finding_id": finding_id,
+                    "title": title,
+                    "severity": "High",
+                    "status": "found",
+                    "reason": "Regression test",
+                    "count": 1,
+                    "evidence": [{"name": finding_id}],
+                    "reporting": {"assets": [], "observations": []},
+                }
+                for finding_id, title in (
+                    ("confirmed_finding", "Confirmed finding"),
+                    ("candidate_finding", "Candidate finding"),
+                )
+            ]
+        }
+        source_sarif = {
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [
+                {
+                    "tool": {
+                        "driver": {
+                            "name": "azure-findings",
+                            "rules": [
+                                {"id": "confirmed_finding"},
+                                {"id": "candidate_finding"},
+                            ],
+                        }
+                    },
+                    "invocations": [
+                        {
+                            "executionSuccessful": True,
+                            "properties": {"found_findings": 2},
+                        }
+                    ],
+                    "results": [
+                        {
+                            "ruleId": finding_id,
+                            "properties": {
+                                "finding_id": finding_id,
+                                "review": {"disposition": "candidate"},
+                            },
+                        }
+                        for finding_id in ("confirmed_finding", "candidate_finding")
+                    ],
+                }
+            ],
+        }
+        confirmed_review = {
+            "finding_id": "confirmed_finding",
+            "disposition": "confirmed",
+            "reviewer": "A. Tester",
+            "reviewed_at": "2026-08-04T12:00:00Z",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / azure_present.FINDINGS_FLAT_FILENAME).write_text(
+                json.dumps(finding_rows), encoding="utf-8"
+            )
+            (data_dir / azure_present.FINDINGS_SARIF_FILENAME).write_text(
+                json.dumps(source_sarif), encoding="utf-8"
+            )
+            azure_present.save_review_overrides(
+                data_dir / azure_present.FINDINGS_REVIEW_FILENAME,
+                {"confirmed_finding": confirmed_review},
+            )
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                response = azure_present.app.test_client().get(
+                    "/findings/export-validated-sarif"
+                )
+
+        exported = response.get_json()
+        run = exported["runs"][0]
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/sarif+json")
+        self.assertIn(
+            azure_present.VALIDATED_FINDINGS_SARIF_FILENAME,
+            response.headers["Content-Disposition"],
+        )
+        self.assertEqual([result["ruleId"] for result in run["results"]], ["confirmed_finding"])
+        self.assertEqual([rule["id"] for rule in run["tool"]["driver"]["rules"]], ["confirmed_finding"])
+        self.assertEqual(
+            run["results"][0]["properties"]["review"]["disposition"],
+            "confirmed",
+        )
+        self.assertEqual(exported["properties"]["validated_findings"], 1)
+        self.assertEqual(run["invocations"][0]["properties"]["found_findings"], 1)
+        self.assertEqual(
+            run["invocations"][0]["properties"]["source_found_findings"],
+            2,
+        )
+
+    def test_validated_sarif_rejects_conflicting_result_identifiers(self):
+        source_sarif = {
+            "version": "2.1.0",
+            "runs": [
+                {
+                    "results": [
+                        {
+                            "ruleId": "different_finding",
+                            "properties": {"finding_id": "confirmed_finding"},
+                        }
+                    ]
+                }
+            ],
+        }
+        confirmed = {
+            "finding_id": "confirmed_finding",
+            "status": "found",
+            "review": {"disposition": "confirmed"},
+        }
+
+        with self.assertRaisesRegex(ValueError, "conflicting finding_id"):
+            azure_present.build_validated_sarif(source_sarif, [confirmed])
+
+    def test_checkbox_override_preserves_existing_analyst_metadata(self):
+        row = {
+            "finding_id": "confirmed_finding",
+            "review": {
+                "confidence": {
+                    "level": "high",
+                    "source": "analyst",
+                    "rationale": ["Portal evidence was checked."],
+                },
+                "analyst": {
+                    "notes": "Retain this note.",
+                    "contextual_severity": {
+                        "level": "Critical",
+                        "rationale": "Production exposure.",
+                    },
+                },
+            },
+        }
+
+        override = azure_present.review_override_from_effective_review(
+            row,
+            "Second Analyst",
+            False,
+        )
+
+        self.assertEqual(override["disposition"], "candidate")
+        self.assertEqual(override["reviewer"], "Second Analyst")
+        self.assertEqual(override["notes"], "Retain this note.")
+        self.assertEqual(override["confidence"]["level"], "high")
+        self.assertEqual(
+            override["contextual_severity"]["rationale"],
+            "Production exposure.",
+        )
 
     def test_dataset_query_route_uses_the_same_loading_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:

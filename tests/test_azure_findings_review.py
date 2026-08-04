@@ -11,6 +11,7 @@ from azure_assess.findings_review import (
     apply_review_overrides,
     automated_confidence,
     load_review_overrides,
+    save_review_overrides,
     validate_finding_review,
 )
 
@@ -342,6 +343,48 @@ class FindingReviewFileTests(unittest.TestCase):
             resolved,
             Path("/tmp/assessment/reviews/analyst.json"),
         )
+
+    def test_review_file_is_saved_atomically_and_can_be_loaded(self):
+        finding = review_finding()
+        review = confirmed_override(finding["finding_id"])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            review_path = Path(tmpdir) / "reviews" / "analyst.json"
+
+            save_review_overrides(
+                review_path,
+                {finding["finding_id"]: review},
+            )
+
+            self.assertEqual(
+                load_review_overrides(review_path)[finding["finding_id"]],
+                review,
+            )
+            self.assertEqual(review_path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(review_path.parent.glob("*.tmp")), [])
+
+    def test_invalid_review_does_not_replace_an_existing_file(self):
+        finding = review_finding()
+        review_path = None
+        with tempfile.TemporaryDirectory() as tmpdir:
+            review_path = Path(tmpdir) / "reviews.json"
+            review_path.write_text('{"existing": true}\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "reviewer is required"):
+                save_review_overrides(
+                    review_path,
+                    {
+                        finding["finding_id"]: {
+                            "finding_id": finding["finding_id"],
+                            "disposition": "confirmed",
+                            "reviewed_at": "2026-08-04T12:00:00Z",
+                        }
+                    },
+                )
+
+            self.assertEqual(
+                review_path.read_text(encoding="utf-8"),
+                '{"existing": true}\n',
+            )
 
 
 class FindingReviewOutputTests(unittest.TestCase):
