@@ -136,6 +136,19 @@ class CollectionManifestContentTests(unittest.TestCase):
         self.assertEqual(manifest["endpoint_runs"][0]["status"], "not_applicable")
         self.assertEqual(manifest["errors"], [])
 
+    def test_unsupported_diagnostic_resource_type_is_not_applicable(self):
+        status = classify_execution_status(
+            1,
+            None,
+            error_message="Azure CLI request failed with return code 1",
+            diagnostic_text=(
+                "ERROR: (ResourceTypeNotSupported) The resource type "
+                "'microsoft.compute/snapshots' does not support diagnostic settings."
+            ),
+        )
+
+        self.assertEqual(status, "not_applicable")
+
     def test_non_premium_tenant_response_is_not_classified_as_unauthorised(self):
         diagnostic = json.dumps(
             {

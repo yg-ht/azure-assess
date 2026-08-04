@@ -1663,6 +1663,11 @@ def load_collect_endpoint_name_map():
             endpoint_map[endpoint_output_prefix(endpoint)] = endpoint["name"]
 
     endpoint_map["role_enriched"] = "Role Assignments Enriched"
+    endpoint_map["az_ams_account_list"] = "Media Services"
+    endpoint_map["az_dls_account_list"] = "Data Lake Store Accounts"
+    endpoint_map[
+        "az_network_application-gateway_ssl-policy_show_--gateway-name_name_--resource-group_resourcegroup"
+    ] = "Application Gateway SSL Policy"
     return endpoint_map
 
 

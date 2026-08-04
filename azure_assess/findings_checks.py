@@ -2308,23 +2308,45 @@ def find_keyvault_recovery_protection_disabled(key_vaults):
     )
 
 def find_resource_diagnostic_settings_missing(resources, diagnostic_settings):
+    assessed = set()
     configured = set()
     for setting in diagnostic_settings:
         resource_id = normalize_text(collection_parameters(setting).get("id"))
-        if resource_id:
+        if not resource_id:
+            continue
+        assessed.add(resource_id)
+        collection_result = setting.get("_collectionResult") or {}
+        if (
+            not isinstance(collection_result, dict)
+            or collection_result.get("status") != "empty"
+        ):
             configured.add(resource_id)
 
-    evidence = []
+    eligible_resources = []
+    seen_resource_ids = set()
     for resource in resources:
         resource_id = normalize_text(resource.get("id"))
-        if resource_id and resource_id not in configured:
-            evidence.append(resource_brief(resource))
-    return result(
+        if resource_id in assessed and resource_id not in seen_resource_ids:
+            eligible_resources.append(resource_brief(resource))
+            seen_resource_ids.add(resource_id)
+    evidence = []
+    for resource in eligible_resources:
+        if normalize_text(resource.get("id")) not in configured:
+            evidence.append(resource)
+
+    finding = result(
         "Diagnostic Settings Not Configured",
         "Low",
-        "Flags collected Azure resources for which azure-collect found no resource-scoped diagnostic setting.",
+        "Flags Azure resources whose diagnostic-setting capability was verified but for which azure-collect found no resource-scoped diagnostic setting.",
         evidence,
     )
+    finding["_coverage_eligible_assets"] = eligible_resources
+    if not assessed:
+        finding["status"] = "no_data_to_assess"
+        finding["reason"] = (
+            "No Azure resources had a successfully assessed diagnostic-setting endpoint."
+        )
+    return finding
 
 def find_activity_log_profile_incomplete(log_profiles):
     evidence = []

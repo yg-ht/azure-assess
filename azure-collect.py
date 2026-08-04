@@ -346,6 +346,7 @@ def timed_run_az_cli(
     endpoint_identifier=None,
 ):
     """Run an Azure CLI command and capture timing metadata."""
+    command_text = command_display(cmd)
     started_at = utc_timestamp()
     started = monotonic()
     previous_endpoint = getattr(AZURE_CLI_CONTEXT, "endpoint_name", None)
@@ -362,7 +363,7 @@ def timed_run_az_cli(
     record_timing(
         endpoint_name,
         category,
-        cmd,
+        command_text,
         duration,
         returncode=result.get("returncode"),
         result_count=result_item_count(result.get("json")),
@@ -380,7 +381,7 @@ def timed_run_az_cli(
         COLLECTION_MANIFEST.record_execution(
             endpoint_name=endpoint_name or "unknown",
             category=category,
-            command_template=command_template or cmd,
+            command_template=command_template or command_text,
             parameter_context=parameter_context,
             started_at=started_at,
             duration_seconds=duration,
@@ -392,7 +393,7 @@ def timed_run_az_cli(
             retry_count=retry_count,
             access_verification=endpoint_access_verification(
                 endpoint_name,
-                command_template or cmd,
+                command_template or command_text,
             ),
         )
     return result
@@ -664,7 +665,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Managed Identities", "cli_command": "az identity list", "needs_pagination": False},
     {"name": "Machine Learning Workspaces", "cli_command": "az ml workspace list", "needs_pagination": False},
     {"name": "Maps Accounts", "cli_command": "az maps account list", "needs_pagination": False},
-    {"name": "Media Services", "cli_command": "az ams account list", "needs_pagination": False},
     {"name": "Monitor Activity Logs", "cli_command": "az monitor activity-log list", "needs_pagination": True},
     {"name": "NAT Gateways", "cli_command": "az network nat gateway list", "needs_pagination": False},
     {"name": "Network Interfaces", "cli_command": "az network nic list", "needs_pagination": False},
@@ -704,7 +704,6 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "VM Dedicated Host Groups", "cli_command": "az vm host group list", "needs_pagination": True},
     {"name": "VM Scale Sets", "cli_command": "az vmss list", "needs_pagination": False},
     {"name": "Web Apps", "cli_command": "az webapp list", "needs_pagination": False},
-    {"name": "Data Lake Store Accounts", "cli_command": "az dls account list", "needs_pagination": False},
     {"name": "Kubernetes Environments", "cli_command": "az resource list --resource-type Microsoft.Web/kubeEnvironments", "needs_pagination": False},
     {"name": "Management Groups", "cli_command": "az account management-group list", "needs_pagination": False},
     {"name": "Workspaces", "cli_command": "az monitor account list", "needs_pagination": False},
@@ -901,8 +900,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Storage Queue CORS Rules",
-        "cli_command": "az storage cors list --services q --account-name {name} --auth-mode login",
-        "required_params": {"name": "az_storage_account_list"},
+        "cli_command": "az rest --method get --url \"{id}/queueServices/default?api-version=2025-06-01\" --query properties.cors.corsRules",
+        "required_params": {"id": "az_storage_account_list"},
+        "output_prefix": "az_storage_cors_list_--services_q_--account-name_name_--auth-mode_login",
     },
     {
         "name": "Storage File Service Properties",
@@ -936,8 +936,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Storage Private Endpoint Connections",
-        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.Storage/storageAccounts",
-        "required_params": {"name": "az_storage_account_list", "resourceGroup": "az_storage_account_list"},
+        "cli_command": "az network private-endpoint-connection list --id {id}",
+        "required_params": {"id": "az_storage_account_list"},
+        "output_prefix": "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.storage_storageaccounts",
     },
     {
         "name": "Storage Blobs",
@@ -955,11 +956,17 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "cli_command": "az network application-gateway waf-config show --gateway-name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_network_application-gateway_list",
                             "resourceGroup": "az_network_application-gateway_list"},
+        "required_source_values": {
+            "az_network_application-gateway_list": {
+                "sku.tier": {"WAF", "WAF_v2"},
+            }
+        },
     },
     {
         "name": "App Service Private Endpoint Connections",
-        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.Web/sites",
-        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
+        "cli_command": "az network private-endpoint-connection list --id {id}",
+        "required_params": {"id": "az_webapp_list"},
+        "output_prefix": "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.web_sites",
     },
     {
         "name": "Private Endpoint Details",
@@ -989,14 +996,18 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "required_params": {"name": "az_network_nat_gateway_list", "resourceGroup": "az_network_nat_gateway_list"},
     },
     {
-        "name": "Diagnostic Settings",
-        "cli_command": "az monitor diagnostic-settings list --resource {id}",
-        "required_params": {"id": "az_resource_list"},
-    },
-    {
         "name": "Diagnostic Settings Categories",
         "cli_command": "az monitor diagnostic-settings categories list --resource {id}",
         "required_params": {"id": "az_resource_list"},
+    },
+    {
+        "name": "Diagnostic Settings",
+        "cli_command": "az monitor diagnostic-settings list --resource {id}",
+        "required_params": {
+            "id": "az_monitor_diagnostic-settings_categories_list",
+        },
+        "prefer_collection_context_params": {"id"},
+        "preserve_empty_result": True,
     },
     {
         "name": "Application Insights Details",
@@ -1031,8 +1042,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "App Configuration Private Endpoint Connections",
-        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.AppConfiguration/configurationStores",
-        "required_params": {"name": "az_appconfig_list", "resourceGroup": "az_appconfig_list"},
+        "cli_command": "az network private-endpoint-connection list --id {id}",
+        "required_params": {"id": "az_appconfig_list"},
+        "output_prefix": "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.appconfiguration_configurationstores",
     },
     {
         "name": "Function App Identity",
@@ -1096,18 +1108,13 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Key Vault Private Endpoint Connections (explicit)",
-        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.KeyVault/vaults",
-        "required_params": {"name": "az_keyvault_list", "resourceGroup": "az_keyvault_list"},
+        "cli_command": "az network private-endpoint-connection list --id {id}",
+        "required_params": {"id": "az_keyvault_list"},
+        "output_prefix": "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.keyvault_vaults",
     },
     {
         "name": "Application Gateway SSL Certs",
         "cli_command": "az network application-gateway ssl-cert list --gateway-name {name} --resource-group {resourceGroup}",
-        "required_params": {"name": "az_network_application-gateway_list",
-                            "resourceGroup": "az_network_application-gateway_list"},
-    },
-    {
-        "name": "Application Gateway SSL Policy",
-        "cli_command": "az network application-gateway ssl-policy show --gateway-name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_network_application-gateway_list",
                             "resourceGroup": "az_network_application-gateway_list"},
     },
@@ -1143,9 +1150,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Application Gateway Private Endpoint Connections",
-        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.Network/applicationGateways",
-        "required_params": {"name": "az_network_application-gateway_list",
-                            "resourceGroup": "az_network_application-gateway_list"},
+        "cli_command": "az network private-endpoint-connection list --id {id}",
+        "required_params": {"id": "az_network_application-gateway_list"},
+        "output_prefix": "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.network_applicationgateways",
     },
     {
         "name": "Private Endpoint IP Configs",
@@ -1175,8 +1182,9 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
     },
     {
         "name": "Container Registry Private Endpoint Connections",
-        "cli_command": "az network private-endpoint-connection list --resource-group {resourceGroup} --resource-name {name} --type Microsoft.ContainerRegistry/registries",
-        "required_params": {"name": "az_acr_list", "resourceGroup": "az_acr_list"},
+        "cli_command": "az network private-endpoint-connection list --id {id}",
+        "required_params": {"id": "az_acr_list"},
+        "output_prefix": "az_network_private-endpoint-connection_list_--resource-group_resourcegroup_--resource-name_name_--type_microsoft.containerregistry_registries",
     },
     {
         "name": "Cosmos DB SQL Role Assignments",
@@ -1576,14 +1584,63 @@ def shell_quote(value):
     return shlex.quote(str(value))
 
 
+def command_argv(command):
+    """Return a validated argument vector without invoking a command shell."""
+    if isinstance(command, str):
+        arguments = shlex.split(command)
+    elif isinstance(command, (list, tuple)):
+        arguments = list(command)
+    else:
+        raise TypeError("Azure CLI command must be a string or argument sequence")
+    if not arguments or not all(
+        isinstance(argument, str) and argument for argument in arguments
+    ):
+        raise ValueError("Azure CLI command arguments must be non-empty strings")
+    if any("\x00" in argument for argument in arguments):
+        raise ValueError("Azure CLI command arguments cannot contain NUL characters")
+    return arguments
+
+
+def command_display(command):
+    """Return a shell-readable representation used only for diagnostics."""
+    return shlex.join(command_argv(command))
+
+
+def format_parameterised_cli_command(template, parameters):
+    """Substitute parameter values after parsing the trusted CLI template."""
+    markers = {
+        name: f"__AZURE_ASSESS_PARAMETER_{index}__"
+        for index, name in enumerate(parameters)
+    }
+    formatted_template = template.format(**markers)
+    arguments = shlex.split(formatted_template)
+    marker_values = {
+        marker: str(parameters[name])
+        for name, marker in markers.items()
+    }
+    if not marker_values:
+        return arguments
+    marker_pattern = re.compile(
+        "|".join(re.escape(marker) for marker in marker_values)
+    )
+    return [
+        marker_pattern.sub(lambda match: marker_values[match.group(0)], argument)
+        for argument in arguments
+    ]
+
+
 def run_az_command(command, capture_output=False):
-    return subprocess.run(command, shell=True, capture_output=capture_output, text=True)
+    return subprocess.run(
+        command_argv(command),
+        capture_output=capture_output,
+        text=True,
+    )
 
 
 def run_az_cli_process(cmd):
+    arguments = command_argv(cmd)
     process = subprocess.Popen(
-        cmd,
-        shell=True,
+        arguments,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True
@@ -1612,7 +1669,7 @@ def run_az_cli_process(cmd):
 
     stdout = ''.join(stdout_lines).strip()
     return {
-        "args": cmd,
+        "args": command_display(arguments),
         "returncode": process.returncode,
         "success": process.returncode == 0,
         "stdout": stdout,
@@ -1637,8 +1694,8 @@ def extract_required_extension_name(output):
 
 def infer_extension_from_command(cmd):
     try:
-        tokens = shlex.split(cmd)
-    except ValueError:
+        tokens = command_argv(cmd)
+    except (TypeError, ValueError):
         return None
 
     if len(tokens) < 2 or tokens[0] != "az" or tokens[1] == "extension":
@@ -1833,7 +1890,7 @@ def validate_auth_session(subscription_id=None):
 
 
 def run_json_command(command):
-    """Run a shell command expected to return JSON."""
+    """Run an Azure CLI command expected to return JSON."""
     result = run_az_command(command, capture_output=True)
     output = "\n".join(
         stream.strip()
@@ -2783,8 +2840,10 @@ def ensure_az_login(force_reauth=False, skip_permission_baseline=False):
 
 def run_az_cli(cmd, endpoint_name=None, category=None):
     """Run an Azure CLI command and return structured output with stderr and parsed JSON."""
-    if '--output json' not in cmd:
-        cmd = cmd + ' --output json'
+    cmd = command_argv(cmd)
+    if "--output" not in cmd and "-o" not in cmd:
+        cmd.extend(["--output", "json"])
+    command_text = command_display(cmd)
     endpoint_name = endpoint_name if endpoint_name is not None else getattr(AZURE_CLI_CONTEXT, "endpoint_name", None)
     category = category if category is not None else getattr(AZURE_CLI_CONTEXT, "category", "collection")
     if category is None:
@@ -2795,7 +2854,7 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
     try:
         result = run_az_cli_process(cmd)
         if DEBUG:
-            debug_memory(f"process completed: {cmd}")
+            debug_memory(f"process completed: {command_text}")
             print(f"Return code: {result['returncode']}")
 
         if result["returncode"] != 0:
@@ -2834,10 +2893,10 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
 
         else:
             if DEBUG:
-                debug_memory(f"before warning filter: {cmd}")
+                debug_memory(f"before warning filter: {command_text}")
             result["stdout"], matched_sigs = filter_az_cli_warning_output(result["stdout"])
             if DEBUG:
-                debug_memory(f"after warning filter: {cmd}")
+                debug_memory(f"after warning filter: {command_text}")
             if matched_sigs:
                 if DEBUG:
                     print(f"[DEBUG] Found warning message signature(s): {matched_sigs}, attempting to filter")
@@ -2847,10 +2906,10 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
             if result["stdout"].strip():
                 try:
                     if DEBUG:
-                        debug_memory(f"before JSON parse: {cmd}")
+                        debug_memory(f"before JSON parse: {command_text}")
                     result["json"] = parse_json_from_az_output(result["stdout"])
                     if DEBUG:
-                        debug_memory(f"after JSON parse: {cmd}")
+                        debug_memory(f"after JSON parse: {command_text}")
                 except Exception as e:
                     print(f"JSON parsing error: {e}")
                     if not any(sig in result["stdout"].lower() for sig in AZURE_CLI_OUTPUT_WARNING_SIGNATURES):
@@ -2863,11 +2922,11 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
             # Keep a concise classification alongside the command output. The
             # manifest recorder combines both and applies its error-length limit.
             result["collection_error"] = error_message
-            context = endpoint_name or cmd
+            context = endpoint_name or command_text
             if is_not_applicable_error(result.get("stdout")):
                 print(f"[~] Request not applicable for {context}")
             else:
-                record_collection_error(cmd, error_message, result, endpoint_name=endpoint_name, category=category)
+                record_collection_error(command_text, error_message, result, endpoint_name=endpoint_name, category=category)
                 print(f"[!] Recorded command error for {context}: {error_message}")
                 if not result or not result.get("returncode"):
                     sleep(1)
@@ -2878,7 +2937,7 @@ def run_az_cli(cmd, endpoint_name=None, category=None):
     except Exception as e:
         print("\n\n")
         print(f"===========================================")
-        print(f"[ERROR] Exception running command: {cmd}")
+        print(f"[ERROR] Exception running command: {command_text}")
         if result and result.get("stdout"):
             print(f"Process details: {str(result['stdout'])}")
         print(f"Exception message: {str(e)}")
@@ -3297,11 +3356,12 @@ def filter_source_records_for_endpoint(endpoint, source, records):
     return filtered_records
 
 
-def resolve_param_value(item, param):
+def resolve_param_value(item, param, prefer_collection_context=False):
     """Resolve a parameter from a record or its collection context."""
-    value = item.get(param)
+    context_value = item.get("_collectionContext", {}).get("parameters", {}).get(param)
+    value = context_value if prefer_collection_context else item.get(param)
     if value is None:
-        value = item.get("_collectionContext", {}).get("parameters", {}).get(param)
+        value = item.get(param) if prefer_collection_context else context_value
     if value is None and param == "name":
         value = resource_name_from_id(item.get("id"))
     if value is None or isinstance(value, (dict, list)):
@@ -3423,13 +3483,16 @@ def collect_parameter_set(endpoint, param_set):
     cli_template = endpoint["cli_command"]
 
     try:
-        cli_command = cli_template.format(**param_set)
+        cli_command = format_parameterised_cli_command(cli_template, param_set)
     except KeyError as e:
         print(f"[!] Skipping {name}: Missing placeholder for {str(e)}")
         return []
+    except (IndexError, ValueError) as e:
+        print(f"[!] Skipping {name}: Invalid parameter template: {e}")
+        return []
 
     if DEBUG:
-        print(f"[DEBUG] Running command: {cli_command}")
+        print(f"[DEBUG] Running command: {command_display(cli_command)}")
 
     print(f"[*] Fetching: {name} with parameters: {param_set} ...")
     try:
@@ -3448,6 +3511,14 @@ def collect_parameter_set(endpoint, param_set):
 
         if result_item_count(data) == 0:
             print(f"[!] No data returned for: {name} with {param_set}")
+            if endpoint.get("preserve_empty_result") and result.get("returncode") == 0:
+                return [
+                    attach_collection_context(
+                        {"_collectionResult": {"status": "empty"}},
+                        name,
+                        param_set,
+                    )
+                ]
             return []
 
         data = attach_collection_context(data, name, param_set)
@@ -3507,6 +3578,9 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
         cli_template = endpoint["cli_command"]
         required_param_sources = endpoint.get("required_params", {})
         required_params = list(required_param_sources.keys())
+        preferred_context_params = set(
+            endpoint.get("prefer_collection_context_params", ())
+        )
 
         if DEBUG:
             print(f"[DEBUG] Processing endpoint: {name}")
@@ -3543,7 +3617,11 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
         for param, source in required_param_sources.items():
             values = []
             for item in source_records.get(source, []):
-                value = resolve_param_value(item, param)
+                value = resolve_param_value(
+                    item,
+                    param,
+                    prefer_collection_context=param in preferred_context_params,
+                )
                 if value:
                     values.append(value)
             if not values:
@@ -3666,7 +3744,11 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
                 missing_value = False
 
                 for param in params_in_group:
-                    value = resolve_param_value(item, param)
+                    value = resolve_param_value(
+                        item,
+                        param,
+                        prefer_collection_context=param in preferred_context_params,
+                    )
                     if not value:
                         missing_value = True
                         break
@@ -3713,10 +3795,11 @@ def collect_data_with_params(param_endpoints, current_run_only=True, max_workers
             param_combinations.append(merged)
 
         try:
-            cli_template.format(
-                **{param: "validation-value" for param in required_params}
+            format_parameterised_cli_command(
+                cli_template,
+                {param: "validation-value" for param in required_params},
             )
-        except (KeyError, ValueError) as exc:
+        except (IndexError, KeyError, ValueError) as exc:
             print(f"[!] Skipping {name}: Invalid parameter template: {exc}")
             record_parameter_endpoint_skip(
                 endpoint,

@@ -103,6 +103,9 @@ GRAPH_ACCESS_VERIFICATION_KEYS = {
 NOT_APPLICABLE_ERROR_MARKERS = (
     "network watcher is not enabled for region",
 )
+NOT_APPLICABLE_ERROR_CODES = {
+    "resourcetypenotsupported",
+}
 TENANT_UNAVAILABLE_ERROR_CODES = {
     "authenticationrequestfromnonpremiumtenantorb2ctenant",
 }
@@ -173,7 +176,15 @@ def extract_azure_error_code(value: Any) -> Optional[str]:
 def is_not_applicable_error(value: Any) -> bool:
     """Return whether Azure explicitly reported a known inapplicable scope."""
     text = str(value or "").strip().lower()
-    return bool(text) and any(marker in text for marker in NOT_APPLICABLE_ERROR_MARKERS)
+    error_code = re.sub(
+        r"[^a-z0-9]",
+        "",
+        str(extract_azure_error_code(value) or "").lower(),
+    )
+    return bool(text) and (
+        error_code in NOT_APPLICABLE_ERROR_CODES
+        or any(marker in text for marker in NOT_APPLICABLE_ERROR_MARKERS)
+    )
 
 
 def is_tenant_unavailable_error(value: Any) -> bool:
@@ -381,7 +392,10 @@ def classify_execution_status(
         for item in (error_message, diagnostic_text)
     )
     if error_message or returncode not in (None, 0):
-        if is_not_applicable_error(combined_error):
+        if (
+            is_not_applicable_error(diagnostic_text)
+            or is_not_applicable_error(error_message)
+        ):
             return "not_applicable"
         if is_tenant_unavailable_error(diagnostic_text or error_message):
             return "tenant_unavailable"

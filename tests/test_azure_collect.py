@@ -22,6 +22,68 @@ azure_present = importlib.util.module_from_spec(PRESENT_SPEC)
 PRESENT_SPEC.loader.exec_module(azure_present)
 
 
+class AzureCliCommandSafetyTests(unittest.TestCase):
+    def test_parameter_values_remain_single_arguments_without_shell_interpretation(self):
+        resource_name = "alert (production); touch should-not-exist"
+        command = azure_collect.format_parameterised_cli_command(
+            "az monitor metrics list-namespaces --resource {id}",
+            {"id": resource_name},
+        )
+
+        self.assertEqual(
+            command,
+            ["az", "monitor", "metrics", "list-namespaces", "--resource", resource_name],
+        )
+
+        completed = mock.Mock(returncode=0)
+        with mock.patch.object(
+            azure_collect.subprocess,
+            "run",
+            return_value=completed,
+        ) as subprocess_run:
+            result = azure_collect.run_az_command(command, capture_output=True)
+
+        self.assertIs(result, completed)
+        subprocess_run.assert_called_once_with(
+            command,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotIn("shell", subprocess_run.call_args.kwargs)
+
+    def test_parameter_substitution_preserves_embedded_query_placeholders(self):
+        account_name = "storage account (production)"
+        command = azure_collect.format_parameterised_cli_command(
+            "az storage container list --account-name {name} --query "
+            "'[].{{container_name:name, storage_account_name:`{name}`}}'",
+            {"name": account_name},
+        )
+
+        self.assertEqual(command[5], account_name)
+        self.assertEqual(
+            command[7],
+            "[].{container_name:name, storage_account_name:`storage account (production)`}",
+        )
+
+    def test_empty_or_nul_arguments_are_rejected(self):
+        with self.assertRaises(ValueError):
+            azure_collect.command_argv(["az", ""])
+        with self.assertRaises(ValueError):
+            azure_collect.command_argv(["az", "bad\x00argument"])
+
+    def test_streaming_azure_cli_process_does_not_request_a_shell(self):
+        with mock.patch.object(
+            azure_collect.subprocess,
+            "Popen",
+            return_value=FakeAzProcess(0, "[]"),
+        ) as popen:
+            result = azure_collect.run_az_cli_process(["az", "account", "list"])
+
+        self.assertTrue(result["success"])
+        self.assertEqual(popen.call_args.args[0], ["az", "account", "list"])
+        self.assertNotIn("shell", popen.call_args.kwargs)
+
+
 class FakeAzProcess:
     def __init__(self, returncode, output):
         self.returncode = returncode
@@ -107,6 +169,150 @@ class DefenderAssessmentsEndpointTests(unittest.TestCase):
         self.assertEqual(saved_payloads[0][0], [{"name": "assessment"}])
         self.assertNotIn("/", saved_payloads[0][1])
         self.assertIn("microsoft.security_assessments", saved_payloads[0][1])
+
+
+class CorrectedAzureEndpointTests(unittest.TestCase):
+    def test_retired_services_are_not_requested(self):
+        endpoint_names = {
+            endpoint["name"]
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS
+            + azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+        }
+
+        self.assertNotIn("Data Lake Store Accounts", endpoint_names)
+        self.assertNotIn("Media Services", endpoint_names)
+        self.assertEqual(
+            azure_present.DATASET_NAME_MAP["az_ams_account_list"],
+            "Media Services",
+        )
+        self.assertEqual(
+            azure_present.DATASET_NAME_MAP["az_dls_account_list"],
+            "Data Lake Store Accounts",
+        )
+
+    def test_private_endpoint_connections_use_resource_ids(self):
+        corrected_endpoint_names = {
+            "Storage Private Endpoint Connections",
+            "App Service Private Endpoint Connections",
+            "App Configuration Private Endpoint Connections",
+            "Key Vault Private Endpoint Connections (explicit)",
+            "Application Gateway Private Endpoint Connections",
+            "Container Registry Private Endpoint Connections",
+        }
+        endpoints = [
+            endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if endpoint["name"] in corrected_endpoint_names
+        ]
+
+        self.assertEqual(len(endpoints), 6)
+        for endpoint in endpoints:
+            self.assertEqual(
+                endpoint["cli_command"],
+                "az network private-endpoint-connection list --id {id}",
+            )
+            self.assertEqual(list(endpoint["required_params"]), ["id"])
+            self.assertIn("--resource-name_name", endpoint["output_prefix"])
+
+    def test_storage_queue_cors_uses_the_arm_service_properties_endpoint(self):
+        endpoint = next(
+            item
+            for item in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+            if item["name"] == "Storage Queue CORS Rules"
+        )
+
+        self.assertEqual(endpoint["required_params"], {"id": "az_storage_account_list"})
+        self.assertIn("/queueServices/default?api-version=2025-06-01", endpoint["cli_command"])
+        self.assertIn("--query properties.cors.corsRules", endpoint["cli_command"])
+        self.assertEqual(
+            endpoint["output_prefix"],
+            "az_storage_cors_list_--services_q_--account-name_name_--auth-mode_login",
+        )
+
+    def test_application_gateway_collectors_only_request_supported_details(self):
+        endpoints = {
+            endpoint["name"]: endpoint
+            for endpoint in azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+        }
+
+        self.assertNotIn("Application Gateway SSL Policy", endpoints)
+        self.assertEqual(
+            azure_present.DATASET_NAME_MAP[
+                "az_network_application-gateway_ssl-policy_show_--gateway-name_name_--resource-group_resourcegroup"
+            ],
+            "Application Gateway SSL Policy",
+        )
+        self.assertEqual(
+            endpoints["Application Gateway WAF Config"]["required_source_values"],
+            {"az_network_application-gateway_list": {"sku.tier": {"WAF", "WAF_v2"}}},
+        )
+
+    def test_diagnostic_settings_follow_successful_category_discovery(self):
+        endpoints = azure_collect.AZURE_CLI_ENDPOINTS_PARAMS
+        categories_index = next(
+            index
+            for index, endpoint in enumerate(endpoints)
+            if endpoint["name"] == "Diagnostic Settings Categories"
+        )
+        settings_index = next(
+            index
+            for index, endpoint in enumerate(endpoints)
+            if endpoint["name"] == "Diagnostic Settings"
+        )
+        settings = endpoints[settings_index]
+
+        self.assertLess(categories_index, settings_index)
+        self.assertEqual(
+            settings["required_params"],
+            {"id": "az_monitor_diagnostic-settings_categories_list"},
+        )
+        self.assertEqual(settings["prefer_collection_context_params"], {"id"})
+        self.assertTrue(settings["preserve_empty_result"])
+
+
+class DiagnosticSettingsFindingTests(unittest.TestCase):
+    def test_only_successfully_assessed_resources_are_evaluated(self):
+        configured_id = "/subscriptions/sub/resourceGroups/rg/providers/type/configured"
+        missing_id = "/subscriptions/sub/resourceGroups/rg/providers/type/missing"
+        unsupported_id = "/subscriptions/sub/resourceGroups/rg/providers/type/unsupported"
+        resources = [
+            {"id": configured_id, "name": "configured"},
+            {"id": missing_id, "name": "missing"},
+            {"id": missing_id, "name": "duplicate inventory record"},
+            {"id": unsupported_id, "name": "unsupported"},
+        ]
+        diagnostic_settings = [
+            {
+                "id": f"{configured_id}/providers/microsoft.insights/diagnosticSettings/main",
+                "_collectionContext": {"parameters": {"id": configured_id}},
+            },
+            {
+                "_collectionResult": {"status": "empty"},
+                "_collectionContext": {"parameters": {"id": missing_id}},
+            },
+        ]
+
+        finding = azure_findings.find_resource_diagnostic_settings_missing(
+            resources,
+            diagnostic_settings,
+        )
+
+        self.assertEqual(finding["status"], "found")
+        self.assertEqual([item["id"] for item in finding["evidence"]], [missing_id])
+        self.assertEqual(
+            {item["id"] for item in finding["_coverage_eligible_assets"]},
+            {configured_id, missing_id},
+        )
+
+    def test_no_successful_resource_assessments_are_reported_as_insufficient_data(self):
+        finding = azure_findings.find_resource_diagnostic_settings_missing(
+            [{"id": "/subscriptions/sub/providers/type/name", "name": "name"}],
+            [],
+        )
+
+        self.assertEqual(finding["status"], "no_data_to_assess")
+        self.assertEqual(finding["evidence"], [])
+        self.assertEqual(finding["_coverage_eligible_assets"], [])
 
 
 class SqlServerVulnerabilityAssessmentEndpointTests(unittest.TestCase):
@@ -2193,6 +2399,71 @@ class CollectDataWithParamsTests(unittest.TestCase):
 
         self.assertEqual(records, [])
 
+    def test_parameterised_collection_passes_an_argument_vector_to_runner(self):
+        endpoint = {
+            "name": "Metrics Namespaces",
+            "cli_command": "az monitor metrics list-namespaces --resource {id}",
+        }
+        resource_id = "/subscriptions/sub/resourceGroups/group (primary)/providers/type/name"
+
+        with mock.patch.object(
+            azure_collect,
+            "timed_run_az_cli",
+            return_value={"returncode": 0, "json": [{"name": "namespace"}]},
+        ) as timed_run:
+            records = azure_collect.collect_parameter_set(
+                endpoint,
+                {"id": resource_id},
+            )
+
+        command = timed_run.call_args.args[0]
+        self.assertIsInstance(command, list)
+        self.assertEqual(command[-1], resource_id)
+        self.assertEqual(records[0]["name"], "namespace")
+
+    def test_successful_empty_result_can_be_preserved_as_assessment_evidence(self):
+        endpoint = {
+            "name": "Diagnostic Settings",
+            "cli_command": "az monitor diagnostic-settings list --resource {id}",
+            "preserve_empty_result": True,
+        }
+        resource_id = "/subscriptions/sub/resourceGroups/group/providers/type/name"
+
+        with mock.patch.object(
+            azure_collect,
+            "timed_run_az_cli",
+            return_value={"returncode": 0, "json": []},
+        ):
+            records = azure_collect.collect_parameter_set(
+                endpoint,
+                {"id": resource_id},
+            )
+
+        self.assertEqual(records[0]["_collectionResult"], {"status": "empty"})
+        self.assertEqual(
+            records[0]["_collectionContext"]["parameters"]["id"],
+            resource_id,
+        )
+
+    def test_failed_empty_result_is_not_preserved(self):
+        endpoint = {
+            "name": "Diagnostic Settings",
+            "cli_command": "az monitor diagnostic-settings list --resource {id}",
+            "preserve_empty_result": True,
+        }
+
+        with mock.patch.object(
+            azure_collect,
+            "timed_run_az_cli",
+            return_value={"returncode": 1, "json": None},
+        ):
+            records = azure_collect.collect_parameter_set(
+                endpoint,
+                {"id": "/subscriptions/sub/providers/type/name"},
+            )
+
+        self.assertEqual(records, [])
+
     def test_empty_upstream_collection_records_structured_skip_reason(self):
         endpoint = {
             "name": "Child Details",
@@ -2459,7 +2730,7 @@ class CollectDataWithParamsTests(unittest.TestCase):
 
         self.assertEqual(
             commands_run,
-            ["az apim show --name apim-one --resource-group apim-rg"],
+            [["az", "apim", "show", "--name", "apim-one", "--resource-group", "apim-rg"]],
         )
         self.assertEqual(len(saved_payloads), 1)
 
@@ -2524,7 +2795,7 @@ class CollectDataWithParamsTests(unittest.TestCase):
 
         self.assertEqual(
             commands_run,
-            ["az network list-service-tags --location uksouth"],
+            [["az", "network", "list-service-tags", "--location", "uksouth"]],
         )
         self.assertEqual(len(saved_payloads), 1)
 
@@ -2572,8 +2843,8 @@ class CollectDataWithParamsTests(unittest.TestCase):
         self.assertEqual(
             commands_run,
             [
-                "az network watcher flow-log list --location uksouth",
-                "az network watcher flow-log list --location ukwest",
+                ["az", "network", "watcher", "flow-log", "list", "--location", "uksouth"],
+                ["az", "network", "watcher", "flow-log", "list", "--location", "ukwest"],
             ],
         )
         self.assertEqual(len(saved_payloads), 1)
@@ -2626,7 +2897,10 @@ class CollectDataWithParamsTests(unittest.TestCase):
                 with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
                     azure_collect.collect_data_with_params([endpoint])
 
-        self.assertEqual(commands_run, ["az appservice ase show --name ase-one"])
+        self.assertEqual(
+            commands_run,
+            [["az", "appservice", "ase", "show", "--name", "ase-one"]],
+        )
         self.assertEqual(len(saved_payloads), 1)
 
     def test_parameterised_follow_on_queries_use_collection_context_for_multiple_records(self):
@@ -2681,8 +2955,8 @@ class CollectDataWithParamsTests(unittest.TestCase):
         self.assertEqual(
             commands_run,
             [
-                "az vm nic show --resource-group rg-one --vm-name vm-one --nic nic-1",
-                "az vm nic show --resource-group rg-two --vm-name vm-two --nic nic-2",
+                ["az", "vm", "nic", "show", "--resource-group", "rg-one", "--vm-name", "vm-one", "--nic", "nic-1"],
+                ["az", "vm", "nic", "show", "--resource-group", "rg-two", "--vm-name", "vm-two", "--nic", "nic-2"],
             ],
         )
         self.assertEqual(len(saved_payloads), 1)
@@ -2715,7 +2989,10 @@ class CollectDataWithParamsTests(unittest.TestCase):
                 with mock.patch.object(azure_collect, "save_json", side_effect=fake_save_json):
                     azure_collect.collect_data_with_params([endpoint])
 
-        self.assertEqual(commands_run, ["az disk list --resource-group \"rg(test)\""])
+        self.assertEqual(
+            commands_run,
+            [["az", "disk", "list", "--resource-group", "rg(test)"]],
+        )
         self.assertEqual(len(saved_payloads), 1)
         self.assertEqual(saved_payloads[0][0][0]["name"], "disk-one")
 
@@ -2753,8 +3030,14 @@ class CollectDataWithParamsTests(unittest.TestCase):
         self.assertEqual(
             commands_run,
             [
-                "az rest --method get --url "
-                "\"/subscriptions/sub-one/providers/Microsoft.Security/assessments?api-version=2020-01-01\"",
+                [
+                    "az",
+                    "rest",
+                    "--method",
+                    "get",
+                    "--url",
+                    "/subscriptions/sub-one/providers/Microsoft.Security/assessments?api-version=2020-01-01",
+                ],
             ],
         )
         self.assertEqual(len(saved_payloads), 1)
@@ -2886,7 +3169,10 @@ class AzureCliExtensionInstallTests(unittest.TestCase):
         self.assertEqual(result["_retry_count"], 1)
         self.assertEqual(
             [call.args[0] for call in popen_mock.call_args_list],
-            ["az iot hub list --output json", "az iot hub list --output json"],
+            [
+                ["az", "iot", "hub", "list", "--output", "json"],
+                ["az", "iot", "hub", "list", "--output", "json"],
+            ],
         )
         self.assertIn("az extension show --name azure-iot --output json", az_commands)
         self.assertIn("az extension add --name azure-iot --yes", az_commands)
