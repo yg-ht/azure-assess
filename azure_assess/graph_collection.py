@@ -153,6 +153,7 @@ def collect_registered_graph(
         error = None
         attempts = pages = 0
         total_count = 0
+        page_provenance = []
         output = Path(output_dir) / f"{endpoint['output']}_{run_id}.json"
         temporary_targets = []
         for parent_index, context in enumerate(contexts):
@@ -160,6 +161,11 @@ def collect_registered_graph(
             result = graph_runner.collect(endpoint, target, context)
             attempts += result.attempts
             pages += result.pages
+            page_provenance.extend(
+                {"parent_index": parent_index, "parent_id": context.get("parent_id"), **item}
+                for item in result.contexts
+                if isinstance(item, dict)
+            )
             if result.status not in {"success", "empty"}:
                 status, error, successful = result.status, result.error, False
                 break
@@ -201,6 +207,7 @@ def collect_registered_graph(
                 "required_permission": endpoint["permission"], "api_channel": endpoint["api"],
                 "licence_requirement": endpoint["licence"], "lookback_start": start,
                 "lookback_end": end, "page_count": pages, "query_or_parent_count": len(contexts),
+                "page_provenance": page_provenance,
                 "incomplete": status == "incomplete",
             },
             started_at=utc_timestamp(), duration_seconds=0,

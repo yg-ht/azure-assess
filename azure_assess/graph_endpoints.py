@@ -76,9 +76,12 @@ GRAPH_ENDPOINTS: List[Dict] = [
     E("pim_directory_eligible", "PIM Directory Eligible Schedules", "PIM", "RoleEligibilitySchedule.Read.Directory", "/roleManagement/directory/roleEligibilitySchedules", api="beta"),
     E("pim_directory_active", "PIM Directory Active Schedules", "PIM", "PrivilegedAccess.Read.AzureAD", "/roleManagement/directory/roleAssignmentSchedules", api="beta"),
     E("pim_directory_requests", "PIM Directory Requests", "PIM", "PrivilegedAccess.Read.AzureAD", "/roleManagement/directory/roleAssignmentScheduleRequests", api="beta"),
+    E("pim_directory_schedule_instances", "PIM Directory Schedule Instances", "PIM", "PrivilegedAccess.Read.AzureAD", "/roleManagement/directory/roleAssignmentScheduleInstances", api="beta"),
     E("pim_group_eligible", "PIM Group Eligible Schedules", "PIM", "PrivilegedAccess.Read.AzureADGroup", "/identityGovernance/privilegedAccess/group/eligibilitySchedules", api="beta"),
     E("pim_group_active", "PIM Group Active Schedules", "PIM", "PrivilegedAccess.Read.AzureADGroup", "/identityGovernance/privilegedAccess/group/assignmentSchedules", api="beta"),
+    E("pim_group_schedule_instances", "PIM Group Schedule Instances", "PIM", "PrivilegedAccess.Read.AzureADGroup", "/identityGovernance/privilegedAccess/group/assignmentScheduleInstances", api="beta"),
     E("pim_azure_resources", "PIM Azure Resource Assignments", "PIM", "PrivilegedAccess.Read.AzureResources", "/privilegedAccess/azureResources/roleAssignments", api="beta"),
+    E("pim_azure_schedule_instances", "PIM Azure Resource Schedule Instances", "PIM", "PrivilegedAccess.Read.AzureResources", "/privilegedAccess/azureResources/roleAssignmentScheduleInstances", api="beta"),
     E("pim_alerts", "PIM Role Management Alerts", "PIM", "RoleManagementAlert.Read.Directory", "/identityGovernance/roleManagementAlerts/alerts", api="beta"),
     E("pim_alert_configurations", "PIM Alert Configurations", "PIM", "RoleManagementAlert.Read.Directory", "/identityGovernance/roleManagementAlerts/alertConfigurations", api="beta"),
 
