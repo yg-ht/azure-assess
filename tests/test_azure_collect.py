@@ -1734,6 +1734,46 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertEqual(clear_response.status_code, 409)
         self.assertEqual(unknown_response.status_code, 404)
 
+    def test_retired_catch_all_manual_review_does_not_break_current_findings(self):
+        finding_rows = {
+            "rows": [{
+                "finding_id": "current_finding",
+                "title": "Current finding",
+                "severity": "Low",
+                "status": "found",
+                "reason": "Observed",
+                "count": 1,
+                "evidence": [{"id": "one"}],
+            }],
+        }
+        retired_id = (
+            "manual_assessment_required_"
+            "az_monitor_metrics_list_namespaces_resource_id"
+        )
+        review_file = {
+            "schema_version": "1.0",
+            "reviews": [{
+                "finding_id": retired_id,
+                "disposition": "confirmed",
+                "reviewer": "A. Tester",
+                "reviewed_at": "2026-08-05T12:00:00Z",
+            }],
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / azure_present.FINDINGS_FLAT_FILENAME).write_text(
+                json.dumps(finding_rows), encoding="utf-8"
+            )
+            (data_dir / azure_present.FINDINGS_REVIEW_FILENAME).write_text(
+                json.dumps(review_file), encoding="utf-8"
+            )
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                rows, overrides = azure_present.load_effective_finding_rows()
+
+        self.assertEqual(["current_finding"], [row["finding_id"] for row in rows])
+        self.assertIn(retired_id, overrides)
+
     def test_validated_sarif_export_contains_only_confirmed_results(self):
         finding_rows = {
             "rows": [
@@ -1763,6 +1803,10 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                 "definition": {
                     "finding_id": "manual_graph_domains",
                     "check_ids": [],
+                },
+                "manual_assessment": {
+                    "question": "Are all tenant domains approved?",
+                    "applicability": "Domains are configured.",
                 },
                 "reporting": {"assets": [], "observations": []},
             }]
@@ -1857,6 +1901,10 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertEqual(manual_result["kind"], "review")
         self.assertEqual(manual_result["level"], "note")
         self.assertEqual(manual_result["properties"]["record_count"], 3)
+        self.assertEqual(
+            manual_result["properties"]["manual_assessment"]["question"],
+            "Are all tenant domains approved?",
+        )
         self.assertEqual(exported["properties"]["validated_findings"], 2)
         self.assertEqual(exported["properties"]["validated_raised_findings"], 1)
         self.assertEqual(

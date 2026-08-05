@@ -257,6 +257,83 @@ class GraphFindingTests(unittest.TestCase):
             by_title["Permanent privileged Azure-resource assignments"]["status"],
         )
 
+    def test_permanent_eligible_assignments_are_reported_across_all_planes(self):
+        catalog = {
+            "graph_p_i_m_pim_directory_eligible_20260804.json": [{
+                "id": "directory",
+                "scheduleInfo": {"expiration": {"type": "noExpiration"}},
+            }],
+            "graph_p_i_m_pim_group_eligible_20260804.json": [{
+                "id": "group",
+                "scheduleInfo": {"expiration": {"type": "noExpiration"}},
+            }],
+            "arm_pim_azure_resource_eligibility_schedules_20260804.json": {
+                "value": [{
+                    "id": "azure",
+                    "properties": {
+                        "scheduleInfo": {
+                            "expiration": {"type": "NoExpiration"},
+                        },
+                    },
+                }],
+            },
+            "azure-collection-manifest.json": status_manifest(
+                graph_p_i_m_pim_directory_eligible="success",
+                graph_p_i_m_pim_group_eligible="success",
+                arm_pim_azure_resource_eligibility_schedules="success",
+            ),
+        }
+
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        by_title = {item["title"]: item for item in findings}
+        for title in (
+            "Permanent eligible privileged directory assignments",
+            "Permanent eligible privileged group assignments",
+            "Permanent eligible privileged Azure-resource assignments",
+        ):
+            self.assertEqual("finding", by_title[title]["status"])
+
+    def test_permanent_eligibility_request_is_included_in_request_finding(self):
+        catalog = {
+            "graph_p_i_m_pim_directory_eligibility_requests_20260804.json": [{
+                "id": "request",
+                "scheduleInfo": {"expiration": {"type": "noExpiration"}},
+                "status": "PendingApproval",
+            }],
+            "azure-collection-manifest.json": graph_manifest(
+                "graph_p_i_m_pim_directory_eligibility_requests"
+            ),
+        }
+
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        finding = next(
+            item for item in findings
+            if item["title"] == (
+                "Privileged activation or assignment requests seek permanent access"
+            )
+        )
+        self.assertEqual("finding", finding["status"])
+        self.assertEqual("request", finding["evidence"][0]["id"])
+
+    def test_disabled_pim_alert_configuration_is_reported(self):
+        catalog = {
+            "graph_p_i_m_pim_alert_configurations_20260804.json": [
+                {"id": "disabled", "isEnabled": False},
+                {"id": "enabled", "isEnabled": True},
+            ],
+            "azure-collection-manifest.json": graph_manifest(
+                "graph_p_i_m_pim_alert_configurations"
+            ),
+        }
+
+        findings, _ = evaluate_graph_findings(catalog, result, unsupported)
+        finding = next(
+            item for item in findings
+            if item["title"] == "PIM alert configurations are disabled"
+        )
+        self.assertEqual("finding", finding["status"])
+        self.assertEqual(["disabled"], [item["id"] for item in finding["evidence"]])
+
     def test_bitlocker_coverage_correlates_device_identifiers(self):
         catalog = {
             "graph_endpoint_intune_managed_devices_20260804.json": [

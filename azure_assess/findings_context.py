@@ -145,6 +145,8 @@ SERVICE_DEFINITIONS = {
     "aks_": ("aks", "Azure Kubernetes Service", "cluster"),
     "sql_": ("sql_database", "Azure SQL", "database or server"),
     "app_": ("app_service", "Azure App Service", "application"),
+    "batch_": ("azure_batch", "Azure Batch", "batch account"),
+    "data_factory_": ("azure_data_factory", "Azure Data Factory", "data factory"),
     "vm_": ("virtual_machines", "Azure Virtual Machines", "virtual machine"),
     "iot_": ("iot", "Azure IoT", "IoT service"),
 }

@@ -14,9 +14,13 @@ from azure_assess.endpoint_requirements import (
     source_type_for_options,
 )
 from azure_assess.endpoint_assessment import (
+    ASSESSMENT_ROLES,
     AUTOMATED,
+    CONTEXT,
     MANUAL,
     SUPPORTING,
+    CONTEXT_ONLY_ENDPOINTS,
+    MANUAL_ASSESSMENT_DEFINITIONS,
     MANUAL_ASSESSMENT_ENDPOINTS,
     SUPPORTING_ONLY_ENDPOINTS,
     endpoint_assessment_role,
@@ -78,11 +82,15 @@ class ManualEndpointAssessmentTests(unittest.TestCase):
         self.assertEqual(link["query"], "plan-one")
 
     def test_parameterised_executions_become_one_manual_item(self):
+        endpoint_id = (
+            "az_storage_cors_list_--services_q_--account-name_name_"
+            "--auth-mode_login"
+        )
         manifest = {
             "endpoint_runs": [
                 {
-                    "endpoint_id": "az_monitor_metrics_list-namespaces_--resource_id",
-                    "endpoint_name": "Azure Metrics Namespaces",
+                    "endpoint_id": endpoint_id,
+                    "endpoint_name": "Storage Queue CORS Rules",
                     "category": "parameterised",
                     "status": "success",
                     "result_count": 2,
@@ -101,6 +109,22 @@ class ManualEndpointAssessmentTests(unittest.TestCase):
         self.assertTrue(groups[0]["usable_evidence"])
         self.assertNotIn("parameter_context", groups[0])
         self.assertNotIn("secret-", repr(groups[0]))
+        self.assertEqual(
+            groups[0]["review_definition"],
+            MANUAL_ASSESSMENT_DEFINITIONS[endpoint_id],
+        )
+
+    def test_context_endpoint_does_not_create_a_manual_item(self):
+        groups = manual_endpoint_groups({
+            "endpoint_runs": [{
+                "endpoint_id": "az_monitor_metrics_list-namespaces_--resource_id",
+                "category": "parameterised",
+                "status": "success",
+                "result_count": 10,
+            }],
+        })
+
+        self.assertEqual(groups, [])
 
     def test_supporting_endpoint_does_not_create_a_manual_item(self):
         groups = manual_endpoint_groups({
@@ -170,7 +194,17 @@ class ManualEndpointAssessmentTests(unittest.TestCase):
         self.assertEqual(findings[0]["title"], "Graph Domains")
         self.assertEqual(findings[0]["reason"], "")
         self.assertEqual(findings[0]["evidence"][0]["recordCount"], 3)
-        self.assertEqual(azure_findings.flat_rows(findings)[0]["count"], 3)
+        self.assertIn("question", findings[0]["manual_assessment"])
+        self.assertEqual(
+            findings[0]["evidence"][0]["reviewDefinition"],
+            findings[0]["manual_assessment"],
+        )
+        flat = azure_findings.flat_rows(findings)[0]
+        self.assertEqual(flat["count"], 3)
+        self.assertEqual(
+            flat["manual_assessment"],
+            findings[0]["manual_assessment"],
+        )
 
     def test_empty_retained_dataset_is_not_a_manual_review_item(self):
         filename = "graph_identity_baseline_domains_run-one.json"
@@ -476,7 +510,7 @@ class FindingEndpointCoverageTests(unittest.TestCase):
 
         self.assertEqual(
             source_types,
-            Counter({BASE: 214, GRAPH: 17, BASE_AND_GRAPH: 3}),
+            Counter({BASE: 218, GRAPH: 17, BASE_AND_GRAPH: 3}),
         )
 
     def test_graph_and_cross_plane_examples_are_classified_correctly(self):
@@ -504,8 +538,16 @@ class FindingEndpointCoverageTests(unittest.TestCase):
         self.assertFalse(
             MANUAL_ASSESSMENT_ENDPOINTS & SUPPORTING_ONLY_ENDPOINTS
         )
+        self.assertFalse(
+            CONTEXT_ONLY_ENDPOINTS
+            & (MANUAL_ASSESSMENT_ENDPOINTS | SUPPORTING_ONLY_ENDPOINTS)
+        )
         self.assertEqual(
-            MANUAL_ASSESSMENT_ENDPOINTS | SUPPORTING_ONLY_ENDPOINTS,
+            (
+                MANUAL_ASSESSMENT_ENDPOINTS
+                | SUPPORTING_ONLY_ENDPOINTS
+                | CONTEXT_ONLY_ENDPOINTS
+            ),
             {
                 endpoint_id
                 for endpoint_id in current_ids
@@ -514,13 +556,31 @@ class FindingEndpointCoverageTests(unittest.TestCase):
         )
         self.assertTrue(MANUAL_ASSESSMENT_ENDPOINTS <= current_ids)
         self.assertTrue(SUPPORTING_ONLY_ENDPOINTS <= current_ids)
+        self.assertTrue(CONTEXT_ONLY_ENDPOINTS <= current_ids)
         self.assertEqual(
             {
                 endpoint_assessment_role(endpoint_id)
                 for endpoint_id in current_ids
             },
-            {AUTOMATED, SUPPORTING, MANUAL},
+            ASSESSMENT_ROLES,
         )
+
+    def test_manual_definitions_are_specific_and_actionable(self):
+        required_fields = {
+            "question",
+            "applicability",
+            "evidence_fields",
+            "rationale",
+            "outcomes",
+        }
+        self.assertEqual(
+            set(MANUAL_ASSESSMENT_DEFINITIONS),
+            MANUAL_ASSESSMENT_ENDPOINTS,
+        )
+        for definition in MANUAL_ASSESSMENT_DEFINITIONS.values():
+            self.assertEqual(set(definition), required_fields)
+            self.assertTrue(all(definition[field] for field in required_fields))
+            self.assertGreaterEqual(len(definition["outcomes"]), 2)
 
     def test_every_automated_endpoint_is_referenced_by_a_current_check(self):
         # The two fan-out/conditional checks need representative parents in
@@ -548,6 +608,11 @@ class FindingEndpointCoverageTests(unittest.TestCase):
         matched = set()
         for finding in azure_findings.evaluate_findings(catalog):
             matched.update(self.current_matches(finding["references"]))
+
+        self.assertEqual(
+            matched & (MANUAL_ASSESSMENT_ENDPOINTS | CONTEXT_ONLY_ENDPOINTS),
+            set(),
+        )
 
         missing = {
             endpoint_id

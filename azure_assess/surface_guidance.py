@@ -8,7 +8,7 @@ def _requirement(identifier, source_url, expected_state, eligibility, threshold,
     return {
         "id": identifier,
         "source_url": source_url,
-        "retrieved": "2026-08-04",
+        "retrieved": "2026-08-05",
         "expected_state": expected_state,
         "eligibility": eligibility,
         "threshold": threshold,
@@ -18,7 +18,7 @@ def _requirement(identifier, source_url, expected_state, eligibility, threshold,
 
 SURFACE_GUIDANCE_BASELINE = {
     "schema_version": "1.0",
-    "baseline_version": "2026-08-04",
+    "baseline_version": "2026-08-05",
     "publisher": "Microsoft",
     "requirements": [
         _requirement(
@@ -66,6 +66,33 @@ SURFACE_GUIDANCE_BASELINE = {
                 "Azure App Configuration permits public network access",
                 "Azure App Configuration permits local access-key authentication",
             ],
+        ),
+        _requirement(
+            "function_cors",
+            "https://learn.microsoft.com/azure/azure-functions/security-concepts",
+            "Function App CORS permits only explicitly required origins.",
+            "The Function App CORS configuration is collected.",
+            "The allowed origins list does not contain a wildcard.",
+            ["Function Apps allow every cross-origin caller"],
+        ),
+        _requirement(
+            "batch_account_security",
+            "https://learn.microsoft.com/azure/batch/policy-reference",
+            "Batch accounts use private network access and Microsoft Entra authentication.",
+            "The Batch account network and authentication configuration is collected.",
+            "Public network access and local shared-key authentication are disabled.",
+            [
+                "Batch accounts permit public network access",
+                "Batch accounts permit local shared-key authentication",
+            ],
+        ),
+        _requirement(
+            "data_factory_network_access",
+            "https://learn.microsoft.com/azure/data-factory/policy-reference",
+            "Azure Data Factory public network access is disabled.",
+            "The Data Factory network configuration is collected.",
+            "Public network access is not explicitly enabled.",
+            ["Data Factory instances permit public network access"],
         ),
         _requirement(
             "azure_monitor_network_access",

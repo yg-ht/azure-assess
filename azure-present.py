@@ -61,7 +61,9 @@ from azure_assess.findings_review import (
 )
 from azure_assess.graph_endpoints import GRAPH_ENDPOINTS
 from azure_assess.endpoint_assessment import (
+    CONTEXT,
     MANUAL,
+    RETIRED_CATCH_ALL_MANUAL_ENDPOINTS,
     SUPPORTING,
     endpoint_assessment_role,
 )
@@ -3264,6 +3266,9 @@ def findings_summary(manifest=None):
         elif assessment_role == MANUAL:
             terminal = "Awaiting Analyst Assessment"
             unit = "endpoint executions requiring manual assessment"
+        elif assessment_role == CONTEXT:
+            terminal = "Context or Inventory — No Assessment"
+            unit = "context-only endpoint executions"
         else:
             terminal = "No Linked Finding Check"
             unit = "endpoint executions"
@@ -3478,7 +3483,17 @@ def load_effective_finding_rows():
     review_path = findings_review_path()
     overrides = load_review_overrides(review_path) if review_path.exists() else {}
     rows_by_id = {row["finding_id"]: row for row in rows}
-    unknown_ids = sorted(set(overrides) - set(rows_by_id))
+    retired_manual_ids = {
+        re.sub(
+            r"[^a-z0-9]+",
+            "_",
+            f"manual_assessment_required_{endpoint_id}".lower(),
+        ).strip("_")
+        for endpoint_id in RETIRED_CATCH_ALL_MANUAL_ENDPOINTS
+    }
+    unknown_ids = sorted(
+        set(overrides) - set(rows_by_id) - retired_manual_ids
+    )
     if unknown_ids:
         raise ValueError(
             "Review file contains unknown finding IDs: " + ", ".join(unknown_ids)
@@ -3554,6 +3569,9 @@ def manual_assessment_sarif_rule(row):
         "properties": {
             "finding_id": finding_id,
             "definition": definition,
+            "manual_assessment": copy.deepcopy(
+                row.get("manual_assessment") or {}
+            ),
             "severity": row.get("severity") or "Informational",
             "headline_ids": definition.get("check_ids") or [],
             "assessment_status": "manual_assessment_required",
@@ -3574,6 +3592,9 @@ def manual_assessment_sarif_result(row):
         "coverage": copy.deepcopy(row.get("coverage") or {}),
         "review": copy.deepcopy(row.get("review") or {}),
         "triage": copy.deepcopy(row.get("triage") or {}),
+        "manual_assessment": copy.deepcopy(
+            row.get("manual_assessment") or {}
+        ),
         "title": title,
         "severity": row.get("severity") or "Informational",
         "status": "manual_assessment_required",
@@ -3914,6 +3935,19 @@ def definition_display_summary(value):
     return summary
 
 
+def manual_assessment_display_summary(value):
+    definition = value if isinstance(value, dict) else {}
+    return OrderedDict(
+        [
+            ("Review Question", definition.get("question") or "Not recorded"),
+            ("Applicability", definition.get("applicability") or "Not recorded"),
+            ("Why Judgement Is Required", definition.get("rationale") or "Not recorded"),
+            ("Evidence Fields", definition.get("evidence_fields") or []),
+            ("Possible Outcomes", definition.get("outcomes") or []),
+        ]
+    )
+
+
 def reporting_display_summary(value):
     reporting = value if isinstance(value, dict) else {}
     provenance = reporting.get("provenance")
@@ -4044,6 +4078,7 @@ def triage_display_summary(value):
 
 
 FINDINGS_METADATA_SUMMARISERS = {
+    "manual_assessment": manual_assessment_display_summary,
     "definition": definition_display_summary,
     "reporting": reporting_display_summary,
     "context": context_display_summary,
@@ -4074,6 +4109,10 @@ def prepare_findings_rows(data):
         if not isinstance(entities, list):
             entities = affected_entity_labels(row)
         row["affected_entities"] = unique_non_empty_strings(entities)
+        if "manual_assessment" in row:
+            row["manual_assessment"] = manual_assessment_display_summary(
+                row["manual_assessment"]
+            )
         for column in FINDINGS_METADATA_COLUMNS:
             if column in row:
                 row[column] = FINDINGS_METADATA_SUMMARISERS[column](row[column])

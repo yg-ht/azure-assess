@@ -675,7 +675,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Network Interfaces", "cli_command": "az network nic list", "needs_pagination": False},
     {"name": "NSGs", "cli_command": "az network nsg list", "needs_pagination": False},
     {"name": "Policy Assignments", "cli_command": "az policy assignment list", "needs_pagination": True},
-    {"name": "Policy Definitions", "cli_command": "az policy definition list --filter \"policyType eq 'Custom '\"", "needs_pagination": True},
+    {"name": "Policy Definitions", "cli_command": "az policy definition list --filter \"policyType eq 'Custom'\"", "needs_pagination": True},
     {"name": "Policy Set Definitions", "cli_command": "az policy set-definition list", "needs_pagination": True},
     {"name": "Policy Events", "cli_command": "az policy event list", "needs_pagination": True},
     {"name": "Policy Metadata", "cli_command": "az policy metadata list", "needs_pagination": True},
