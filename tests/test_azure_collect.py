@@ -742,6 +742,79 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
 
 
 class AzurePresentDatasetIndexTests(unittest.TestCase):
+    def test_finding_charts_consolidate_all_insufficient_data_causes(self):
+        causes = [
+            "missing_or_unattributed_source",
+            "source_visibility_unverified",
+            "empty_source",
+            "scope_restricted_source",
+            "tenant_capability_unavailable",
+            "failed_request",
+            "collection_incomplete",
+            "unauthorised_source",
+            "skipped_prerequisite",
+        ]
+        rows = [
+            {
+                "status": "no_data_to_assess",
+                "reporting": {"provenance": {
+                    "insufficient_data": {"cause": cause},
+                    "required_endpoints": [{
+                        "endpoint_id": "test_endpoint",
+                        "category": "microsoft_graph" if index % 2 else "base",
+                    }],
+                }},
+            }
+            for index, cause in enumerate(causes)
+        ]
+        rows.extend([{"status": "found"}, {"status": "not_found"}])
+        finding_file = mock.Mock()
+        finding_file.exists.return_value = True
+
+        with (
+            mock.patch.object(
+                azure_present,
+                "findings_flat_path",
+                return_value=finding_file,
+            ),
+            mock.patch.object(
+                azure_present,
+                "load_json_file",
+                return_value={"rows": rows},
+            ),
+        ):
+            summary = azure_present.findings_summary()
+
+        chart_counts = {
+            label: count
+            for (_outcome, label, _color), count
+            in summary["chart_segments"].items()
+        }
+        self.assertEqual(
+            chart_counts,
+            {
+                "Findings Raised": 1,
+                "Checks Passed": 1,
+                "Missing Source": 2,
+                "Empty Upstream Source": 1,
+                "Scope Restricted": 1,
+                "Unlicensed": 1,
+                "Failed": 2,
+                "Unauthorised": 1,
+                "Missing Prerequisite": 1,
+            },
+        )
+        self.assertEqual(sum(chart_counts.values()), summary["executed"])
+        self.assertTrue(all(len(path) == 6 for path, _color in summary["sankey_paths"]))
+        self.assertEqual(
+            {path[0] for path, _color in summary["sankey_paths"]},
+            {"All Endpoints"},
+        )
+        self.assertEqual(
+            {path[-1] for path, _color in summary["sankey_paths"]},
+            {"Findings Raised", "Checks Passed", "Insufficient Data"},
+        )
+
     def test_review_and_validated_export_files_are_not_data_viewer_datasets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
@@ -2078,6 +2151,15 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                 },
                 {"status": "no_data_to_assess"},
                 {"status": "found"},
+                {
+                    "status": "not_found",
+                    "reporting": {"provenance": {
+                        "required_endpoints": [{
+                            "endpoint_id": "az_network_nic_effective_nsg",
+                            "category": "parameterised",
+                        }],
+                    }},
+                },
             ]
         }
         manifest = {
@@ -2304,11 +2386,13 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Checks Without Sufficient Data", body)
         self.assertNotIn("Rows in azure-findings-flat.json", body)
         self.assertNotIn("Status: not_found", body)
-        self.assertIn('"label": "Insufficient Data \\u2014 Microsoft Graph \\u2014 Unauthorised Source", "value": 1', body)
-        self.assertIn('"label": "Insufficient Data \\u2014 Azure Base \\u2014 Empty Upstream Source", "value": 1', body)
-        self.assertIn('"label": "Insufficient Data \\u2014 Missing or Unattributed Source \\u2014 Missing or Unattributed Source", "value": 1', body)
+        self.assertIn('"label": "Unauthorised", "value": 1', body)
+        self.assertIn('"label": "Empty Upstream Source", "value": 1', body)
+        self.assertIn('"label": "Missing Source", "value": 1', body)
+        self.assertIn('"label": "Checks Passed", "value": 1', body)
+        self.assertNotIn('"label": "Insufficient Data \\u2014', body)
         self.assertIn("Finding Outcome Distribution", body)
-        self.assertIn("Endpoint Type to Finding Outcome Flow", body)
+        self.assertIn("Endpoint to Finding Outcome Flow", body)
         self.assertNotIn("Collection Endpoint Outcome Distribution", body)
         self.assertIn("Endpoint Outcomes by Collection Type", body)
         self.assertIn("reconciles to 12 endpoint executions", body)
@@ -2318,14 +2402,15 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertNotIn("requestsSankeyChart", body)
         self.assertEqual(body.count("renderDashboardPie('findingsPieChart'"), 1)
         self.assertEqual(body.count("renderDashboardSankey('findingsSankeyChart'"), 1)
-        self.assertEqual(body.count('aria-label="Pie chart of finding outcomes including endpoint source types"'), 1)
-        self.assertEqual(body.count('aria-label="Sankey chart from endpoint source types to finding outcomes"'), 1)
+        self.assertEqual(body.count('aria-label="Pie chart of consolidated finding outcomes across all endpoint types"'), 1)
+        self.assertEqual(body.count('aria-label="Multi-stage Sankey chart from all endpoints to finding outcomes"'), 1)
         finding_chart_call = body.split(
             "renderDashboardPie('findingsPieChart'",
             1,
         )[1].split(");", 1)[0]
         self.assertIn('"label": "Findings Raised", "value": 1', finding_chart_call)
-        self.assertIn('"label": "Insufficient Data \\u2014 Microsoft Graph \\u2014 Unauthorised Source", "value": 1', finding_chart_call)
+        self.assertIn('"label": "Unauthorised", "value": 1', finding_chart_call)
+        self.assertIn('"label": "Checks Passed", "value": 1', finding_chart_call)
         self.assertEqual(
             sum(item["value"] for item in json.loads(
                 finding_chart_call.split(", ", 2)[2]
@@ -2336,8 +2421,16 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             "renderDashboardSankey('findingsSankeyChart'",
             1,
         )[1].split(");", 1)[0]
-        self.assertIn('"source": "Microsoft Graph"', sankey_chart_call)
-        self.assertIn('"target": "Insufficient Data \\u2014 Microsoft Graph \\u2014 Unauthorised Source", "value": 1', sankey_chart_call)
+        self.assertIn(
+            '"nodes": ["All Endpoints", "Graph Endpoints", "Not Authorised", '
+            '"No Data", "Unauthorised", "Insufficient Data"], "value": 1',
+            sankey_chart_call,
+        )
+        self.assertIn(
+            '"nodes": ["All Endpoints", "Base Endpoints", "Authorised", '
+            '"With Data", "Assessment Completed", "Checks Passed"], "value": 1',
+            sankey_chart_call,
+        )
         self.assertIn("Microsoft Graph", body)
         self.assertIn("Graph Report Settings", body)
         self.assertIn("Authorization_RequestDenied", body)
@@ -2496,7 +2589,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         )
         body = response.get_data(as_text=True)
         self.assertIn(
-            '"label": "Insufficient Data \\u2014 Missing or Unattributed Source \\u2014 Licence or Tenant Capability", "value": 1',
+            '"label": "Unlicensed", "value": 1',
             body,
         )
         self.assertIn("tenant_unavailable", body)
