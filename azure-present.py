@@ -131,6 +131,22 @@ INSUFFICIENT_DATA_CAUSES = OrderedDict(
         ("missing_or_unattributed_source", ("Missing or Unattributed Source", "#adb5bd")),
     ]
 )
+COLLECTION_OUTCOME_OPTIONS = OrderedDict(
+    [
+        ("success", ("Returned Data", "#198754")),
+        ("empty_access_verified", ("No Data — Access Verified", "#20c997")),
+        ("empty_scope_restricted", ("No Data — Scope Restricted", "#8a6d3b")),
+        ("empty_visibility_unverified", ("No Data — Visibility Unverified", "#e0a800")),
+        ("incomplete", ("Incomplete", "#d63384")),
+        ("failed", ("Failed", "#fd7e14")),
+        ("unauthorised", ("Unauthorised", "#6f42c1")),
+        ("tenant_unavailable", ("Licence or Tenant Capability", "#795548")),
+        ("not_applicable", ("Not Applicable", "#0dcaf0")),
+        ("skipped", ("Skipped Prerequisite", "#ffc107")),
+        ("not_attempted", ("No Recorded Outcome", "#adb5bd")),
+        ("unknown", ("Unknown Outcome", "#6c757d")),
+    ]
+)
 
 FINDINGS_PRIMARY_COLUMNS = (
     "title",
@@ -707,6 +723,44 @@ HTML_TEMPLATE = """
         <section class="dashboard-section mt-4" aria-labelledby="requestHealthHeading">
           <h3 id="requestHealthHeading" class="h4">Collection Request Health</h3>
           <p class="dashboard-muted">Collection activity is separated into attempted requests, deliberately skipped endpoint definitions and endpoint definitions with no recorded outcome. These populations use a different denominator from assessment checks.</p>
+        {% if request_chart_data %}
+        <div class="card dashboard-chart-card mt-4">
+          <div class="card-body">
+            <h4 class="h5">Collection Endpoint Outcome Distribution</h4>
+            <p class="dashboard-muted mb-3">Every remote endpoint execution recorded in the latest manifest is counted once, including Microsoft Graph, base and parameterised collection. Local setup operations are excluded.</p>
+            <div class="dashboard-chart-wrap">
+              <canvas id="requestsPieChart" class="dashboard-chart-canvas"></canvas>
+            </div>
+            <div id="requestsPieLegend" class="chart-legend"></div>
+          </div>
+        </div>
+        {% endif %}
+        {% if collection_requests.category_outcome_rows %}
+        <div class="card dashboard-chart-card mt-4">
+          <div class="card-body">
+            <h4 class="h5">Endpoint Outcomes by Collection Type</h4>
+            <p class="dashboard-muted mb-3">This breakdown reconciles to {{ collection_requests.endpoint_count }} endpoint executions in the chart above.</p>
+            <div class="table-responsive">
+              <table id="endpointOutcomeTypeTable" class="table table-striped align-middle dashboard-request-table">
+                <thead><tr><th>Collection Type</th><th>Total</th><th>Outcomes</th></tr></thead>
+                <tbody>
+                  {% for row in collection_requests.category_outcome_rows %}
+                  <tr>
+                    <td>{{ row.category }}</td>
+                    <td>{{ row.total }}</td>
+                    <td>
+                      {% for outcome in row.outcomes %}
+                      <span class="badge text-bg-secondary me-1">{{ outcome.label }}: {{ outcome.count }}</span>
+                      {% endfor %}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        {% endif %}
           <h4 class="h5 mt-4">Request Attempt Outcomes</h4>
           <p class="dashboard-muted">Each attempted request has one mutually exclusive outcome. The outcome cards below add up to Total Attempts.</p>
           {{ dashboard_card_grid(summary_cards.requests.attempts) }}
@@ -1227,7 +1281,7 @@ HTML_TEMPLATE = """
     </script>
     {% endif %}
 
-    {% if dashboard and findings_chart_data %}
+    {% if dashboard and (findings_chart_data or request_chart_data) %}
     <script>
       (function() {
         function renderDashboardPie(canvasId, legendId, chartData) {
@@ -1301,6 +1355,9 @@ HTML_TEMPLATE = """
 
         {% if findings_chart_data %}
         renderDashboardPie('findingsPieChart', 'findingsPieLegend', {{ findings_chart_data|tojson }});
+        {% endif %}
+        {% if request_chart_data %}
+        renderDashboardPie('requestsPieChart', 'requestsPieLegend', {{ request_chart_data|tojson }});
         {% endif %}
       })();
     </script>
@@ -2330,6 +2387,8 @@ def collection_request_summary(manifest=None):
     failures = []
     omissions = []
     empty_visibility_counts = Counter()
+    outcome_counts = Counter()
+    category_outcome_counts = {}
     for request_record in manifest.get("endpoint_runs", []):
         if not isinstance(request_record, dict):
             continue
@@ -2352,6 +2411,7 @@ def collection_request_summary(manifest=None):
         ):
             status = "tenant_unavailable"
         status_counts[status] += 1
+        outcome = status if status in COLLECTION_OUTCOME_OPTIONS else "unknown"
         if status == "empty":
             verification = request_record.get("access_verification")
             verification_status = interpreted_visibility_status(
@@ -2365,6 +2425,10 @@ def collection_request_summary(manifest=None):
             }:
                 verification_status = "visibility_unverified"
             empty_visibility_counts[verification_status] += 1
+            outcome = f"empty_{verification_status}"
+        outcome_counts[outcome] += 1
+        category = collection_category_label(request_record.get("category"))
+        category_outcome_counts.setdefault(category, Counter())[outcome] += 1
         if status in {"skipped", "not_attempted"}:
             omissions.append(request_record)
         if status not in {
@@ -2374,9 +2438,7 @@ def collection_request_summary(manifest=None):
         failures.append(
             {
                 "endpoint_name": request_record.get("endpoint_name") or "Unknown",
-                "category": collection_category_label(
-                    request_record.get("category")
-                ),
+                "category": category,
                 "status": status,
                 "error_code": (
                     request_record.get("error_code")
@@ -2414,7 +2476,30 @@ def collection_request_summary(manifest=None):
             "not_applicable",
         )
     )
+    endpoint_count = sum(outcome_counts.values())
+    category_outcome_rows = []
+    for category, counts in sorted(
+        category_outcome_counts.items(), key=lambda item: item[0].casefold()
+    ):
+        category_outcome_rows.append(
+            {
+                "category": category,
+                "total": sum(counts.values()),
+                "outcomes": [
+                    {
+                        "key": key,
+                        "label": COLLECTION_OUTCOME_OPTIONS[key][0],
+                        "count": counts[key],
+                    }
+                    for key in COLLECTION_OUTCOME_OPTIONS
+                    if counts[key]
+                ],
+            }
+        )
     return {
+        "endpoint_count": endpoint_count,
+        "outcome_counts": outcome_counts,
+        "category_outcome_rows": category_outcome_rows,
         "attempted": attempted,
         "success": status_counts["success"],
         "empty": status_counts["empty"],
@@ -3460,6 +3545,7 @@ def dashboard():
     collection_requests = collection_request_summary(manifest)
     graph_collection = graph_collection_summary(manifest)
     findings_chart_data = None
+    request_chart_data = None
     if findings is not None:
         findings_chart_data = [
             {"label": "Findings Raised", "value": findings["found"], "color": "#dc3545"},
@@ -3476,6 +3562,15 @@ def dashboard():
         findings_chart_data.append(
             {"label": "Not Implemented", "value": findings["not_implemented"], "color": "#6c757d"}
         )
+    if collection_requests is not None and collection_requests["endpoint_count"]:
+        request_chart_data = [
+            {
+                "label": label,
+                "value": collection_requests["outcome_counts"][outcome],
+                "color": color,
+            }
+            for outcome, (label, color) in COLLECTION_OUTCOME_OPTIONS.items()
+        ]
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
@@ -3486,6 +3581,7 @@ def dashboard():
         ),
         dashboard=True,
         findings_chart_data=findings_chart_data,
+        request_chart_data=request_chart_data,
         collection_requests=collection_requests,
         graph_collection=graph_collection,
         dataset_index=False,

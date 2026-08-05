@@ -2121,6 +2121,15 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "error": "A later Graph page failed after data was retained",
                 },
                 {
+                    "endpoint_name": "Graph Report Settings",
+                    "category": "microsoft_graph",
+                    "status": "unauthorised",
+                    "returncode": 1,
+                    "result_count": None,
+                    "error_code": "Authorization_RequestDenied",
+                    "response_error": "The access token lacks required Microsoft Graph permissions: ReportSettings.Read.All",
+                },
+                {
                     "endpoint_name": "Empty Endpoint — Visibility Unverified",
                     "category": "base",
                     "status": "empty",
@@ -2199,7 +2208,8 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             1,
         )
         self.assertNotIn("permission_blocked", summary)
-        self.assertEqual(requests["attempted"], 9)
+        self.assertEqual(requests["attempted"], 10)
+        self.assertEqual(requests["endpoint_count"], 12)
         self.assertEqual(requests["success"], 1)
         self.assertEqual(requests["empty"], 3)
         self.assertEqual(requests["empty_access_verified"], 1)
@@ -2207,11 +2217,22 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertEqual(requests["empty_visibility_unverified"], 1)
         self.assertEqual(requests["failed"], 1)
         self.assertEqual(requests["incomplete"], 1)
-        self.assertEqual(requests["unauthorised"], 1)
+        self.assertEqual(requests["unauthorised"], 2)
         self.assertEqual(requests["not_applicable"], 2)
         self.assertEqual(requests["unattempted"], 2)
         self.assertEqual(requests["skipped"], 1)
         self.assertEqual(requests["not_attempted"], 1)
+        self.assertEqual(sum(requests["outcome_counts"].values()), 12)
+        graph_outcomes = next(
+            row
+            for row in requests["category_outcome_rows"]
+            if row["category"] == "Microsoft Graph"
+        )
+        self.assertEqual(graph_outcomes["total"], 2)
+        self.assertEqual(
+            {item["key"]: item["count"] for item in graph_outcomes["outcomes"]},
+            {"incomplete": 1, "unauthorised": 1},
+        )
         self.assertEqual(len(requests["omission_groups"]), 2)
         self.assertEqual(
             {group["reason_label"] for group in requests["omission_groups"]},
@@ -2241,8 +2262,8 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             if card["label"] == "Not Applicable"
         )
         self.assertEqual(failed_card["value"], 1)
-        self.assertEqual(unauthorised_card["value"], 1)
-        self.assertEqual(request_attempts_card["value"], 9)
+        self.assertEqual(unauthorised_card["value"], 2)
+        self.assertEqual(request_attempts_card["value"], 10)
         self.assertEqual(not_applicable_card["value"], 2)
         self.assertEqual(
             cards["requests"]["unrecorded"][0],
@@ -2275,15 +2296,33 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('"label": "Insufficient Data \\u2014 Empty Upstream Source", "value": 1', body)
         self.assertIn('"label": "Insufficient Data \\u2014 Missing or Unattributed Source", "value": 1', body)
         self.assertIn("Finding Outcome Distribution", body)
-        self.assertNotIn("Request Attempt Distribution", body)
+        self.assertIn("Collection Endpoint Outcome Distribution", body)
+        self.assertIn("Endpoint Outcomes by Collection Type", body)
+        self.assertIn("reconciles to 12 endpoint executions", body)
         self.assertIn("findingsPieChart", body)
-        self.assertNotIn("requestsPieChart", body)
+        self.assertIn("requestsPieChart", body)
         finding_chart_call = body.split(
             "renderDashboardPie('findingsPieChart'",
             1,
         )[1].split(");", 1)[0]
         self.assertNotIn('"label": "Failed"', finding_chart_call)
         self.assertNotIn('"label": "Unauthorised"', finding_chart_call)
+        request_chart_call = body.split(
+            "renderDashboardPie('requestsPieChart'",
+            1,
+        )[1].split(");", 1)[0]
+        self.assertIn('"label": "Unauthorised", "value": 2', request_chart_call)
+        self.assertIn('"label": "Incomplete", "value": 1', request_chart_call)
+        self.assertIn('"label": "No Recorded Outcome", "value": 1', request_chart_call)
+        self.assertEqual(
+            sum(item["value"] for item in json.loads(
+                request_chart_call.split(", ", 2)[2]
+            )),
+            requests["endpoint_count"],
+        )
+        self.assertIn("Microsoft Graph", body)
+        self.assertIn("Graph Report Settings", body)
+        self.assertIn("Authorization_RequestDenied", body)
         self.assertIn("Endpoint Omission Reasons", body)
         self.assertIn("Upstream source returned no records", body)
         self.assertIn("Reason unavailable in legacy manifest", body)
