@@ -1930,12 +1930,14 @@ def format_parameterised_cli_command(template, parameters):
     ]
 
 
-def run_az_command(command, capture_output=False):
-    return subprocess.run(
-        command_argv(command),
-        capture_output=capture_output,
-        text=True,
-    )
+def run_az_command(command, capture_output=False, timeout=None):
+    options = {
+        "capture_output": capture_output,
+        "text": True,
+    }
+    if timeout is not None:
+        options["timeout"] = timeout
+    return subprocess.run(command_argv(command), **options)
 
 
 def run_az_cli_process(cmd):
@@ -2190,9 +2192,16 @@ def validate_auth_session(subscription_id=None):
     return True
 
 
-def run_json_command(command):
+def run_json_command(command, timeout=None):
     """Run an Azure CLI command expected to return JSON."""
-    result = run_az_command(command, capture_output=True)
+    try:
+        result = run_az_command(
+            command,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return None, f"Command timed out after {timeout:g} seconds"
     output = "\n".join(
         stream.strip()
         for stream in (result.stdout or "", result.stderr or "")
@@ -4365,6 +4374,88 @@ def filter_endpoints(keyword=None, endpoints=None, allow_empty=False):
     return filtered
 
 
+def print_graph_progress(event, details):
+    """Render bounded, non-sensitive Microsoft Graph collection progress."""
+    if event == "phase_started":
+        print(
+            "\n[*] Starting Microsoft Graph collection: "
+            f"{details['total']} endpoint(s), lookback "
+            f"{details['lookback_start']} to {details['lookback_end']}",
+            flush=True,
+        )
+    elif event == "endpoint_started":
+        fan_out = ""
+        if details.get("parent_count", 1) > 1:
+            fan_out = f", {details['parent_count']} parent requests"
+        print(
+            f"[*] Graph [{details['index']}/{details['total']}]: "
+            f"{details['endpoint_name']} "
+            f"({details['profile']}, {details['api']}{fan_out})",
+            flush=True,
+        )
+    elif event == "endpoint_completed":
+        position = ""
+        if details.get("index") and details.get("total"):
+            position = f" [{details['index']}/{details['total']}]"
+        missing = details.get("missing_permissions") or []
+        suffix = (
+            f"; missing permission(s): {', '.join(missing)}"
+            if missing
+            else ""
+        )
+        print(
+            f"[~] Graph{position}: {details['endpoint_name']}: "
+            f"{details['status']}; {details.get('records', 0)} record(s), "
+            f"{details.get('pages', 0)} page(s), "
+            f"{details.get('attempts', 0)} request attempt(s){suffix}",
+            flush=True,
+        )
+    elif event == "page_completed":
+        page = int(details.get("page") or 0)
+        if page == 1 or page % 10 == 0:
+            print(
+                f"[~] {details['endpoint_name']}: page {page} complete, "
+                f"{details.get('total_records', 0)} record(s) streamed",
+                flush=True,
+            )
+    elif event == "fanout_progress":
+        print(
+            f"[~] {details['endpoint_name']}: parent request "
+            f"{details['completed']}/{details['total']}",
+            flush=True,
+        )
+    elif event == "retry_wait":
+        status = details.get("status") or "transport error"
+        print(
+            f"[~] {details.get('endpoint_name') or 'Microsoft Graph request'}: "
+            f"transient {status}; retry {details['attempt'] + 1}/"
+            f"{details['max_attempts']} in {details['delay_seconds']:.1f}s",
+            flush=True,
+        )
+    elif event == "audit_query_created":
+        print(
+            f"[~] {details['endpoint_name']}: audit query created; "
+            "waiting for Microsoft 365 to prepare results",
+            flush=True,
+        )
+    elif event == "audit_poll":
+        print(
+            f"[~] {details['endpoint_name']}: audit query "
+            f"{details['status']} after {details['elapsed_seconds']}s "
+            f"({details['poll']} poll(s))",
+            flush=True,
+        )
+    elif event == "phase_completed":
+        successful = details.get("successful")
+        marker = "[✓]" if successful else "[!]"
+        result = "completed" if successful else "completed with limitations"
+        print(
+            f"{marker} Microsoft Graph collection {result}: "
+            f"{details.get('total', 0)} endpoint(s) processed.\n",
+            flush=True,
+        )
+
+
 def execute_collection(args, max_workers):
     """Run the selected collection workflow and return whether it completed cleanly."""
     global GRAPH_ACCESS_TOKEN, GRAPH_AUTH_ERROR
@@ -4424,7 +4515,11 @@ def execute_collection(args, max_workers):
 
     # Azure CLI version collection is diagnostic only. A version lookup failure
     # must not prevent assessment data from being collected.
-    az_version, version_error = run_json_command("az version --output json")
+    print("[*] Reading Azure CLI version information (30-second timeout)...", flush=True)
+    az_version, version_error = run_json_command(
+        "az version --output json",
+        timeout=30,
+    )
     if COLLECTION_MANIFEST is not None:
         if isinstance(az_version, dict):
             COLLECTION_MANIFEST.set_azure_cli_version(az_version.get("azure-cli"))
@@ -4432,6 +4527,17 @@ def execute_collection(args, max_workers):
             COLLECTION_MANIFEST.add_limitation(
                 f"Could not determine Azure CLI version: {version_error}"
             )
+    if isinstance(az_version, dict):
+        print(
+            "[~] Azure CLI version: "
+            f"{az_version.get('azure-cli') or 'version field unavailable'}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[~] Azure CLI version lookup unavailable: {version_error}",
+            flush=True,
+        )
 
     graph_successful = collect_registered_graph(
         output_dir=OUTPUT_DIR, run_id=START_TIMESTAMP,
@@ -4439,11 +4545,16 @@ def execute_collection(args, max_workers):
         manifest=COLLECTION_MANIFEST,
         token=GRAPH_ACCESS_TOKEN,
         authentication_error=GRAPH_AUTH_ERROR,
+        progress=print_graph_progress,
     )
 
     base_endpoints = []
     if not args.paramendpointsonly:
         base_endpoints = filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS, allow_empty=True)
+        print(
+            f"[*] Starting Azure base collection: {len(base_endpoints)} endpoint(s).",
+            flush=True,
+        )
         if COLLECTION_MANIFEST is not None:
             COLLECTION_MANIFEST.register_endpoints(base_endpoints, "base")
         collect_data(base_endpoints, max_workers=max_workers)
@@ -4456,6 +4567,11 @@ def execute_collection(args, max_workers):
         print("[~] Parameter-only mode enabled: allowing existing source files from previous runs.")
 
     parameterised_endpoints = filter_endpoints(args.endpoint, AZURE_CLI_ENDPOINTS_PARAMS, allow_empty=True)
+    print(
+        "[*] Planning Azure parameterised collection: "
+        f"{len(parameterised_endpoints)} endpoint definition(s).",
+        flush=True,
+    )
     if args.endpoint and not base_endpoints and not parameterised_endpoints and not selected_graph_endpoints(args.endpoint):
         print(f"No matching endpoints found for selection: {args.endpoint}")
         exit(1)

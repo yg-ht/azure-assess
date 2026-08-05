@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, Iterable, Mapping, Optional
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional
 
 from .collection_manifest import utc_timestamp
 from .graph_endpoints import GRAPH_ENDPOINTS
@@ -163,10 +163,21 @@ def acquire_graph_token(command_runner=subprocess.run) -> str:
     return token
 
 
+def report_progress(
+    progress: Optional[Callable[[str, Mapping[str, Any]], None]],
+    event: str,
+    **details: Any,
+) -> None:
+    """Emit collection progress when the caller supplied an observer."""
+    if progress is not None:
+        progress(event, details)
+
+
 def collect_registered_graph(
     *, output_dir: Path, run_id: str, lookback_days: int, endpoint_filter: Optional[str],
     manifest, token: Optional[str] = None, runner: Optional[GraphRunner] = None,
     authentication_error: Optional[str] = None,
+    progress: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
 ) -> bool:
     """Collect selected endpoints and attach page/query/parent provenance."""
     endpoints = selected_graph_endpoints(endpoint_filter)
@@ -174,8 +185,16 @@ def collect_registered_graph(
         [graph_endpoint_definition(endpoint) for endpoint in endpoints], "microsoft_graph"
     )
     if not endpoints:
+        report_progress(progress, "phase_completed", total=0, successful=True)
         return True
     start, end = utc_interval(lookback_days)
+    report_progress(
+        progress,
+        "phase_started",
+        total=len(endpoints),
+        lookback_start=start,
+        lookback_end=end,
+    )
     granted_permissions = token_permissions(token) if token else None
     try:
         if authentication_error:
@@ -185,9 +204,12 @@ def collect_registered_graph(
         else:
             acquired_token = token or acquire_graph_token()
             granted_permissions = token_permissions(acquired_token)
-            graph_runner = GraphRunner(GraphTransport(acquired_token))
+            graph_runner = GraphRunner(
+                GraphTransport(acquired_token),
+                progress=progress,
+            )
     except RuntimeError as exc:
-        for endpoint in endpoints:
+        for endpoint_index, endpoint in enumerate(endpoints, start=1):
             definition = graph_endpoint_definition(endpoint)
             manifest.record_execution(
                 endpoint_name=endpoint["name"], category="microsoft_graph",
@@ -201,11 +223,30 @@ def collect_registered_graph(
                     endpoint_permissions(endpoint), granted_permissions
                 ),
             )
+            report_progress(
+                progress,
+                "endpoint_completed",
+                index=endpoint_index,
+                total=len(endpoints),
+                endpoint_name=endpoint["name"],
+                profile=endpoint["profile"],
+                api=endpoint["api"],
+                status="unauthorised",
+                records=0,
+                pages=0,
+                attempts=0,
+            )
+        report_progress(
+            progress,
+            "phase_completed",
+            total=len(endpoints),
+            successful=False,
+        )
         return False
 
     parent_ids_by_endpoint: Dict[str, list] = {}
     successful = True
-    for endpoint in endpoints:
+    for endpoint_index, endpoint in enumerate(endpoints, start=1):
         required_permissions = endpoint_permissions(endpoint)
         missing_permissions = (
             sorted(set(required_permissions) - granted_permissions)
@@ -243,6 +284,20 @@ def collect_registered_graph(
                 ),
             )
             successful = False
+            report_progress(
+                progress,
+                "endpoint_completed",
+                index=endpoint_index,
+                total=len(endpoints),
+                endpoint_name=endpoint["name"],
+                profile=endpoint["profile"],
+                api=endpoint["api"],
+                status="unauthorised",
+                records=0,
+                pages=0,
+                attempts=0,
+                missing_permissions=missing_permissions,
+            )
             continue
         fan_out = endpoint.get("fan_out")
         contexts = [{"start": start, "end": end}]
@@ -254,6 +309,19 @@ def collect_registered_graph(
                     "The required parent endpoint was not selected or was unavailable",
                     endpoint_identifier=endpoint["output"], reason_code="upstream_source_unavailable",
                     reason_details={"parent_endpoint_id": fan_out["parent"]},
+                )
+                report_progress(
+                    progress,
+                    "endpoint_completed",
+                    index=endpoint_index,
+                    total=len(endpoints),
+                    endpoint_name=endpoint["name"],
+                    profile=endpoint["profile"],
+                    api=endpoint["api"],
+                    status="skipped",
+                    records=0,
+                    pages=0,
+                    attempts=0,
                 )
                 continue
             contexts = [
@@ -267,7 +335,31 @@ def collect_registered_graph(
                     endpoint_identifier=endpoint["output"], reason_code="upstream_source_returned_no_data",
                     reason_details={"parent_endpoint_id": fan_out["parent"]},
                 )
+                report_progress(
+                    progress,
+                    "endpoint_completed",
+                    index=endpoint_index,
+                    total=len(endpoints),
+                    endpoint_name=endpoint["name"],
+                    profile=endpoint["profile"],
+                    api=endpoint["api"],
+                    status="skipped",
+                    records=0,
+                    pages=0,
+                    attempts=0,
+                )
                 continue
+
+        report_progress(
+            progress,
+            "endpoint_started",
+            index=endpoint_index,
+            total=len(endpoints),
+            endpoint_name=endpoint["name"],
+            profile=endpoint["profile"],
+            api=endpoint["api"],
+            parent_count=len(contexts),
+        )
 
         status = "empty"
         error = None
@@ -278,6 +370,19 @@ def collect_registered_graph(
         output = Path(output_dir) / f"{endpoint['output']}_{run_id}.json"
         temporary_targets = []
         for parent_index, context in enumerate(contexts):
+            parent_number = parent_index + 1
+            if len(contexts) > 1 and (
+                parent_number == 1
+                or parent_number % 25 == 0
+                or parent_number == len(contexts)
+            ):
+                report_progress(
+                    progress,
+                    "fanout_progress",
+                    endpoint_name=endpoint["name"],
+                    completed=parent_number,
+                    total=len(contexts),
+                )
             target = Path(output_dir) / f"{endpoint['output']}_{parent_index}_{run_id}.json"
             result = graph_runner.collect(endpoint, target, context)
             attempts += result.attempts
@@ -357,4 +462,23 @@ def collect_registered_graph(
         )
         if endpoint["api"] == "beta":
             manifest.add_limitation(f"{endpoint['name']} uses the explicitly labelled Microsoft Graph beta API")
+        report_progress(
+            progress,
+            "endpoint_completed",
+            index=endpoint_index,
+            total=len(endpoints),
+            endpoint_name=endpoint["name"],
+            profile=endpoint["profile"],
+            api=endpoint["api"],
+            status=status,
+            records=total_count,
+            pages=pages,
+            attempts=attempts,
+        )
+    report_progress(
+        progress,
+        "phase_completed",
+        total=len(endpoints),
+        successful=successful,
+    )
     return successful

@@ -10,7 +10,9 @@ import unittest
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
+import azure_assess.graph_collection as graph_collection
 from azure_assess.graph_endpoints import GRAPH_ENDPOINTS, validate_registry
 from azure_assess.graph_collection import (
     graph_access_verification,
@@ -308,6 +310,87 @@ class GraphRunnerTests(unittest.TestCase):
         self.assertEqual("empty", result.status)
         self.assertEqual(2, result.attempts)
 
+    def test_progress_reports_retry_and_streamed_page_without_request_details(self):
+        events = []
+        attempts = 0
+
+        def transport(method, url, body):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise GraphError("busy", status=503)
+            return 200, {}, {"value": [{"id": "record-one"}]}
+
+        endpoint = {
+            "id": "items",
+            "name": "Friendly Items",
+            "profile": "Test",
+            "api": "v1.0",
+            "method": "GET",
+            "path": "/items",
+            "pagination": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            result = GraphRunner(
+                transport,
+                sleeper=lambda _: None,
+                progress=lambda event, details: events.append((event, details)),
+            ).collect(
+                endpoint,
+                Path(directory) / "items.json",
+                {"start": "s", "end": "e"},
+            )
+
+        self.assertEqual("success", result.status)
+        self.assertEqual(
+            ["retry_wait", "page_completed"],
+            [event for event, _ in events],
+        )
+        self.assertEqual("Friendly Items", events[0][1]["endpoint_name"])
+        self.assertEqual(1, events[1][1]["total_records"])
+        self.assertNotIn("url", events[0][1])
+        self.assertNotIn("url", events[1][1])
+
+    def test_audit_query_progress_has_throttled_status_without_query_id(self):
+        events = []
+        statuses = iter(("running", "succeeded"))
+
+        def transport(method, url, body):
+            if method == "POST":
+                return 200, {}, {"id": "sensitive-query-id"}
+            if url.endswith("/records"):
+                return 200, {}, {"value": []}
+            return 200, {}, {"status": next(statuses)}
+
+        endpoint = {
+            "id": "audit",
+            "name": "Unified Audit",
+            "profile": "M365Audit",
+            "api": "beta",
+            "method": "POST",
+            "path": "/security/auditLog/queries",
+            "body": {"displayName": "Azure Assess"},
+            "mode": "audit_query",
+            "pagination": True,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            result = GraphRunner(
+                transport,
+                sleeper=lambda _: None,
+                progress=lambda event, details: events.append((event, details)),
+            ).collect(
+                endpoint,
+                Path(directory) / "audit.json",
+                {"start": "s", "end": "e"},
+            )
+
+        self.assertEqual("empty", result.status)
+        self.assertEqual(
+            ["audit_query_created", "audit_poll", "audit_poll", "page_completed"],
+            [event for event, _ in events],
+        )
+        self.assertNotIn("sensitive-query-id", repr(events))
+
     def test_completed_pages_are_retained_as_an_incomplete_dataset(self):
         calls = []
         def transport(method, url, body):
@@ -405,6 +488,72 @@ class GraphRunnerTests(unittest.TestCase):
             records = json.loads(target.read_text(encoding="utf-8"))
         self.assertEqual("success", result.status)
         self.assertEqual("user@example.com", records[0]["User Principal Name"])
+
+
+class GraphCollectionProgressTests(unittest.TestCase):
+    class Manifest:
+        def __init__(self):
+            self.executions = []
+
+        def register_endpoints(self, *args, **kwargs):
+            pass
+
+        def record_execution(self, **kwargs):
+            self.executions.append(kwargs)
+
+        def record_dataset(self, *args, **kwargs):
+            pass
+
+        def record_skipped_endpoint(self, *args, **kwargs):
+            pass
+
+        def add_limitation(self, *args, **kwargs):
+            pass
+
+    def test_orchestrator_reports_phase_endpoint_and_completion_counts(self):
+        endpoint = {
+            "id": "items",
+            "name": "Graph Items",
+            "profile": "Test",
+            "permission": "Items.Read.All",
+            "permissions": ["Items.Read.All"],
+            "api": "v1.0",
+            "method": "GET",
+            "path": "/items",
+            "pagination": True,
+            "output": "graph_test_items",
+            "licence": "Test capability",
+        }
+        events = []
+
+        def transport(method, url, body):
+            return 200, {}, {"value": [{"id": "one"}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(graph_collection, "GRAPH_ENDPOINTS", [endpoint]):
+                successful = graph_collection.collect_registered_graph(
+                    output_dir=Path(directory),
+                    run_id="run-one",
+                    lookback_days=30,
+                    endpoint_filter=None,
+                    manifest=self.Manifest(),
+                    runner=GraphRunner(transport),
+                    progress=lambda event, details: events.append((event, details)),
+                )
+
+        self.assertTrue(successful)
+        self.assertEqual(
+            [
+                "phase_started",
+                "endpoint_started",
+                "endpoint_completed",
+                "phase_completed",
+            ],
+            [event for event, _ in events],
+        )
+        completion = events[2][1]
+        self.assertEqual(1, completion["records"])
+        self.assertEqual(1, completion["pages"])
 
 
 if __name__ == "__main__":

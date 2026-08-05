@@ -269,15 +269,29 @@ class GraphRunner:
         sleeper: Callable[[float], None] = sleep,
         poll_interval: float = 2.0,
         poll_timeout: float = 900.0,
+        progress: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
     ):
         self.transport = transport
         self.max_attempts = max(1, max_attempts)
         self.sleeper = sleeper
         self.poll_interval = poll_interval
         self.poll_timeout = poll_timeout
+        self.progress = progress
 
-    def request(self, method: str, url: str, body: Optional[Mapping] = None) -> Tuple[Any, int]:
+    def report_progress(self, event: str, **details: Any) -> None:
+        """Emit non-sensitive progress without coupling collection to a console."""
+        if self.progress is not None:
+            self.progress(event, details)
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        body: Optional[Mapping] = None,
+        progress_context: Optional[Mapping[str, Any]] = None,
+    ) -> Tuple[Any, int]:
         last_error = None
+        progress_context = dict(progress_context or {})
         for attempt in range(1, self.max_attempts + 1):
             try:
                 status, headers, payload = self.transport(method, url, body)
@@ -300,7 +314,16 @@ class GraphRunner:
                     exc.attempts = attempt
                     raise
                 headers = getattr(exc, "headers", {})
-                self.sleeper(retry_delay(headers, attempt))
+                delay = retry_delay(headers, attempt)
+                self.report_progress(
+                    "retry_wait",
+                    **progress_context,
+                    attempt=attempt,
+                    max_attempts=self.max_attempts,
+                    status=exc.status,
+                    delay_seconds=delay,
+                )
+                self.sleeper(delay)
         raise last_error
 
     @staticmethod
@@ -340,13 +363,22 @@ class GraphRunner:
         result = GraphResult(status="failed", output_path=Path(target))
         url = endpoint_url(endpoint, context)
         body = resolved_body(endpoint, context)
+        progress_context = {
+            "endpoint_id": endpoint.get("id"),
+            "endpoint_name": endpoint.get("name"),
+        }
         try:
             if endpoint.get("mode") == "audit_query":
                 return self._collect_audit(endpoint, target, context)
             with AtomicJsonArrayWriter(target) as writer:
                 while url:
                     try:
-                        payload, attempts = self.request(endpoint["method"], url, body)
+                        payload, attempts = self.request(
+                            endpoint["method"],
+                            url,
+                            body,
+                            progress_context,
+                        )
                     except GraphError as exc:
                         result.attempts += max(1, exc.attempts)
                         if not result.pages:
@@ -380,6 +412,13 @@ class GraphRunner:
                             }
                         writer.write(record)
                     result.count = writer.count
+                    self.report_progress(
+                        "page_completed",
+                        **progress_context,
+                        page=result.pages,
+                        page_records=len(records),
+                        total_records=result.count,
+                    )
                     url = next_url if endpoint.get("pagination", True) else None
                     body = None
             if not result.incomplete:
@@ -401,20 +440,43 @@ class GraphRunner:
 
     def _collect_audit(self, endpoint: Mapping[str, Any], target: Path, context: Mapping[str, Any]) -> GraphResult:
         create_url = endpoint_url(endpoint, context)
-        payload, attempts = self.request("POST", create_url, resolved_body(endpoint, context))
+        progress_context = {
+            "endpoint_id": endpoint.get("id"),
+            "endpoint_name": endpoint.get("name"),
+        }
+        payload, attempts = self.request(
+            "POST",
+            create_url,
+            resolved_body(endpoint, context),
+            progress_context,
+        )
         query_id = payload.get("id") if isinstance(payload, dict) else None
         if not query_id:
             error = GraphError("Audit query creation did not return an ID")
             error.attempts = attempts
             raise error
+        self.report_progress("audit_query_created", **progress_context)
         status_url = f"{GRAPH_ROOT}/{endpoint['api']}/security/auditLog/queries/{query_id}"
         deadline = monotonic() + self.poll_timeout
+        polling_started = monotonic()
         polls = 0
+        last_reported_status = None
         while monotonic() < deadline:
-            status_payload, used = self.request("GET", status_url)
+            status_payload, used = self.request(
+                "GET", status_url, progress_context=progress_context
+            )
             attempts += used
             polls += 1
             status = str(status_payload.get("status", "")).lower()
+            if polls == 1 or polls % 15 == 0 or status != last_reported_status:
+                self.report_progress(
+                    "audit_poll",
+                    **progress_context,
+                    poll=polls,
+                    status=status or "unknown",
+                    elapsed_seconds=round(monotonic() - polling_started),
+                )
+                last_reported_status = status
             if status == "succeeded":
                 records_endpoint = dict(endpoint, method="GET", mode="collection", path=f"/security/auditLog/queries/{query_id}/records")
                 collected = self.collect(records_endpoint, target, context)

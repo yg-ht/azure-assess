@@ -1,8 +1,10 @@
 import importlib.util
+import io
 import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -83,6 +85,52 @@ class AzureCliCommandSafetyTests(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(popen.call_args.args[0], ["az", "account", "list"])
         self.assertNotIn("shell", popen.call_args.kwargs)
+
+    def test_json_command_timeout_is_reported_without_aborting_collection(self):
+        with mock.patch.object(
+            azure_collect,
+            "run_az_command",
+            side_effect=azure_collect.subprocess.TimeoutExpired("az version", 3),
+        ):
+            payload, error = azure_collect.run_json_command(
+                "az version --output json",
+                timeout=3,
+            )
+
+        self.assertIsNone(payload)
+        self.assertEqual("Command timed out after 3 seconds", error)
+
+    def test_graph_console_progress_uses_friendly_non_sensitive_context(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            azure_collect.print_graph_progress(
+                "endpoint_started",
+                {
+                    "index": 4,
+                    "total": 88,
+                    "endpoint_name": "Graph Security Incidents",
+                    "profile": "DefenderHunting",
+                    "api": "v1.0",
+                    "parent_count": 1,
+                    "endpoint_id": "technical-id-not-for-console",
+                },
+            )
+            azure_collect.print_graph_progress(
+                "audit_poll",
+                {
+                    "endpoint_name": "Unified Audit",
+                    "status": "running",
+                    "elapsed_seconds": 30,
+                    "poll": 15,
+                    "query_id": "query-id-not-for-console",
+                },
+            )
+
+        rendered = output.getvalue()
+        self.assertIn("Graph [4/88]: Graph Security Incidents", rendered)
+        self.assertIn("audit query running after 30s", rendered)
+        self.assertNotIn("technical-id-not-for-console", rendered)
+        self.assertNotIn("query-id-not-for-console", rendered)
 
 
 class FakeAzProcess:
