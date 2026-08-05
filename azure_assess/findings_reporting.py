@@ -11,6 +11,7 @@ from azure_assess.collection_manifest import (
     interpreted_visibility_status,
     is_tenant_unavailable_error,
 )
+from azure_assess.endpoint_requirements import ENDPOINT_SOURCE_TYPES
 
 
 REPORTING_SCHEMA_VERSION = "1.3"
@@ -834,6 +835,13 @@ def normalise_finding_reporting(
         ),
         "provenance": {
             "attribution_precision": "finding_level",
+            "endpoint_source_type": references.get("endpoint_source_type"),
+            "declared_endpoint_ids": list(
+                references.get("required_endpoint_ids", [])
+            ),
+            "declared_endpoint_patterns": list(
+                references.get("required_endpoint_patterns", [])
+            ),
             "collection_run": collection_run_record(manifest, manifest_filename),
             "source_datasets": datasets,
             "required_endpoints": required_endpoints,
@@ -895,6 +903,14 @@ def validate_finding_reporting(finding: Mapping[str, Any]) -> None:
         raise ValueError("Finding reporting provenance must be an object")
     if provenance.get("attribution_precision") != "finding_level":
         raise ValueError("Unsupported finding provenance attribution precision")
+    endpoint_source_type = provenance.get("endpoint_source_type")
+    if endpoint_source_type is not None:
+        if endpoint_source_type not in ENDPOINT_SOURCE_TYPES:
+            raise ValueError("Finding provenance has an invalid endpoint source type")
+    for declaration_key in ("declared_endpoint_ids", "declared_endpoint_patterns"):
+        declarations = provenance.get(declaration_key)
+        if declarations is not None and not isinstance(declarations, list):
+            raise ValueError("Finding provenance endpoint declarations must be lists")
     if not isinstance(provenance.get("source_datasets"), list):
         raise ValueError("Finding provenance source datasets must be a list")
     if reporting_schema_version in {"1.1", "1.2", REPORTING_SCHEMA_VERSION}:

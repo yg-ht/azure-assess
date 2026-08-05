@@ -50,6 +50,15 @@ from azure_assess.findings_correlation import (
     collection_reference_time,
     merge_correlation_results,
 )
+from azure_assess.endpoint_requirements import (
+    GRAPH,
+    alternative_source_options,
+    required_source_options,
+    source_options_for_identifiers,
+    source_options_for_patterns,
+    source_options_for_type,
+    source_type_for_options,
+)
 from azure_assess.findings_governance import (
     analyse_advisor_defender,
     analyse_critical_resource_locks,
@@ -461,12 +470,28 @@ def dataset_paths_any(catalog, *fragment_sets):
 class SourceReferences(list):
     """Actual source paths plus expected endpoint identities for absent data."""
 
-    def __init__(self, paths=(), required_patterns=(), required_endpoint_ids=()):
+    def __init__(
+        self,
+        paths=(),
+        required_patterns=(),
+        required_endpoint_ids=(),
+        source_options=(),
+        endpoint_source_type=None,
+    ):
         super().__init__(paths)
         self.required_patterns = tuple(
             dict.fromkeys(tuple(pattern) for pattern in required_patterns)
         )
         self.required_endpoint_ids = tuple(dict.fromkeys(required_endpoint_ids))
+        inferred_options = required_source_options(
+            source_options_for_patterns(self.required_patterns),
+            source_options_for_identifiers(self.required_endpoint_ids),
+        )
+        self.source_options = (
+            source_options_for_type(endpoint_source_type)
+            or tuple(source_options)
+            or inferred_options
+        )
 
     def __add__(self, other):
         return SourceReferences(
@@ -474,6 +499,10 @@ class SourceReferences(list):
             self.required_patterns + tuple(getattr(other, "required_patterns", ())),
             self.required_endpoint_ids
             + tuple(getattr(other, "required_endpoint_ids", ())),
+            source_options=required_source_options(
+                self.source_options,
+                tuple(getattr(other, "source_options", ())),
+            ),
         )
 
     def __radd__(self, other):
@@ -482,7 +511,20 @@ class SourceReferences(list):
             tuple(getattr(other, "required_patterns", ())) + self.required_patterns,
             tuple(getattr(other, "required_endpoint_ids", ()))
             + self.required_endpoint_ids,
+            source_options=required_source_options(
+                tuple(getattr(other, "source_options", ())),
+                self.source_options,
+            ),
         )
+
+    def __iadd__(self, other):
+        """Retain endpoint metadata when list-style accumulation is used."""
+        combined = self + other
+        self[:] = combined
+        self.required_patterns = combined.required_patterns
+        self.required_endpoint_ids = combined.required_endpoint_ids
+        self.source_options = combined.source_options
+        return self
 
 
 def dataset_references(catalog, *fragments):
@@ -495,10 +537,23 @@ def dataset_references(catalog, *fragments):
 
 def dataset_references_any(catalog, *fragment_sets):
     """Combine alternative dataset references without losing expected patterns."""
-    references = SourceReferences()
-    for fragments in fragment_sets:
-        references += dataset_references(catalog, *fragments)
-    return SourceReferences(sorted(set(references)), references.required_patterns)
+    alternatives = [dataset_references(catalog, *fragments) for fragments in fragment_sets]
+    return SourceReferences(
+        sorted({path for reference in alternatives for path in reference}),
+        required_patterns=tuple(
+            pattern
+            for reference in alternatives
+            for pattern in reference.required_patterns
+        ),
+        required_endpoint_ids=tuple(
+            endpoint_id
+            for reference in alternatives
+            for endpoint_id in reference.required_endpoint_ids
+        ),
+        source_options=alternative_source_options(
+            *(reference.source_options for reference in alternatives)
+        ),
+    )
 
 
 def resource_portal_link(resource_id):
@@ -597,6 +652,9 @@ def attach_references(finding, source_files):
         ],
         "required_endpoint_ids": list(
             getattr(source_files, "required_endpoint_ids", ())
+        ),
+        "endpoint_source_type": source_type_for_options(
+            tuple(getattr(source_files, "source_options", ()))
         ),
         "evidence_links": [],
     }
@@ -966,8 +1024,10 @@ def correlation_finding(title, severity, reason, correlation):
 
 def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     apim_services = dataset_records(catalog, "az_apim_show")
-    ad_users = dataset_records(
-        catalog, "graph_identity_baseline_users", "az_ad_user_list"
+    ad_users = dataset_records_any(
+        catalog,
+        ("graph_identity_baseline_users",),
+        ("az_ad_user_list",),
     )
     app_service_environments = dataset_records(catalog, "az_appservice_ase_show")
     storage_accounts = dataset_records(catalog, "az_storage_account_list")
@@ -1072,8 +1132,10 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     graph_user_registration_details = expand_value_records(dataset_records_any(catalog, ("graph_identity_baseline_user_registration_details",), ("graph.microsoft.com", "userregistrationdetails")))
     source_map = {
         "apim_services": dataset_references(catalog, "az_apim_show"),
-        "ad_users": dataset_references(
-            catalog, "graph_identity_baseline_users", "az_ad_user_list"
+        "ad_users": dataset_references_any(
+            catalog,
+            ("graph_identity_baseline_users",),
+            ("az_ad_user_list",),
         ),
         "app_service_environments": dataset_references(catalog, "az_appservice_ase_show"),
         "storage_accounts": dataset_references(catalog, "az_storage_account_list"),
@@ -3652,6 +3714,13 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     findings.extend(graph_findings)
     reference_sources.update(graph_sources)
 
+    # The current collector obtains both application and service-principal
+    # inventories from Graph. Historical az ad datasets remain readable, but
+    # they are compatibility inputs rather than current Base endpoint choices.
+    for finding in findings:
+        if finding["title"] == "Application identity credentials are expired or require rotation":
+            finding["_endpoint_source_type"] = GRAPH
+
     correlation_sources = {
         finding["title"]: SourceReferences(
             finding.get("_correlation_source_files") or [],
@@ -3674,6 +3743,8 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
                 tuple(getattr(existing_sources, "required_endpoint_ids", ()))
                 + tuple(finding.get("_required_endpoint_ids") or ())
             ),
+            source_options=getattr(existing_sources, "source_options", ()),
+            endpoint_source_type=finding.get("_endpoint_source_type"),
         )
         attach_references(finding, source_files)
         normalise_finding_reporting(finding, catalog=catalog)

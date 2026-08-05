@@ -5,6 +5,7 @@
 from typing import Any, Iterable, Mapping, Optional
 
 from .finding_inventory import inventory
+from .endpoint_requirements import BASE
 
 
 def _value(record: Mapping[str, Any], *paths: str) -> Any:
@@ -59,6 +60,7 @@ def _emit(result, unsupported, title: str, severity: str,
     finding["_required_endpoint_ids"] = [
         item["endpoint_id"] for item in inventories
     ]
+    finding["_endpoint_source_type"] = BASE
     return finding, [name for item in inventories for name in item["files"]]
 
 

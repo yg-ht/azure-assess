@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional
 from .finding_inventory import inventory, manifest
 from .graph_endpoints import GRAPH_ENDPOINTS, HUNTING_QUERY_PACK
 from .graph_guidance import GUIDANCE_BY_ID, GUIDANCE_BY_TITLE
+from .endpoint_requirements import GRAPH
 
 
 OUTPUT_BY_ID = {item["id"]: item["output"] for item in GRAPH_ENDPOINTS}
@@ -106,6 +107,7 @@ def _emit(result, unsupported, title: str, severity: str,
             f"No complete set of required inventories was available ({states}).",
         )
     finding["_required_endpoint_ids"] = [item["endpoint_id"] for item in inventories]
+    finding["_endpoint_source_type"] = GRAPH
     _guidance(finding, title)
     files = [name for item in inventories for name in item["files"]]
     return finding, files
