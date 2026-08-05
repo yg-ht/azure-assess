@@ -531,6 +531,10 @@ HTML_TEMPLATE = """
           flex: 0 0 auto;
           width: 20%;
         }
+        .dashboard-six-column {
+          flex: 0 0 auto;
+          width: 16.66666667%;
+        }
       }
       .dashboard-muted {
         color: var(--dashboard-muted-text);
@@ -761,7 +765,7 @@ HTML_TEMPLATE = """
           {% if findings.collection_alignment.warning %}
           <div class="alert alert-warning" role="alert">{{ findings.collection_alignment.warning }}</div>
           {% endif %}
-          {{ dashboard_card_grid(summary_cards.findings, "col-12 col-md-6 dashboard-five-column") }}
+          {{ dashboard_card_grid(summary_cards.findings, "col-12 col-md-6 dashboard-six-column") }}
         {% if findings_chart_data %}
         <div class="row g-3 mt-1">
           <div class="col-12 col-xl-4">

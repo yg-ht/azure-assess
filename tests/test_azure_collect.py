@@ -2643,6 +2643,11 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertNotIn('"label": "Permission Blocked"', body)
         self.assertIn("Collection Snapshot", body)
         self.assertIn("Finding Outcomes", body)
+        self.assertIn(
+            'col-12 col-md-6 dashboard-six-column',
+            body,
+        )
+        self.assertIn("width: 16.66666667%", body)
         self.assertIn("Collection Request Health", body)
         self.assertIn("Request Attempt Outcomes", body)
         self.assertIn("Skipped Endpoint Definitions", body)
