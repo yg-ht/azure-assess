@@ -39,6 +39,44 @@ azure_findings = load_script("azure_findings_endpoint_audit", "azure-findings.py
 
 
 class ManualEndpointAssessmentTests(unittest.TestCase):
+    def test_manual_viewer_link_does_not_filter_by_dataset_name(self):
+        finding = {
+            "title": "App Service Plans",
+            "status": "manual_assessment_required",
+            "evidence": [{"name": "App Service Plans", "recordCount": 2}],
+        }
+
+        azure_findings.attach_references(
+            finding,
+            [Path("az_appservice_plan_list_run-one.json")],
+        )
+
+        link = finding["references"]["evidence_links"][0]
+        self.assertEqual(
+            link["href"],
+            "/query/az_appservice_plan_list_run-one.json",
+        )
+        self.assertIsNone(link["query"])
+
+    def test_automated_viewer_link_keeps_record_filter(self):
+        finding = {
+            "title": "Example automated finding",
+            "status": "found",
+            "evidence": [{"name": "plan-one"}],
+        }
+
+        azure_findings.attach_references(
+            finding,
+            [Path("az_appservice_plan_list_run-one.json")],
+        )
+
+        link = finding["references"]["evidence_links"][0]
+        self.assertEqual(
+            link["href"],
+            "/query/az_appservice_plan_list_run-one.json?query=plan-one",
+        )
+        self.assertEqual(link["query"], "plan-one")
+
     def test_parameterised_executions_become_one_manual_item(self):
         manifest = {
             "endpoint_runs": [

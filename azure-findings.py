@@ -633,13 +633,22 @@ def evidence_query_term(evidence):
     return None
 
 
-def build_present_links(source_files, evidence, finding_title):
-    query = evidence_query_term(evidence) or finding_title
+def build_present_links(
+    source_files,
+    evidence,
+    finding_title,
+    include_filter=True,
+):
+    query = None
+    if include_filter:
+        query = evidence_query_term(evidence) or finding_title
     links = []
     seen = set()
     for source_file in source_files:
         filename = Path(source_file).name
-        href = f"/query/{quote(filename, safe='')}?query={quote(str(query), safe='')}"
+        href = f"/query/{quote(filename, safe='')}"
+        if query is not None:
+            href += f"?query={quote(str(query), safe='')}"
         if href in seen:
             continue
         seen.add(href)
@@ -662,9 +671,15 @@ def attach_references(finding, source_files):
         ),
         "evidence_links": [],
     }
+    include_filter = finding.get("status") != "manual_assessment_required"
     for evidence in finding["evidence"]:
         item_refs = build_evidence_references(evidence)
-        item_refs.extend(build_present_links(source_files, evidence, finding["title"]))
+        item_refs.extend(build_present_links(
+            source_files,
+            evidence,
+            finding["title"],
+            include_filter=include_filter,
+        ))
         evidence["_references"] = item_refs
         references["evidence_links"].extend(item_refs)
 
