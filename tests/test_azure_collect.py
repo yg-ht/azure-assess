@@ -923,6 +923,56 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         )
         self.assertEqual(summary["sankey_relationship_count"], summary["executed"])
 
+    def test_declared_graph_check_without_an_execution_is_not_unattributed(self):
+        rows = [
+            {
+                "status": "no_data_to_assess",
+                "reporting": {
+                    "provenance": {
+                        "endpoint_source_type": "Graph",
+                        "required_endpoints": [],
+                        "insufficient_data": {
+                            "cause": "missing_or_unattributed_source",
+                        },
+                    },
+                },
+            }
+        ]
+        finding_file = mock.Mock()
+        finding_file.exists.return_value = True
+
+        with (
+            mock.patch.object(
+                azure_present,
+                "findings_flat_path",
+                return_value=finding_file,
+            ),
+            mock.patch.object(
+                azure_present,
+                "load_json_file",
+                return_value={"rows": rows},
+            ),
+        ):
+            summary = azure_present.findings_summary(manifest={"endpoint_runs": []})
+
+        paths = {path for path, _color in summary["sankey_paths"]}
+        self.assertEqual(
+            paths,
+            {
+                (
+                    "Microsoft Graph Endpoints",
+                    "Endpoint Not Recorded",
+                    "Finding Checks",
+                    "No Data to Assess",
+                    "Could Not Assess",
+                )
+            },
+        )
+        self.assertNotIn(
+            "Unattributed Endpoint",
+            {node for path in paths for node in path},
+        )
+
     def test_review_and_validated_export_files_are_not_data_viewer_datasets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)

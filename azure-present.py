@@ -2604,6 +2604,19 @@ def endpoint_family_label(category):
     return "Unattributed Endpoint"
 
 
+def declared_endpoint_families(source_type):
+    """Return Sankey endpoint families for a check with no recorded execution."""
+    if source_type == "Base":
+        return ["Base Endpoints"]
+    if source_type == "Graph":
+        return ["Microsoft Graph Endpoints"]
+    if source_type == "Either":
+        return ["Base or Microsoft Graph Endpoints"]
+    if source_type == "BaseAndGraph":
+        return ["Base Endpoints", "Microsoft Graph Endpoints"]
+    return []
+
+
 def collection_outcome(request_record, schema_version=None):
     """Return the presentation status and mutually exclusive outcome key."""
     status = str(request_record.get("status") or "")
@@ -3050,17 +3063,39 @@ def findings_summary(manifest=None):
                     relationships.append((family, outcome_label))
 
         if not relationships:
-            relationships.append(("Unattributed Endpoint", "Unattributed Check Source"))
-            counts["sankey_node_counts"][(
-                0,
-                "Unattributed Endpoint",
-                "unattributed finding checks",
-            )] += 1
-            counts["sankey_node_counts"][(
-                1,
-                "Unattributed Check Source",
-                "unattributed finding checks",
-            )] += 1
+            declared_families = declared_endpoint_families(
+                provenance.get("endpoint_source_type")
+            )
+            if declared_families:
+                relationships.extend(
+                    (family, "Endpoint Not Recorded")
+                    for family in declared_families
+                )
+                for family in declared_families:
+                    counts["sankey_node_counts"][(
+                        0,
+                        family,
+                        "finding checks with an unrecorded required endpoint",
+                    )] += 1
+                    counts["sankey_node_counts"][(
+                        1,
+                        "Endpoint Not Recorded",
+                        "finding checks with an unrecorded required endpoint",
+                    )] += 1
+            else:
+                relationships.append(
+                    ("Unattributed Endpoint", "Unattributed Check Source")
+                )
+                counts["sankey_node_counts"][(
+                    0,
+                    "Unattributed Endpoint",
+                    "unattributed finding checks",
+                )] += 1
+                counts["sankey_node_counts"][(
+                    1,
+                    "Unattributed Check Source",
+                    "unattributed finding checks",
+                )] += 1
 
         for family, endpoint_status in relationships:
             path = (
@@ -3581,12 +3616,21 @@ def reporting_display_summary(value):
     collection_run = collection_run if isinstance(collection_run, dict) else {}
     insufficient = provenance.get("insufficient_data")
     insufficient = insufficient if isinstance(insufficient, dict) else {}
+    endpoint_source = provenance.get("endpoint_source_type")
+    endpoint_source = {
+        "BaseAndGraph": "Base and Graph",
+    }.get(endpoint_source, endpoint_source)
+    declaration_count = len(provenance.get("declared_endpoint_ids") or []) + len(
+        provenance.get("declared_endpoint_patterns") or []
+    )
     summary = OrderedDict(
         [
             ("Assets", len(reporting.get("assets") or [])),
             ("Observations", len(reporting.get("observations") or [])),
             ("Source Datasets", len(provenance.get("source_datasets") or [])),
             ("Required Endpoints", len(provenance.get("required_endpoints") or [])),
+            ("Endpoint Source", display_metadata_value(endpoint_source)),
+            ("Endpoint Declarations", declaration_count),
             ("Collection Run", display_metadata_value(collection_run.get("status"))),
             ("Limitations", len(provenance.get("limitations") or [])),
         ]
