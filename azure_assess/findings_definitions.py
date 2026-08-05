@@ -866,6 +866,7 @@ FINDING_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # first legacy ID collided with another independently evaluated finding.
 FINDING_ID_OVERRIDES = {
     "Unauthenticated Guest Users Present in Azure AD": "entra_unauthenticated_guest_users_present",
+    "Active guest users without reported MFA capability": "entra_unauthenticated_guest_users_present",
     "Access to Azure Key Vault not restricted to trusted source addresses": (
         "keyvault_access_not_restricted_to_trusted_sources"
     ),

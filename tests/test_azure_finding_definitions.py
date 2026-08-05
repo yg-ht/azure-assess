@@ -117,6 +117,12 @@ class FindingDefinitionIdentityTests(unittest.TestCase):
             canonical_finding_id("Unauthenticated Guest Users Present in Azure AD"),
             "entra_unauthenticated_guest_users_present",
         )
+        self.assertEqual(
+            canonical_finding_id(
+                "Active guest users without reported MFA capability"
+            ),
+            "entra_unauthenticated_guest_users_present",
+        )
 
     def test_definition_exposes_report_metadata_contract(self):
         definition = finding_definition("Example Azure finding", "Medium")

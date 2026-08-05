@@ -23,6 +23,7 @@ CONCLUSION_SUPPORT = {
 }
 INCOMPLETE_ENDPOINT_STATUSES = {
     "failed",
+    "incomplete",
     "unauthorised",
     "tenant_unavailable",
     "not_attempted",
