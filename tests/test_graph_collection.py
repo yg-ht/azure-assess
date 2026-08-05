@@ -555,6 +555,156 @@ class GraphCollectionProgressTests(unittest.TestCase):
         self.assertEqual(1, completion["records"])
         self.assertEqual(1, completion["pages"])
 
+    def test_large_streamed_record_is_parsed_without_spinning(self):
+        record = {"id": "large", "payload": "x" * 200000}
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "large.json"
+            target.write_text(json.dumps([record]), encoding="utf-8")
+
+            parsed = list(graph_collection._iter_json_array(target))
+
+        self.assertEqual([record], parsed)
+
+    def test_single_part_dataset_is_published_without_reparsing(self):
+        endpoint = {
+            "id": "items",
+            "name": "Graph Items",
+            "profile": "Test",
+            "permission": "Items.Read.All",
+            "permissions": ["Items.Read.All"],
+            "api": "v1.0",
+            "method": "GET",
+            "path": "/items",
+            "pagination": True,
+            "output": "graph_test_items",
+            "licence": "Test capability",
+        }
+
+        def transport(method, url, body):
+            return 200, {}, {"value": [{"id": "one"}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            with (
+                mock.patch.object(graph_collection, "GRAPH_ENDPOINTS", [endpoint]),
+                mock.patch.object(
+                    graph_collection,
+                    "_iter_json_array",
+                    side_effect=AssertionError("single part should not be reparsed"),
+                ),
+            ):
+                successful = graph_collection.collect_registered_graph(
+                    output_dir=output_dir,
+                    run_id="run-one",
+                    lookback_days=30,
+                    endpoint_filter=None,
+                    manifest=self.Manifest(),
+                    runner=GraphRunner(transport),
+                )
+
+            output = output_dir / "graph_test_items_run-one.json"
+            records = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertTrue(successful)
+        self.assertEqual(["one"], [record["id"] for record in records])
+        self.assertIn("_collectionContext", records[0])
+
+    def test_multiple_parts_are_streamed_into_one_dataset_with_progress(self):
+        events = []
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            first = output_dir / "first.json"
+            second = output_dir / "second.json"
+            output = output_dir / "combined.json"
+            first.write_text(json.dumps([{"id": "one"}]), encoding="utf-8")
+            second.write_text(json.dumps([{"id": "two"}]), encoding="utf-8")
+
+            graph_collection.consolidate_graph_targets(
+                [first, second],
+                output,
+                record_count=2,
+                endpoint_name="Graph Items",
+                progress=lambda event, details: events.append((event, details)),
+            )
+
+            records = json.loads(output.read_text(encoding="utf-8"))
+            part_files_exist = first.exists() or second.exists()
+
+        self.assertEqual([{"id": "one"}, {"id": "two"}], records)
+        self.assertFalse(part_files_exist)
+        self.assertEqual(
+            ["consolidation_started", "consolidation_completed"],
+            [event for event, _ in events],
+        )
+
+    def test_fanout_indexes_unique_parent_ids_and_collects_each_parent(self):
+        parent = {
+            "id": "parents",
+            "name": "Graph Parents",
+            "profile": "Test",
+            "permission": "Items.Read.All",
+            "permissions": ["Items.Read.All"],
+            "api": "v1.0",
+            "method": "GET",
+            "path": "/parents",
+            "pagination": True,
+            "output": "graph_test_parents",
+            "licence": "Test capability",
+        }
+        child = {
+            "id": "children",
+            "name": "Graph Children",
+            "profile": "Test",
+            "permission": "Items.Read.All",
+            "permissions": ["Items.Read.All"],
+            "api": "v1.0",
+            "method": "GET",
+            "path": "/parents/{parent_id}/children",
+            "pagination": True,
+            "output": "graph_test_children",
+            "licence": "Test capability",
+            "fan_out": {"parent": "parents", "id": "id"},
+        }
+        child_urls = []
+        events = []
+
+        def transport(method, url, body):
+            if url.endswith("/parents"):
+                return 200, {}, {
+                    "value": [{"id": "one"}, {"id": "one"}, {"id": "two"}]
+                }
+            child_urls.append(url)
+            return 200, {}, {"value": [{"source": url.rsplit("/", 2)[-2]}]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            with mock.patch.object(
+                graph_collection, "GRAPH_ENDPOINTS", [parent, child]
+            ):
+                successful = graph_collection.collect_registered_graph(
+                    output_dir=output_dir,
+                    run_id="run-one",
+                    lookback_days=30,
+                    endpoint_filter=None,
+                    manifest=self.Manifest(),
+                    runner=GraphRunner(transport),
+                    progress=lambda event, details: events.append((event, details)),
+                )
+
+            records = json.loads(
+                (output_dir / "graph_test_children_run-one.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertTrue(successful)
+        self.assertEqual(2, len(child_urls))
+        self.assertTrue(any("/parents/one/children" in url for url in child_urls))
+        self.assertTrue(any("/parents/two/children" in url for url in child_urls))
+        self.assertEqual({"one", "two"}, {record["source"] for record in records})
+        self.assertIn("fanout_index_started", [event for event, _ in events])
+        self.assertIn("consolidation_started", [event for event, _ in events])
+
 
 if __name__ == "__main__":
     unittest.main()

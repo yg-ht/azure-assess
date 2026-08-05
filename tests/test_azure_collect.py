@@ -125,12 +125,32 @@ class AzureCliCommandSafetyTests(unittest.TestCase):
                     "query_id": "query-id-not-for-console",
                 },
             )
+            azure_collect.print_graph_progress(
+                "consolidation_started",
+                {
+                    "endpoint_name": "Graph Group Assignments",
+                    "part_count": 120,
+                    "total_records": 45000,
+                },
+            )
+            azure_collect.print_graph_progress(
+                "fanout_index_started",
+                {
+                    "endpoint_name": "Graph Groups",
+                    "child_count": 4,
+                    "total_records": 20000,
+                    "parent_id": "parent-id-not-for-console",
+                },
+            )
 
         rendered = output.getvalue()
         self.assertIn("Graph [4/88]: Graph Security Incidents", rendered)
         self.assertIn("audit query running after 30s", rendered)
+        self.assertIn("consolidating 120 streamed parts", rendered)
+        self.assertIn("preparing parent IDs for 4 dependent endpoint(s)", rendered)
         self.assertNotIn("technical-id-not-for-console", rendered)
         self.assertNotIn("query-id-not-for-console", rendered)
+        self.assertNotIn("parent-id-not-for-console", rendered)
 
 
 class FakeAzProcess:

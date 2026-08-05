@@ -135,6 +135,14 @@ def _iter_json_array(path: Path):
             except json.JSONDecodeError:
                 if eof:
                     raise ValueError(f"Graph dataset {path.name} is truncated")
+                # One Graph record can legitimately exceed the normal read
+                # chunk. Always extend an incomplete value instead of waiting
+                # for the buffer to fall below the chunk threshold.
+                chunk = handle.read(65536)
+                if chunk:
+                    buffer += chunk
+                else:
+                    eof = True
                 continue
             yield value
             buffer = buffer[used:]
@@ -145,6 +153,52 @@ def _safe_unlink(path: Path) -> None:
         Path(path).unlink()
     except FileNotFoundError:
         pass
+
+
+def consolidate_graph_targets(
+    temporary_targets: Iterable[Path],
+    output: Path,
+    *,
+    record_count: int,
+    endpoint_name: str,
+    progress: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
+) -> None:
+    """Publish one or more streamed target arrays without retaining records."""
+    targets = [Path(target) for target in temporary_targets]
+    output = Path(output)
+    if len(targets) == 1:
+        os.replace(targets[0], output)
+        return
+
+    report_progress(
+        progress,
+        "consolidation_started",
+        endpoint_name=endpoint_name,
+        part_count=len(targets),
+        total_records=record_count,
+    )
+    written = 0
+    with AtomicJsonArrayWriter(output) as writer:
+        for target in targets:
+            for record in _iter_json_array(target):
+                writer.write(record)
+                written += 1
+                if written % 10000 == 0:
+                    report_progress(
+                        progress,
+                        "consolidation_progress",
+                        endpoint_name=endpoint_name,
+                        completed_records=written,
+                        total_records=record_count,
+                    )
+            _safe_unlink(target)
+    report_progress(
+        progress,
+        "consolidation_completed",
+        endpoint_name=endpoint_name,
+        completed_records=written,
+        total_records=record_count,
+    )
 
 
 def acquire_graph_token(command_runner=subprocess.run) -> str:
@@ -245,6 +299,12 @@ def collect_registered_graph(
         return False
 
     parent_ids_by_endpoint: Dict[str, list] = {}
+    parent_id_sets_by_endpoint: Dict[str, set] = {}
+    fanout_children_by_parent: Dict[str, list] = {}
+    for child in endpoints:
+        parent = (child.get("fan_out") or {}).get("parent")
+        if parent:
+            fanout_children_by_parent.setdefault(str(parent), []).append(child)
     successful = True
     for endpoint_index, endpoint in enumerate(endpoints, start=1):
         required_permissions = endpoint_permissions(endpoint)
@@ -407,11 +467,13 @@ def collect_registered_graph(
             if result.status == "success":
                 status = "success"
         if temporary_targets:
-            with AtomicJsonArrayWriter(output) as writer:
-                for target in temporary_targets:
-                    for record in _iter_json_array(target):
-                        writer.write(record)
-                    _safe_unlink(target)
+            consolidate_graph_targets(
+                temporary_targets,
+                output,
+                record_count=total_count,
+                endpoint_name=endpoint["name"],
+                progress=progress,
+            )
         elif status in {"failed", "unauthorised", "tenant_unavailable", "incomplete"}:
             _safe_unlink(output)
         if temporary_targets:
@@ -421,20 +483,49 @@ def collect_registered_graph(
             )
             if fan_out:
                 parent_ids_by_endpoint[endpoint["id"]] = []
-        if endpoint["id"] in {item.get("id") for item in endpoints} and endpoint.get("fan_out") is None and temporary_targets:
+                parent_id_sets_by_endpoint[endpoint["id"]] = set()
+        fanout_children = fanout_children_by_parent.get(str(endpoint["id"]), [])
+        if fanout_children and temporary_targets:
             # Retain only the identifier fields needed by downstream fan-out.
+            report_progress(
+                progress,
+                "fanout_index_started",
+                endpoint_name=endpoint["name"],
+                total_records=total_count,
+                child_count=len(fanout_children),
+            )
+            indexed = 0
             for record in _iter_json_array(output):
+                indexed += 1
                 if isinstance(record, dict):
-                    for child in endpoints:
+                    for child in fanout_children:
                         child_fan_out = child.get("fan_out")
-                        if child_fan_out and child_fan_out.get("parent") == endpoint["id"]:
-                            value = record.get(child_fan_out.get("id"))
-                            if value:
-                                parent_ids = parent_ids_by_endpoint.setdefault(
-                                    endpoint["id"], []
-                                )
-                                if value not in parent_ids:
-                                    parent_ids.append(value)
+                        value = record.get(child_fan_out.get("id"))
+                        if value:
+                            parent_ids = parent_ids_by_endpoint.setdefault(
+                                endpoint["id"], []
+                            )
+                            parent_id_set = parent_id_sets_by_endpoint.setdefault(
+                                endpoint["id"], set()
+                            )
+                            if value not in parent_id_set:
+                                parent_id_set.add(value)
+                                parent_ids.append(value)
+                if indexed % 10000 == 0:
+                    report_progress(
+                        progress,
+                        "fanout_index_progress",
+                        endpoint_name=endpoint["name"],
+                        completed_records=indexed,
+                        total_records=total_count,
+                    )
+            report_progress(
+                progress,
+                "fanout_index_completed",
+                endpoint_name=endpoint["name"],
+                completed_records=indexed,
+                total_records=total_count,
+            )
         definition = graph_endpoint_definition(endpoint)
         manifest.record_execution(
             endpoint_name=endpoint["name"], category="microsoft_graph",

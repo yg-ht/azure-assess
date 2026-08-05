@@ -4424,6 +4424,44 @@ def print_graph_progress(event, details):
             f"{details['completed']}/{details['total']}",
             flush=True,
         )
+    elif event == "consolidation_started":
+        print(
+            f"[~] {details['endpoint_name']}: consolidating "
+            f"{details['part_count']} streamed parts "
+            f"({details['total_records']} record(s))",
+            flush=True,
+        )
+    elif event == "consolidation_progress":
+        print(
+            f"[~] {details['endpoint_name']}: consolidated "
+            f"{details['completed_records']}/{details['total_records']} record(s)",
+            flush=True,
+        )
+    elif event == "consolidation_completed":
+        print(
+            f"[~] {details['endpoint_name']}: consolidation complete "
+            f"({details['completed_records']} record(s))",
+            flush=True,
+        )
+    elif event == "fanout_index_started":
+        print(
+            f"[~] {details['endpoint_name']}: preparing parent IDs for "
+            f"{details['child_count']} dependent endpoint(s) from "
+            f"{details['total_records']} record(s)",
+            flush=True,
+        )
+    elif event == "fanout_index_progress":
+        print(
+            f"[~] {details['endpoint_name']}: indexed "
+            f"{details['completed_records']}/{details['total_records']} parent record(s)",
+            flush=True,
+        )
+    elif event == "fanout_index_completed":
+        print(
+            f"[~] {details['endpoint_name']}: parent-ID indexing complete "
+            f"({details['completed_records']} record(s))",
+            flush=True,
+        )
     elif event == "retry_wait":
         status = details.get("status") or "transport error"
         print(
