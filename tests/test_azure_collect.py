@@ -742,6 +742,113 @@ class DefenderAssessmentFindingsDatasetTests(unittest.TestCase):
 
 
 class AzurePresentDatasetIndexTests(unittest.TestCase):
+    def test_sankey_keeps_endpoint_check_and_relationship_denominators_distinct(self):
+        rows = [
+            {
+                "status": "found",
+                "definition": {"category": "Identity"},
+                "reporting": {"provenance": {"required_endpoints": [
+                    {"endpoint_id": "endpoint-a", "category": "base"},
+                ]}},
+            },
+            {
+                "status": "not_found",
+                "definition": {"category": "Identity"},
+                "reporting": {"provenance": {"required_endpoints": [
+                    {"endpoint_id": "endpoint-a", "category": "base"},
+                    {"endpoint_id": "endpoint-b", "category": "microsoft_graph"},
+                ]}},
+            },
+        ]
+        manifest = {
+            "schema_version": "2.5",
+            "endpoint_runs": [
+                {
+                    "endpoint_id": "endpoint-a",
+                    "category": "parameterised",
+                    "status": "success",
+                    "parameter_context": {"name": "one"},
+                },
+                {
+                    "endpoint_id": "endpoint-a",
+                    "category": "parameterised",
+                    "status": "success",
+                    "parameter_context": {"name": "two"},
+                },
+                {
+                    "endpoint_id": "endpoint-b",
+                    "category": "microsoft_graph",
+                    "status": "success",
+                },
+                {
+                    "endpoint_id": "endpoint-c",
+                    "category": "base",
+                    "status": "empty",
+                    "access_verification": {"status": "access_verified"},
+                },
+            ],
+        }
+        finding_file = mock.Mock()
+        finding_file.exists.return_value = True
+        with (
+            mock.patch.object(
+                azure_present,
+                "findings_flat_path",
+                return_value=finding_file,
+            ),
+            mock.patch.object(
+                azure_present,
+                "load_json_file",
+                return_value={"rows": rows},
+            ),
+        ):
+            summary = azure_present.findings_summary(manifest)
+
+        self.assertEqual(summary["executed"], 2)
+        self.assertEqual(summary["sankey_relationship_count"], 5)
+        self.assertEqual(
+            summary["sankey_node_counts"][
+                (0, "Base Endpoints", "endpoint executions")
+            ],
+            3,
+        )
+        self.assertEqual(
+            summary["sankey_node_counts"][
+                (0, "Microsoft Graph Endpoints", "endpoint executions")
+            ],
+            1,
+        )
+        self.assertEqual(
+            summary["sankey_node_counts"][
+                (2, "Identity Finding Checks", "finding checks")
+            ],
+            2,
+        )
+        self.assertEqual(
+            summary["sankey_paths"][(
+                (
+                    "Base Endpoints",
+                    "Returned Data",
+                    "Identity Finding Checks",
+                    "Assessed",
+                    "Failed",
+                ),
+                azure_present.FINDING_RESULT_OPTIONS["Failed"],
+            )],
+            2,
+        )
+        self.assertIn(
+            (
+                (
+                    "Base Endpoints",
+                    "No Data — Access Verified",
+                    "No Linked Finding Check",
+                ),
+                "#adb5bd",
+            ),
+            summary["sankey_paths"],
+        )
+
     def test_finding_charts_consolidate_all_insufficient_data_causes(self):
         causes = [
             "missing_or_unattributed_source",
@@ -805,15 +912,16 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             },
         )
         self.assertEqual(sum(chart_counts.values()), summary["executed"])
-        self.assertTrue(all(len(path) == 6 for path, _color in summary["sankey_paths"]))
+        self.assertTrue(all(len(path) == 5 for path, _color in summary["sankey_paths"]))
         self.assertEqual(
             {path[0] for path, _color in summary["sankey_paths"]},
-            {"All Endpoints"},
+            {"Base Endpoints", "Microsoft Graph Endpoints", "Unattributed Endpoint"},
         )
         self.assertEqual(
             {path[-1] for path, _color in summary["sankey_paths"]},
-            {"Findings Raised", "Checks Passed", "Insufficient Data"},
+            {"Passed", "Failed", "Nothing to Assess", "Could Not Assess"},
         )
+        self.assertEqual(summary["sankey_relationship_count"], summary["executed"])
 
     def test_review_and_validated_export_files_are_not_data_viewer_datasets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2200,6 +2308,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "error": "Missing required parameters: name",
                 },
                 {
+                    "endpoint_id": "az_network_nic_effective_nsg",
                     "endpoint_name": "Successful Endpoint",
                     "category": "base",
                     "status": "success",
@@ -2215,6 +2324,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "error": "A later Graph page failed after data was retained",
                 },
                 {
+                    "endpoint_id": "graph_identity_baseline_report_settings",
                     "endpoint_name": "Graph Report Settings",
                     "category": "microsoft_graph",
                     "status": "unauthorised",
@@ -2231,6 +2341,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "result_count": 0,
                 },
                 {
+                    "endpoint_id": "az_resource_list",
                     "endpoint_name": "Empty Endpoint — Access Verified",
                     "category": "base",
                     "status": "empty",
@@ -2316,7 +2427,35 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertEqual(requests["unattempted"], 2)
         self.assertEqual(requests["skipped"], 1)
         self.assertEqual(requests["not_attempted"], 1)
+        self.assertEqual(len(requests["base_endpoint_results"]), 10)
+        self.assertEqual(len(requests["graph_endpoint_results"]), 2)
+        self.assertEqual(len(requests["successes"]), 4)
+        self.assertEqual(len(requests["failures"]), 4)
         self.assertEqual(sum(requests["outcome_counts"].values()), 12)
+        self.assertEqual(summary["sankey_relationship_count"], 5)
+        sankey_node_counts = {
+            (stage, name, unit): count
+            for (stage, name, unit), count
+            in summary["sankey_node_counts"].items()
+        }
+        self.assertEqual(
+            sankey_node_counts[(0, "Base Endpoints", "endpoint executions")],
+            10,
+        )
+        self.assertEqual(
+            sankey_node_counts[
+                (0, "Microsoft Graph Endpoints", "endpoint executions")
+            ],
+            2,
+        )
+        self.assertEqual(
+            sankey_node_counts[(4, "Nothing to Assess", "finding checks")],
+            1,
+        )
+        self.assertEqual(
+            sankey_node_counts[(4, "Could Not Assess", "finding checks")],
+            2,
+        )
         graph_outcomes = next(
             row
             for row in requests["category_outcome_rows"]
@@ -2376,7 +2515,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Request Attempt Outcomes", body)
         self.assertIn("Skipped Endpoint Definitions", body)
         self.assertIn("Unrecorded Endpoint Definitions", body)
-        self.assertIn("The outcome cards below add up to Total Attempts", body)
+        self.assertIn("the cards below add up to Total Attempts", body)
         self.assertIn("the cause cards below add up to Total Skipped", body)
         self.assertIn("They are an accounting gap", body)
         self.assertIn("Returned No Data — Access Verified", body)
@@ -2392,18 +2531,18 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('"label": "Checks Passed", "value": 1', body)
         self.assertNotIn('"label": "Insufficient Data \\u2014', body)
         self.assertIn("Finding Outcome Distribution", body)
-        self.assertIn("Endpoint to Finding Outcome Flow", body)
+        self.assertIn("Endpoint-to-Finding Flow", body)
         self.assertNotIn("Collection Endpoint Outcome Distribution", body)
         self.assertIn("Endpoint Outcomes by Collection Type", body)
-        self.assertIn("reconciles to 12 endpoint executions", body)
+        self.assertIn("shows 12 endpoint executions (5 Finding checks)", body)
         self.assertIn("findingsPieChart", body)
         self.assertIn("findingsSankeyChart", body)
         self.assertNotIn("requestsPieChart", body)
         self.assertNotIn("requestsSankeyChart", body)
         self.assertEqual(body.count("renderDashboardPie('findingsPieChart'"), 1)
-        self.assertEqual(body.count("renderDashboardSankey('findingsSankeyChart'"), 1)
+        self.assertEqual(body.count("'findingsSankeyChart',"), 1)
         self.assertEqual(body.count('aria-label="Pie chart of consolidated finding outcomes across all endpoint types"'), 1)
-        self.assertEqual(body.count('aria-label="Multi-stage Sankey chart from all endpoints to finding outcomes"'), 1)
+        self.assertEqual(body.count('aria-label="Relationship-weighted Sankey chart from endpoint type and status through finding checks to finding results"'), 1)
         finding_chart_call = body.split(
             "renderDashboardPie('findingsPieChart'",
             1,
@@ -2418,17 +2557,22 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             summary["executed"],
         )
         sankey_chart_call = body.split(
-            "renderDashboardSankey('findingsSankeyChart'",
+            "'findingsSankeyChart',",
             1,
         )[1].split(");", 1)[0]
         self.assertIn(
-            '"nodes": ["All Endpoints", "Graph Endpoints", "Not Authorised", '
-            '"No Data", "Unauthorised", "Insufficient Data"], "value": 1',
+            '"nodes": ["Microsoft Graph Endpoints", "Unauthorised", '
+            '"Finding Checks", "No Data to Assess", "Could Not Assess"], "value": 1',
             sankey_chart_call,
         )
         self.assertIn(
-            '"nodes": ["All Endpoints", "Base Endpoints", "Authorised", '
-            '"With Data", "Assessment Completed", "Checks Passed"], "value": 1',
+            '"nodes": ["Base Endpoints", "Returned Data", "Finding Checks", '
+            '"Assessed", "Passed"], "value": 1',
+            sankey_chart_call,
+        )
+        self.assertIn(
+            '"nodes": ["Base Endpoints", "No Data \\u2014 Access Verified", '
+            '"Finding Checks", "No Data to Assess", "Nothing to Assess"], "value": 1',
             sankey_chart_call,
         )
         self.assertIn("Microsoft Graph", body)
@@ -2444,15 +2588,15 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertNotIn('<details class="dashboard-request-details" open>', body)
         self.assertIn("dashboard-request-table", body)
         self.assertIn("--bs-table-color: var(--text-color)", body)
-        self.assertEqual(body.count('class="dashboard-sort-button"'), 12)
-        self.assertEqual(body.count('class="dashboard-column-filter"'), 12)
+        self.assertEqual(body.count('class="dashboard-sort-button"'), 49)
+        self.assertEqual(body.count('class="dashboard-column-filter"'), 49)
         self.assertEqual(
             body.count('<select class="dashboard-column-filter"'),
-            8,
+            39,
         )
         self.assertEqual(
             body.count('<input class="dashboard-column-filter"'),
-            4,
+            10,
         )
         self.assertIn('data-filter-mode="exact"', body)
         self.assertIn('data-filter-mode="contains"', body)
@@ -2470,8 +2614,31 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Partially Collected Graph Endpoint", body)
         self.assertIn("Microsoft Graph", body)
         self.assertIn("Legacy manifest error message", body)
-        self.assertNotIn("Flow Logs (legacy manifest)", body)
-        self.assertNotIn("Unavailable Service", body)
+        self.assertIn("Flow Logs (legacy manifest)", body)
+        self.assertIn("Unavailable Service", body)
+        self.assertIn("Base Endpoint Results — Azure Base and Parameterised", body)
+        self.assertIn("Microsoft Graph Endpoint Results", body)
+        self.assertIn(
+            "Successful Collection Requests — Base and Microsoft Graph",
+            body,
+        )
+        self.assertIn(
+            "Unsuccessful Collection Requests — Base and Microsoft Graph",
+            body,
+        )
+        self.assertLess(
+            body.index("Base Endpoint Results — Azure Base and Parameterised"),
+            body.index("Microsoft Graph Endpoint Results"),
+        )
+        self.assertLess(
+            body.index("Microsoft Graph Endpoint Results"),
+            body.index("Unsuccessful Collection Requests — Base and Microsoft Graph"),
+        )
+        self.assertLess(
+            body.index("Unsuccessful Collection Requests — Base and Microsoft Graph"),
+            body.index("Successful Collection Requests — Base and Microsoft Graph"),
+        )
+        self.assertIn("dashboard-five-column", body)
 
     def test_dashboard_separates_tenant_restrictions_and_inherited_skip_causes(self):
         findings_rows = {
@@ -2592,7 +2759,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             '"label": "Unlicensed", "value": 1',
             body,
         )
-        self.assertIn("tenant_unavailable", body)
+        self.assertIn("Licence or Tenant Capability", body)
 
     def test_dataset_group_lookup_does_not_load_json_payloads(self):
         with tempfile.TemporaryDirectory() as tmpdir:

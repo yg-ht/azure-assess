@@ -79,6 +79,9 @@ FINDINGS_FILENAMES = {
 GRAPH_ENDPOINTS_BY_OUTPUT = {
     endpoint["output"]: endpoint for endpoint in GRAPH_ENDPOINTS
 }
+GRAPH_ENDPOINTS_BY_ID = {
+    endpoint["id"]: endpoint for endpoint in GRAPH_ENDPOINTS
+}
 GRAPH_PROFILE_LABELS = {
     "IdentityBaseline": "Identity Baseline",
     "PIM": "Privileged Identity Management",
@@ -144,6 +147,12 @@ FINDING_CHART_OUTCOMES = OrderedDict(
         ("missing_prerequisite", ("Missing Prerequisite", "#ffc107")),
     ]
 )
+FINDING_RESULT_OPTIONS = {
+    "Passed": "#198754",
+    "Failed": "#dc3545",
+    "Nothing to Assess": "#0dcaf0",
+    "Could Not Assess": "#6f42c1",
+}
 INSUFFICIENT_DATA_CHART_OUTCOMES = {
     "unauthorised_source": "unauthorised",
     "tenant_capability_unavailable": "unlicensed",
@@ -510,6 +519,12 @@ HTML_TEMPLATE = """
         border-color: var(--dashboard-card-border) !important;
         color: var(--text-color);
       }
+      @media (min-width: 1200px) {
+        .dashboard-five-column {
+          flex: 0 0 auto;
+          width: 20%;
+        }
+      }
       .dashboard-muted {
         color: var(--dashboard-muted-text);
       }
@@ -636,10 +651,10 @@ HTML_TEMPLATE = """
       <!-- DASHBOARD PAGE -->
       <div class="mt-4 dashboard-page">
         <h2>Dashboard</h2>
-        {% macro dashboard_card_grid(cards) %}
+        {% macro dashboard_card_grid(cards, column_class="col-12 col-md-6 col-xl-3") %}
         <div class="row g-3 mb-4">
           {% for card in cards %}
-          <div class="col-12 col-md-6 col-xl-3">
+          <div class="{{ column_class }}">
             <div class="card h-100 bg-transparent dashboard-summary-card">
               <div class="card-body">
                 <h3 class="h6 text-uppercase dashboard-muted">{{ card.label }}</h3>
@@ -657,6 +672,73 @@ HTML_TEMPLATE = """
         </div>
         {% endmacro %}
 
+        {% macro endpoint_results_panel(title, table_id, rows, description) %}
+        <div class="card dashboard-chart-card mt-4">
+          <div class="card-body">
+            <details class="dashboard-request-details">
+              <summary><span class="h5">{{ title }}</span></summary>
+              <p class="dashboard-muted my-3">{{ description }}</p>
+              <div class="table-responsive">
+                <table id="{{ table_id }}" class="table table-striped align-middle dashboard-request-table dashboard-filterable-table">
+                  <thead>
+                    <tr>
+                      {% for heading in ["Endpoint", "Collection Category", "Workload", "API Channel", "Outcome", "Records", "Collected Data", "Service Error Code", "CLI Return Code", "Parameters", "Recorded Detail"] %}
+                      <th aria-sort="none">
+                        <div class="dashboard-column-heading">
+                          <button type="button" class="dashboard-sort-button" data-column-index="{{ loop.index0 }}" aria-label="Sort by {{ heading }}">{{ heading }}</button>
+                        </div>
+                        {% if loop.index0 < 9 %}
+                        <select class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" data-filter-mode="exact" aria-label="Filter {{ heading }}">
+                          <option value="">All</option>
+                        </select>
+                        {% else %}
+                        <input class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" data-filter-mode="contains" type="search" aria-label="Filter {{ heading }}" placeholder="Filter">
+                        {% endif %}
+                      </th>
+                      {% endfor %}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% if rows %}
+                    {% for endpoint in rows %}
+                    <tr>
+                      <td>{{ endpoint.endpoint_name }}</td>
+                      <td>{{ endpoint.category }}</td>
+                      <td>{{ endpoint.workload }}</td>
+                      <td>{{ endpoint.api_channel }}</td>
+                      <td>{{ endpoint.outcome_label }}</td>
+                      <td>{{ endpoint.record_count if endpoint.record_count is not none else "Unavailable" }}</td>
+                      <td>
+                        {% if endpoint.output_files %}
+                          {% for output in endpoint.output_files %}
+                          <a href="/query/{{ output.filename }}">{{ output.name }}</a>{% if not loop.last %}<br>{% endif %}
+                          {% endfor %}
+                        {% else %}
+                          No dataset file
+                        {% endif %}
+                      </td>
+                      <td>{{ endpoint.error_code or "Unavailable" }}</td>
+                      <td>{{ endpoint.returncode if endpoint.returncode is not none else "Unavailable" }}</td>
+                      <td><code>{{ endpoint.parameter_context|tojson }}</code></td>
+                      <td>
+                        <pre class="dashboard-error-message">{{ endpoint.message or "No error or limitation recorded" }}</pre>
+                        {% if endpoint.message_truncated %}
+                        <span class="small dashboard-muted">Stored message was truncated by the collection manifest.</span>
+                        {% endif %}
+                      </td>
+                    </tr>
+                    {% endfor %}
+                    {% else %}
+                    <tr><td colspan="11">No matching endpoint executions were recorded.</td></tr>
+                    {% endif %}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </div>
+        </div>
+        {% endmacro %}
+
         {% if summary_cards.collection %}
         <section class="dashboard-section" aria-labelledby="collectionSnapshotHeading">
           <h3 id="collectionSnapshotHeading" class="h4">Collection Snapshot</h3>
@@ -669,7 +751,7 @@ HTML_TEMPLATE = """
         <section class="dashboard-section" aria-labelledby="findingOutcomesHeading">
           <h3 id="findingOutcomesHeading" class="h4">Finding Outcomes</h3>
           <p class="dashboard-muted">One mutually exclusive outcome for every assessment check.</p>
-          {{ dashboard_card_grid(summary_cards.findings) }}
+          {{ dashboard_card_grid(summary_cards.findings, "col-12 col-md-6 dashboard-five-column") }}
         {% if findings_chart_data %}
         <div class="row g-3 mt-1">
           <div class="col-12 col-xl-4">
@@ -687,10 +769,10 @@ HTML_TEMPLATE = """
           <div class="col-12 col-xl-8">
             <div class="card dashboard-chart-card h-100">
               <div class="card-body">
-                <h4 class="h5">Endpoint to Finding Outcome Flow</h4>
-                <p class="dashboard-muted mb-3">Assessment checks flow through endpoint family, request state, data availability and assessment reason to their final outcome. Inconclusive checks end at Insufficient Data.</p>
+                <h4 class="h5">Endpoint-to-Finding Flow</h4>
+                <p class="dashboard-muted mb-3">Flow widths represent {{ findings.sankey_relationship_count }} endpoint-to-check dependency relationships. Node labels retain distinct execution and check counts; unmatched endpoints and unattributed checks remain visible. In the final stage, Failed means a check raised a finding. Nothing to Assess is limited to complete, access-verified empty evidence; every other inconclusive check is Could Not Assess.</p>
                 <div class="dashboard-chart-wrap dashboard-sankey-wrap">
-                  <canvas id="findingsSankeyChart" class="dashboard-chart-canvas dashboard-sankey-canvas" role="img" aria-label="Multi-stage Sankey chart from all endpoints to finding outcomes"></canvas>
+                  <canvas id="findingsSankeyChart" class="dashboard-chart-canvas dashboard-sankey-canvas" role="img" aria-label="Relationship-weighted Sankey chart from endpoint type and status through finding checks to finding results"></canvas>
                 </div>
               </div>
             </div>
@@ -716,52 +798,6 @@ HTML_TEMPLATE = """
             <span class="badge text-bg-secondary me-1">{{ status }}: {{ count }}</span>
             {% endfor %}
           </p>{% endif %}
-          {% if graph_collection.endpoints %}
-          <div class="card dashboard-chart-card mt-3">
-            <div class="card-body">
-              <details class="dashboard-request-details">
-                <summary><span class="h5">Graph Endpoint Results</span></summary>
-                <p class="dashboard-muted my-3">A successful endpoint with a positive record count confirms that Graph data was collected. Empty means the request completed but returned no records; incomplete means retained evidence may be partial.</p>
-                <div class="table-responsive">
-                  <table id="graphEndpointResultsTable" class="table table-striped align-middle dashboard-request-table">
-                    <thead>
-                      <tr>
-                        <th>Endpoint</th>
-                        <th>Workload</th>
-                        <th>API Channel</th>
-                        <th>Status</th>
-                        <th>Records</th>
-                        <th>Collected Data</th>
-                        <th>Recorded Detail</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {% for endpoint in graph_collection.endpoints %}
-                      <tr>
-                        <td>{{ endpoint.name }}</td>
-                        <td>{{ endpoint.profile }}</td>
-                        <td>{{ endpoint.api_channel }}</td>
-                        <td>{{ endpoint.status }}</td>
-                        <td>{{ endpoint.record_count if endpoint.record_count is not none else "Unavailable" }}</td>
-                        <td>
-                          {% if endpoint.output_files %}
-                            {% for output in endpoint.output_files %}
-                            <a href="/query/{{ output.filename }}">{{ output.name }}</a>{% if not loop.last %}<br>{% endif %}
-                            {% endfor %}
-                          {% else %}
-                            No dataset file
-                          {% endif %}
-                        </td>
-                        <td><pre class="dashboard-error-message">{{ endpoint.message or "No error or limitation recorded" }}</pre></td>
-                      </tr>
-                      {% endfor %}
-                    </tbody>
-                  </table>
-                </div>
-              </details>
-            </div>
-          </div>
-          {% endif %}
         </section>
         {% endif %}
 
@@ -773,7 +809,7 @@ HTML_TEMPLATE = """
         <div class="card dashboard-chart-card mt-4">
           <div class="card-body">
             <h4 class="h5">Endpoint Outcomes by Collection Type</h4>
-            <p class="dashboard-muted mb-3">This breakdown reconciles to {{ collection_requests.endpoint_count }} endpoint executions in the chart above.</p>
+            <p class="dashboard-muted mb-3">This breakdown shows {{ collection_requests.endpoint_count }} endpoint executions ({{ findings.executed if findings else 0 }} Finding checks) in the charts above.</p>
             <div class="table-responsive">
               <table id="endpointOutcomeTypeTable" class="table table-striped align-middle dashboard-request-table">
                 <thead><tr><th>Collection Type</th><th>Total</th><th>Outcomes</th></tr></thead>
@@ -795,14 +831,14 @@ HTML_TEMPLATE = """
           </div>
         </div>
         {% endif %}
-          <h4 class="h5 mt-4">Request Attempt Outcomes</h4>
-          <p class="dashboard-muted">Each attempted request has one mutually exclusive outcome. The outcome cards below add up to Total Attempts.</p>
-          {{ dashboard_card_grid(summary_cards.requests.attempts) }}
-          <h4 class="h5 mt-4">Skipped Endpoint Definitions</h4>
-          <p class="dashboard-muted">These endpoint definitions were deliberately not attempted. Each has one primary prerequisite or recorded skip cause, and the cause cards below add up to Total Skipped.</p>
-          {{ dashboard_card_grid(summary_cards.requests.skipped) }}
-          <h4 class="h5 mt-4">Unrecorded Endpoint Definitions</h4>
-          <p class="dashboard-muted">These planned endpoint definitions have neither a request outcome nor a deliberate skip outcome. They are an accounting gap and are not included in Total Skipped.</p>
+          <h4 class="h5 mt-4">Request Attempt Outcomes — Base and Microsoft Graph</h4>
+          <p class="dashboard-muted">These figures combine Azure base, Azure parameterised and Microsoft Graph requests. Each attempted request has one mutually exclusive outcome, and the cards below add up to Total Attempts.</p>
+          {{ dashboard_card_grid(summary_cards.requests.attempts, "col-12 col-md-6 dashboard-five-column") }}
+          <h4 class="h5 mt-4">Skipped Endpoint Definitions — Base and Microsoft Graph</h4>
+          <p class="dashboard-muted">These figures combine Azure base, Azure parameterised and Microsoft Graph endpoint definitions that were deliberately not attempted. Each has one primary prerequisite or recorded skip cause, and the cause cards below add up to Total Skipped.</p>
+          {{ dashboard_card_grid(summary_cards.requests.skipped, "col-12 col-md-6 dashboard-five-column") }}
+          <h4 class="h5 mt-4">Unrecorded Endpoint Definitions — Base and Microsoft Graph</h4>
+          <p class="dashboard-muted">These figures combine Azure base, Azure parameterised and Microsoft Graph endpoint definitions with neither a request outcome nor a deliberate skip outcome. They are an accounting gap and are not included in Total Skipped.</p>
           {{ dashboard_card_grid(summary_cards.requests.unrecorded) }}
         {% if collection_requests and collection_requests.omission_groups %}
         <div class="card dashboard-chart-card mt-4">
@@ -861,56 +897,30 @@ HTML_TEMPLATE = """
           </div>
         </div>
         {% endif %}
-        {% if collection_requests and collection_requests.failures %}
-        <div class="card dashboard-chart-card mt-4">
-          <div class="card-body">
-            <details class="dashboard-request-details">
-            <summary><span class="h5">Unsuccessful Collection Requests</span></summary>
-            <p class="dashboard-muted my-3">One row is shown for each failed, incomplete, unauthorised or tenant-restricted logical execution in the latest collection manifest. Successful, empty and not-applicable outcomes are excluded.</p>
-            <div class="table-responsive">
-              <table id="failedCollectionRequestsTable" class="table table-striped align-middle dashboard-request-table dashboard-filterable-table">
-                <thead>
-                  <tr>
-                    {% for heading in ["Endpoint", "Collection Category", "Status", "Service Error Code", "CLI Return Code", "Parameters", "Returned Error"] %}
-                    <th aria-sort="none">
-                      <div class="dashboard-column-heading">
-                        <button type="button" class="dashboard-sort-button" data-column-index="{{ loop.index0 }}" aria-label="Sort by {{ heading }}">{{ heading }}</button>
-                      </div>
-                      {% if loop.index0 < 5 %}
-                      <select class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" data-filter-mode="exact" aria-label="Filter {{ heading }}">
-                        <option value="">All</option>
-                      </select>
-                      {% else %}
-                      <input class="dashboard-column-filter" data-column-index="{{ loop.index0 }}" data-filter-mode="contains" type="search" aria-label="Filter {{ heading }}" placeholder="Filter">
-                      {% endif %}
-                    </th>
-                    {% endfor %}
-                  </tr>
-                </thead>
-                <tbody>
-                  {% for failure in collection_requests.failures %}
-                  <tr>
-                    <td>{{ failure.endpoint_name }}</td>
-                    <td>{{ failure.category }}</td>
-                    <td>{{ failure.status }}</td>
-                    <td>{{ failure.error_code or "Unavailable" }}</td>
-                    <td>{{ failure.returncode if failure.returncode is not none else "Unavailable" }}</td>
-                    <td><code>{{ failure.parameter_context|tojson }}</code></td>
-                    <td>
-                      <pre class="dashboard-error-message">{{ failure.message or "No error message was recorded" }}</pre>
-                      {% if failure.message_truncated %}
-                      <span class="small dashboard-muted">Stored message was truncated by the collection manifest.</span>
-                      {% endif %}
-                    </td>
-                  </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-            </details>
-          </div>
-        </div>
-        {% endif %}
+        {{ endpoint_results_panel(
+          "Base Endpoint Results — Azure Base and Parameterised",
+          "baseEndpointResultsTable",
+          collection_requests.base_endpoint_results,
+          "All recorded Azure base and parameterised endpoint outcomes are shown, including successful, empty, skipped, not-applicable, failed and unrecorded executions."
+        ) }}
+        {{ endpoint_results_panel(
+          "Microsoft Graph Endpoint Results",
+          "graphEndpointResultsTable",
+          collection_requests.graph_endpoint_results,
+          "All recorded Microsoft Graph endpoint outcomes are shown. Returned data confirms collection; empty responses and every incomplete, unavailable or unauthorised result remain explicit."
+        ) }}
+        {{ endpoint_results_panel(
+          "Unsuccessful Collection Requests — Base and Microsoft Graph",
+          "failedCollectionRequestsTable",
+          collection_requests.failures,
+          "This combines Azure base, Azure parameterised and Microsoft Graph executions. One row is shown for each failed, incomplete, unauthorised or tenant-restricted request; successful, empty and not-applicable outcomes are excluded."
+        ) }}
+        {{ endpoint_results_panel(
+          "Successful Collection Requests — Base and Microsoft Graph",
+          "successfulCollectionRequestsTable",
+          collection_requests.successes,
+          "This combines Azure base, Azure parameterised and Microsoft Graph executions that completed successfully, including requests that returned an empty result. Scope and visibility qualifications remain explicit in the Outcome column; not-applicable requests are excluded."
+        ) }}
         </section>
         {% endif %}
       </div>
@@ -1387,13 +1397,24 @@ HTML_TEMPLATE = """
           window.addEventListener('azure-theme-change', drawPieChart);
         }
 
-        function renderDashboardSankey(canvasId, paths) {
+        function renderDashboardSankey(canvasId, paths, nodeData) {
           const canvas = document.getElementById(canvasId);
           if (!canvas) return;
           const activePaths = paths.filter(function(path) {
             return path.value > 0 && Array.isArray(path.nodes) && path.nodes.length > 1;
           });
           if (activePaths.length === 0) return;
+          const nodeDetails = new Map();
+          nodeData.forEach(function(node) {
+            nodeDetails.set(JSON.stringify([node.stage, node.name]), node);
+          });
+          const stageLabels = [
+            'Endpoint Type',
+            'Endpoint Status',
+            'Finding Checks',
+            'Finding Check Status',
+            'Finding Result',
+          ];
 
           function drawSankeyChart() {
             const stageCount = activePaths.reduce(function(maximum, path) {
@@ -1427,7 +1448,7 @@ HTML_TEMPLATE = """
             const total = Array.from(stageTotals[0].values()).reduce(function(sum, value) {
               return sum + value;
             }, 0);
-            const marginY = 18;
+            const marginY = 48;
             const gap = 10;
             const largestGapTotal = Math.max(0, largestStage - 1) * gap;
             const scale = Math.max(0.25, (height - (marginY * 2) - largestGapTotal) / total);
@@ -1515,6 +1536,15 @@ HTML_TEMPLATE = """
             const textColor = getComputedStyle(document.body).getPropertyValue('--text-color').trim() || '#212529';
             ctx.font = '12px sans-serif';
 
+            ctx.fillStyle = textColor;
+            ctx.font = 'bold 12px sans-serif';
+            stageX.forEach(function(x, stage) {
+              ctx.textAlign = stage === 0 ? 'right' : 'left';
+              ctx.textBaseline = 'top';
+              ctx.fillText(stageLabels[stage] || ('Stage ' + (stage + 1)), stage === 0 ? x + nodeWidth : x, 10);
+            });
+            ctx.font = '12px sans-serif';
+
             function drawWrappedLabel(text, x, y, maxWidth, alignment) {
               const words = text.split(/\\s+/);
               const lines = [];
@@ -1549,8 +1579,13 @@ HTML_TEMPLATE = """
                 ctx.fillStyle = textColor;
                 const isFirst = stage === 0;
                 const isLast = stage === stageCount - 1;
+                const detail = nodeDetails.get(JSON.stringify([stage, name]));
+                const relationshipTotal = stageTotals[stage].get(name);
+                const label = detail
+                  ? name + ': ' + detail.count + ' ' + detail.unit + ' (' + relationshipTotal + ' flow links)'
+                  : name + ': ' + relationshipTotal + ' flow links';
                 drawWrappedLabel(
-                  name + ': ' + stageTotals[stage].get(name),
+                  label,
                   isFirst ? node.x - 6 : node.x + nodeWidth + 5,
                   node.y + node.height / 2,
                   isFirst ? 115 : isLast ? 165 : Math.max(105, stageSpacing - 28),
@@ -1566,12 +1601,16 @@ HTML_TEMPLATE = """
         }
 
         renderDashboardPie('findingsPieChart', 'findingsPieLegend', {{ findings_chart_data|tojson }});
-        renderDashboardSankey('findingsSankeyChart', {{ findings_sankey_data|tojson }});
+        renderDashboardSankey(
+          'findingsSankeyChart',
+          {{ findings_sankey_data|tojson }},
+          {{ findings_sankey_nodes|tojson }}
+        );
       })();
     </script>
     {% endif %}
 
-    {% if dashboard and collection_requests and (collection_requests.failures or collection_requests.omission_groups) %}
+    {% if dashboard and collection_requests and collection_requests.endpoint_count %}
     <script>
       (function() {
         function initialiseDashboardTable(table) {
@@ -2454,7 +2493,10 @@ def graph_collection_summary(manifest=None):
             item.get("parameter_context")
             if isinstance(item.get("parameter_context"), dict) else {}
         )
-        endpoint_definition = GRAPH_ENDPOINTS_BY_OUTPUT.get(item.get("endpoint_id"))
+        endpoint_definition = (
+            GRAPH_ENDPOINTS_BY_OUTPUT.get(item.get("endpoint_id"))
+            or GRAPH_ENDPOINTS_BY_ID.get(item.get("endpoint_id"))
+        )
         profile = context.get("profile")
         api_channel = context.get("api_channel")
         if endpoint_definition is not None:
@@ -2550,25 +2592,68 @@ def collection_category_label(value):
     return "Microsoft Graph" if category == "microsoft_graph" else category
 
 
-def finding_endpoint_family(required_endpoints):
-    """Collapse finding provenance into the requested Azure/Graph flow families."""
-    categories = {
-        str(endpoint.get("category") or "")
-        for endpoint in required_endpoints
-        if isinstance(endpoint, dict)
-    }
-    has_graph = "microsoft_graph" in categories
-    has_azure = bool(categories.intersection({"base", "parameterised"}))
-    has_other = bool(categories - {"base", "parameterised", "microsoft_graph", ""})
-    if has_graph and (has_azure or has_other):
-        return "Base and Graph Endpoints"
-    if has_graph:
-        return "Graph Endpoints"
-    if has_azure and not has_other:
+def endpoint_family_label(category):
+    """Collapse execution categories into readable Sankey endpoint families."""
+    category = str(category or "")
+    if category == "microsoft_graph":
+        return "Microsoft Graph Endpoints"
+    if category in {"base", "parameterised"}:
         return "Base Endpoints"
-    if categories:
+    if category:
         return "Other Endpoints"
-    return "Unattributed Endpoints"
+    return "Unattributed Endpoint"
+
+
+def collection_outcome(request_record, schema_version=None):
+    """Return the presentation status and mutually exclusive outcome key."""
+    status = str(request_record.get("status") or "")
+    response_message = request_record.get("response_error") or request_record.get(
+        "error"
+    )
+    if status == "failed" and is_not_applicable_error(response_message):
+        status = "not_applicable"
+    if status in {"failed", "unauthorised"} and is_tenant_unavailable_error(
+        request_record.get("error_code") or response_message
+    ):
+        status = "tenant_unavailable"
+    outcome = status if status in COLLECTION_OUTCOME_OPTIONS else "unknown"
+    visibility_status = None
+    if status == "empty":
+        visibility_status = interpreted_visibility_status(
+            schema_version,
+            request_record.get("access_verification"),
+        )
+        if visibility_status not in {
+            "access_verified",
+            "scope_restricted",
+            "visibility_unverified",
+        }:
+            visibility_status = "visibility_unverified"
+        outcome = f"empty_{visibility_status}"
+    return status, outcome, visibility_status
+
+
+def required_endpoint_outcome_labels(endpoint):
+    """Translate aggregated finding provenance statuses into chart outcomes."""
+    labels = []
+    visibility_statuses = set(endpoint.get("visibility_statuses") or [])
+    for status in endpoint.get("statuses") or ["not_attempted"]:
+        if status == "empty":
+            if "scope_restricted" in visibility_statuses:
+                outcome = "empty_scope_restricted"
+            elif "access_verified" in visibility_statuses:
+                outcome = "empty_access_verified"
+            else:
+                outcome = "empty_visibility_unverified"
+        else:
+            outcome = str(status)
+        labels.append(
+            COLLECTION_OUTCOME_OPTIONS.get(
+                outcome,
+                COLLECTION_OUTCOME_OPTIONS["unknown"],
+            )[0]
+        )
+    return labels
 
 
 def grouped_endpoint_omissions(records):
@@ -2613,11 +2698,14 @@ def collection_request_summary(manifest=None):
     if manifest is None:
         return None
     status_counts = Counter()
+    endpoint_results = []
+    successes = []
     failures = []
     omissions = []
     empty_visibility_counts = Counter()
     outcome_counts = Counter()
     category_outcome_counts = {}
+    available_dataset_filenames = {path.name for path in standard_data_files()}
     for request_record in manifest.get("endpoint_runs", []):
         if not isinstance(request_record, dict):
             continue
@@ -2625,66 +2713,95 @@ def collection_request_summary(manifest=None):
         # endpoint and therefore do not belong in request-health statistics.
         if str(request_record.get("category") or "") == "setup":
             continue
-        status = str(request_record.get("status") or "")
         response_message = (
             request_record.get("response_error")
             or request_record.get("error")
         )
-        # Manifests written before schema 2.1 classified this explicit Azure
-        # applicability response as a generic failure. Reclassify it for
-        # presentation without modifying the retained evidence.
-        if status == "failed" and is_not_applicable_error(response_message):
-            status = "not_applicable"
-        if status in {"failed", "unauthorised"} and is_tenant_unavailable_error(
-            request_record.get("error_code") or response_message
-        ):
-            status = "tenant_unavailable"
+        status, outcome, visibility_status = collection_outcome(
+            request_record,
+            manifest.get("schema_version"),
+        )
         status_counts[status] += 1
-        outcome = status if status in COLLECTION_OUTCOME_OPTIONS else "unknown"
-        if status == "empty":
-            verification = request_record.get("access_verification")
-            verification_status = interpreted_visibility_status(
-                manifest.get("schema_version"),
-                verification,
-            )
-            if verification_status not in {
-                "access_verified",
-                "scope_restricted",
-                "visibility_unverified",
-            }:
-                verification_status = "visibility_unverified"
-            empty_visibility_counts[verification_status] += 1
-            outcome = f"empty_{verification_status}"
+        if visibility_status:
+            empty_visibility_counts[visibility_status] += 1
         outcome_counts[outcome] += 1
         category = collection_category_label(request_record.get("category"))
         category_outcome_counts.setdefault(category, Counter())[outcome] += 1
+        parameter_context = (
+            request_record.get("parameter_context")
+            if isinstance(request_record.get("parameter_context"), dict)
+            else {}
+        )
+        endpoint_definition = (
+            GRAPH_ENDPOINTS_BY_OUTPUT.get(request_record.get("endpoint_id"))
+            or GRAPH_ENDPOINTS_BY_ID.get(request_record.get("endpoint_id"))
+        )
+        workload = parameter_context.get("profile")
+        api_channel = parameter_context.get("api_channel")
+        if endpoint_definition is not None:
+            workload = workload or endpoint_definition.get("profile")
+            api_channel = api_channel or endpoint_definition.get("api")
+        workload = GRAPH_PROFILE_LABELS.get(workload, workload)
+        endpoint_result = {
+            "endpoint_name": request_record.get("endpoint_name") or "Unknown",
+            "category": category,
+            "status": status,
+            "outcome_label": COLLECTION_OUTCOME_OPTIONS.get(
+                outcome,
+                COLLECTION_OUTCOME_OPTIONS["unknown"],
+            )[0],
+            "workload": workload or (
+                "Azure" if category != "Microsoft Graph" else "Unknown"
+            ),
+            "api_channel": api_channel or (
+                "Azure CLI" if category != "Microsoft Graph" else "Unknown"
+            ),
+            "record_count": request_record.get("result_count"),
+            "output_files": [
+                {
+                    "filename": filename,
+                    "name": display_name_for_dataset(filename),
+                }
+                for filename in (request_record.get("output_files") or [])
+                if isinstance(filename, str)
+                and filename in available_dataset_filenames
+            ],
+            "error_code": (
+                request_record.get("error_code")
+                or extract_azure_error_code(response_message)
+            ),
+            "returncode": request_record.get("returncode"),
+            "parameter_context": parameter_context,
+            "message": response_message,
+            "message_truncated": bool(
+                request_record.get("response_error_truncated")
+            ),
+        }
+        endpoint_results.append(endpoint_result)
+        if status in {"success", "empty"}:
+            successes.append(endpoint_result)
         if status in {"skipped", "not_attempted"}:
             omissions.append(request_record)
         if status not in {
             "failed", "incomplete", "unauthorised", "tenant_unavailable",
         }:
             continue
-        failures.append(
-            {
-                "endpoint_name": request_record.get("endpoint_name") or "Unknown",
-                "category": category,
-                "status": status,
-                "error_code": (
-                    request_record.get("error_code")
-                    or extract_azure_error_code(response_message)
-                ),
-                "returncode": request_record.get("returncode"),
-                "parameter_context": (
-                    request_record.get("parameter_context")
-                    if isinstance(request_record.get("parameter_context"), dict)
-                    else {}
-                ),
-                "message": response_message,
-                "message_truncated": bool(
-                    request_record.get("response_error_truncated")
-                ),
-            }
+        failures.append(endpoint_result)
+    endpoint_results.sort(
+        key=lambda item: (
+            str(item["status"]),
+            str(item["category"]),
+            str(item["endpoint_name"]),
+            json.dumps(item["parameter_context"], sort_keys=True, default=str),
         )
+    )
+    successes.sort(
+        key=lambda item: (
+            str(item["category"]),
+            str(item["endpoint_name"]),
+            json.dumps(item["parameter_context"], sort_keys=True, default=str),
+        )
+    )
     failures.sort(
         key=lambda item: (
             str(item["status"]),
@@ -2745,7 +2862,16 @@ def collection_request_summary(manifest=None):
         "skipped": status_counts["skipped"],
         "not_attempted": status_counts["not_attempted"],
         "unattempted": status_counts["skipped"] + status_counts["not_attempted"],
+        "successes": successes,
         "failures": failures,
+        "base_endpoint_results": [
+            item for item in endpoint_results
+            if item["category"] != "Microsoft Graph"
+        ],
+        "graph_endpoint_results": [
+            item for item in endpoint_results
+            if item["category"] == "Microsoft Graph"
+        ],
         "omission_groups": grouped_endpoint_omissions(omissions),
         "skipped_reason_counts": Counter(
             endpoint_omission_reason(record)[0]
@@ -2755,7 +2881,34 @@ def collection_request_summary(manifest=None):
     }
 
 
-def findings_summary():
+def finding_check_classification(row, status, outcome_key):
+    """Return the check-stage and final result labels for dashboard accounting."""
+    if status in {"found", "not_found"}:
+        check_status = "Assessed"
+    elif status == "no_data_to_assess":
+        check_status = "No Data to Assess"
+    elif status == "not_implemented":
+        check_status = "Not Implemented"
+    else:
+        check_status = "Unknown Check Status"
+
+    if status == "found":
+        result = "Failed"
+    elif status == "not_found":
+        result = "Passed"
+    elif status == "no_data_to_assess" and outcome_key == "empty_upstream_source":
+        result = "Nothing to Assess"
+    else:
+        result = "Could Not Assess"
+
+    definition = row.get("definition") if isinstance(row, dict) else None
+    category = definition.get("category") if isinstance(definition, dict) else None
+    category = category or (row.get("category") if isinstance(row, dict) else None)
+    check_group = f"{category} Finding Checks" if category else "Finding Checks"
+    return check_group, check_status, result
+
+
+def findings_summary(manifest=None):
     filepath = findings_flat_path()
     if not filepath.exists():
         return None
@@ -2778,7 +2931,52 @@ def findings_summary():
         "insufficient_data_causes": Counter(),
         "chart_segments": Counter(),
         "sankey_paths": Counter(),
+        "sankey_node_counts": Counter(),
+        "sankey_relationship_count": 0,
     }
+    manifest = latest_collection_manifest() if manifest is None else manifest
+    schema_version = manifest.get("schema_version") if isinstance(manifest, dict) else None
+    endpoint_runs = []
+    endpoint_runs_by_id = {}
+    for run_index, endpoint_run in enumerate(
+        manifest.get("endpoint_runs", []) if isinstance(manifest, dict) else []
+    ):
+        if (
+            not isinstance(endpoint_run, dict)
+            or endpoint_run.get("category") == "setup"
+        ):
+            continue
+        endpoint_id = str(endpoint_run.get("endpoint_id") or "").casefold()
+        status, outcome, _visibility = collection_outcome(
+            endpoint_run,
+            schema_version,
+        )
+        execution = {
+            "run_index": run_index,
+            "endpoint_id": endpoint_id,
+            "family": endpoint_family_label(endpoint_run.get("category")),
+            "status": status,
+            "outcome": outcome,
+            "outcome_label": COLLECTION_OUTCOME_OPTIONS.get(
+                outcome,
+                COLLECTION_OUTCOME_OPTIONS["unknown"],
+            )[0],
+        }
+        endpoint_runs.append(execution)
+        if endpoint_id:
+            endpoint_runs_by_id.setdefault(endpoint_id, []).append(execution)
+        counts["sankey_node_counts"][(
+            0,
+            execution["family"],
+            "endpoint executions",
+        )] += 1
+        counts["sankey_node_counts"][(
+            1,
+            execution["outcome_label"],
+            "endpoint executions",
+        )] += 1
+
+    linked_run_indexes = set()
     for row in rows:
         status = canonical_finding_status(row.get("status") if isinstance(row, dict) else None)
         if status in counts:
@@ -2787,8 +2985,7 @@ def findings_summary():
             row.get("reporting", {}).get("provenance", {})
             if isinstance(row, dict) else {}
         )
-        required_endpoints = provenance.get("required_endpoints", [])
-        endpoint_family = finding_endpoint_family(required_endpoints)
+        required_endpoints = provenance.get("required_endpoints") or []
         outcome_key = "missing_source"
         if status == "found":
             outcome_key = "findings_raised"
@@ -2808,37 +3005,88 @@ def findings_summary():
 
         segment_label, segment_color = FINDING_CHART_OUTCOMES[outcome_key]
         counts["chart_segments"][(outcome_key, segment_label, segment_color)] += 1
-        access_state = (
-            "Not Authorised"
-            if outcome_key == "unauthorised"
-            else "Failed"
-            if outcome_key == "failed"
-            else "Authorised"
+        check_group, check_status, finding_result = finding_check_classification(
+            row,
+            status,
+            outcome_key,
         )
-        data_state = (
-            "With Data"
-            if outcome_key in {"findings_raised", "checks_passed"}
-            else "No Data"
+        result_color = FINDING_RESULT_OPTIONS[finding_result]
+        counts["sankey_node_counts"][(2, check_group, "finding checks")] += 1
+        counts["sankey_node_counts"][(3, check_status, "finding checks")] += 1
+        counts["sankey_node_counts"][(4, finding_result, "finding checks")] += 1
+
+        insufficient_data = provenance.get("insufficient_data")
+        root_cause_ids = (
+            insufficient_data.get("root_cause_endpoint_ids") or []
+            if isinstance(insufficient_data, dict)
+            else []
         )
-        reason_state = (
-            "Assessment Completed"
-            if outcome_key in {"findings_raised", "checks_passed"}
-            else segment_label
-        )
-        final_state = (
-            segment_label
-            if outcome_key in {"findings_raised", "checks_passed"}
-            else "Insufficient Data"
-        )
+        endpoint_records = [
+            endpoint for endpoint in required_endpoints
+            if isinstance(endpoint, dict)
+        ]
+        endpoint_ids = {
+            str(endpoint_id).casefold()
+            for endpoint_id in root_cause_ids
+            if endpoint_id
+        }
+        if not endpoint_ids:
+            endpoint_ids = {
+                str(endpoint.get("endpoint_id")).casefold()
+                for endpoint in endpoint_records
+                if endpoint.get("endpoint_id")
+            }
+
+        relationships = []
+        for endpoint_id in sorted(endpoint_ids):
+            for execution in endpoint_runs_by_id.get(endpoint_id, []):
+                relationships.append((execution["family"], execution["outcome_label"]))
+                linked_run_indexes.add(execution["run_index"])
+
+        if not relationships and endpoint_records:
+            for endpoint in endpoint_records:
+                family = endpoint_family_label(endpoint.get("category"))
+                for outcome_label in required_endpoint_outcome_labels(endpoint):
+                    relationships.append((family, outcome_label))
+
+        if not relationships:
+            relationships.append(("Unattributed Endpoint", "Unattributed Check Source"))
+            counts["sankey_node_counts"][(
+                0,
+                "Unattributed Endpoint",
+                "unattributed finding checks",
+            )] += 1
+            counts["sankey_node_counts"][(
+                1,
+                "Unattributed Check Source",
+                "unattributed finding checks",
+            )] += 1
+
+        for family, endpoint_status in relationships:
+            path = (
+                family,
+                endpoint_status,
+                check_group,
+                check_status,
+                finding_result,
+            )
+            counts["sankey_paths"][(path, result_color)] += 1
+            counts["sankey_relationship_count"] += 1
+
+    for execution in endpoint_runs:
+        if execution["run_index"] in linked_run_indexes:
+            continue
         path = (
-            "All Endpoints",
-            endpoint_family,
-            access_state,
-            data_state,
-            reason_state,
-            final_state,
+            execution["family"],
+            execution["outcome_label"],
+            "No Linked Finding Check",
         )
-        counts["sankey_paths"][(path, segment_color)] += 1
+        counts["sankey_paths"][(path, "#adb5bd")] += 1
+        counts["sankey_node_counts"][(
+            2,
+            "No Linked Finding Check",
+            "endpoint executions",
+        )] += 1
     return counts
 
 
@@ -3813,12 +4061,13 @@ def dashboard():
     if not DATA_DIR.exists():
         return "<p>Data directory not found. Please create a 'data' folder with JSON files.</p>"
     tabs = dataset_groups()
-    findings = findings_summary()
     manifest = latest_collection_manifest()
+    findings = findings_summary(manifest)
     collection_requests = collection_request_summary(manifest)
     graph_collection = graph_collection_summary(manifest)
     findings_chart_data = None
     findings_sankey_data = None
+    findings_sankey_nodes = None
     if findings is not None and findings["executed"]:
         findings_chart_data = [
             {
@@ -3837,6 +4086,16 @@ def dashboard():
             }
             for (path, color), count in findings["sankey_paths"].items()
         ]
+        findings_sankey_nodes = [
+            {
+                "stage": stage,
+                "name": name,
+                "count": count,
+                "unit": unit,
+            }
+            for (stage, name, unit), count
+            in findings["sankey_node_counts"].items()
+        ]
     return render_template_string(
         HTML_TEMPLATE,
         tabs=tabs,
@@ -3848,6 +4107,8 @@ def dashboard():
         dashboard=True,
         findings_chart_data=findings_chart_data,
         findings_sankey_data=findings_sankey_data,
+        findings_sankey_nodes=findings_sankey_nodes,
+        findings=findings,
         collection_requests=collection_requests,
         graph_collection=graph_collection,
         dataset_index=False,
