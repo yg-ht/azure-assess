@@ -1568,8 +1568,68 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn('aria-label="Table font size"', actions_row)
         self.assertIn('id="findingsReviewer"', actions_row)
         self.assertIn('id="exportValidatedSarif"', actions_row)
-        self.assertIn("Validated finding:", body)
+        self.assertIn("Validated assessment item:", body)
         self.assertIn("/findings/review", body)
+
+    def test_manual_assessment_item_can_be_validated_and_cleared(self):
+        finding_rows = {
+            "rows": [{
+                "finding_id": "manual_graph_domains",
+                "title": "Graph Domains",
+                "severity": "Informational",
+                "status": "manual_assessment_required",
+                "reason": "",
+                "count": 3,
+                "evidence": [{"recordCount": 3}],
+                "reporting": {"assets": [], "observations": []},
+            }],
+        }
+        headers = {
+            "X-Azure-Assess-CSRF": azure_present.FINDINGS_REVIEW_CSRF_TOKEN
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / azure_present.FINDINGS_FLAT_FILENAME).write_text(
+                json.dumps(finding_rows), encoding="utf-8"
+            )
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                page = client.get(
+                    "/findings?status=manual_assessment_required"
+                )
+                confirmed = client.post(
+                    "/findings/review",
+                    headers=headers,
+                    json={
+                        "finding_id": "manual_graph_domains",
+                        "confirmed": True,
+                        "reviewer": "A. Tester",
+                    },
+                )
+                cleared = client.post(
+                    "/findings/review",
+                    headers=headers,
+                    json={
+                        "finding_id": "manual_graph_domains",
+                        "confirmed": False,
+                        "reviewer": "A. Tester",
+                    },
+                )
+
+        body = page.get_data(as_text=True)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("manual_assessment_required", body)
+        self.assertIn("Validated assessment item:", body)
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(confirmed.get_json()["validated_findings"], 1)
+        self.assertEqual(
+            confirmed.get_json()["review"]["disposition"], "confirmed"
+        )
+        self.assertEqual(cleared.status_code, 200)
+        self.assertEqual(cleared.get_json()["validated_findings"], 0)
+        self.assertEqual(
+            cleared.get_json()["review"]["disposition"], "inconclusive"
+        )
 
     def test_findings_review_requires_csrf_and_persists_confirmation(self):
         finding_rows = {
@@ -1691,7 +1751,21 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     ("confirmed_finding", "Confirmed finding"),
                     ("candidate_finding", "Candidate finding"),
                 )
-            ]
+            ] + [{
+                "finding_id": "manual_graph_domains",
+                "title": "Graph Domains",
+                "severity": "Informational",
+                "status": "manual_assessment_required",
+                "reason": "",
+                "count": 3,
+                "evidence": [{"recordCount": 3}],
+                "source_file": ["graph_domains.json"],
+                "definition": {
+                    "finding_id": "manual_graph_domains",
+                    "check_ids": [],
+                },
+                "reporting": {"assets": [], "observations": []},
+            }]
         }
         source_sarif = {
             "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
@@ -1732,6 +1806,12 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             "reviewer": "A. Tester",
             "reviewed_at": "2026-08-04T12:00:00Z",
         }
+        manual_review = {
+            "finding_id": "manual_graph_domains",
+            "disposition": "confirmed",
+            "reviewer": "A. Tester",
+            "reviewed_at": "2026-08-04T12:01:00Z",
+        }
 
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
@@ -1743,7 +1823,10 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             )
             azure_present.save_review_overrides(
                 data_dir / azure_present.FINDINGS_REVIEW_FILENAME,
-                {"confirmed_finding": confirmed_review},
+                {
+                    "confirmed_finding": confirmed_review,
+                    "manual_graph_domains": manual_review,
+                },
             )
             with mock.patch.object(azure_present, "DATA_DIR", data_dir):
                 response = azure_present.app.test_client().get(
@@ -1758,14 +1841,33 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             azure_present.VALIDATED_FINDINGS_SARIF_FILENAME,
             response.headers["Content-Disposition"],
         )
-        self.assertEqual([result["ruleId"] for result in run["results"]], ["confirmed_finding"])
-        self.assertEqual([rule["id"] for rule in run["tool"]["driver"]["rules"]], ["confirmed_finding"])
+        self.assertEqual(
+            [result["ruleId"] for result in run["results"]],
+            ["confirmed_finding", "manual_graph_domains"],
+        )
+        self.assertEqual(
+            [rule["id"] for rule in run["tool"]["driver"]["rules"]],
+            ["confirmed_finding", "manual_graph_domains"],
+        )
         self.assertEqual(
             run["results"][0]["properties"]["review"]["disposition"],
             "confirmed",
         )
-        self.assertEqual(exported["properties"]["validated_findings"], 1)
+        manual_result = run["results"][1]
+        self.assertEqual(manual_result["kind"], "review")
+        self.assertEqual(manual_result["level"], "note")
+        self.assertEqual(manual_result["properties"]["record_count"], 3)
+        self.assertEqual(exported["properties"]["validated_findings"], 2)
+        self.assertEqual(exported["properties"]["validated_raised_findings"], 1)
+        self.assertEqual(
+            exported["properties"]["validated_manual_assessments"], 1
+        )
         self.assertEqual(run["invocations"][0]["properties"]["found_findings"], 1)
+        self.assertEqual(
+            run["invocations"][0]["properties"]
+            ["validated_manual_assessments"],
+            1,
+        )
         self.assertEqual(
             run["invocations"][0]["properties"]["source_found_findings"],
             2,
@@ -1980,6 +2082,36 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Microsoft Graph", body)
         self.assertIn("Identity Baseline", body)
         self.assertNotIn(">graph_identity_baseline_applications<", body)
+
+    def test_data_viewer_selector_uses_friendly_dataset_names_only(self):
+        graph_filename = (
+            "graph_identity_baseline_applications_20260805-120000.json"
+        )
+        azure_filename = "az_resource_list_20260805-120000.json"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / graph_filename).write_text(
+                json.dumps([{"id": "app-one"}]), encoding="utf-8"
+            )
+            (data_dir / azure_filename).write_text(
+                json.dumps([{"id": "resource-one"}]), encoding="utf-8"
+            )
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                response = azure_present.app.test_client().get(
+                    f"/query/{graph_filename}"
+                )
+
+        body = response.get_data(as_text=True)
+        selector = body.split('<select id="dataSourceSelect"', 1)[1]
+        selector = selector.split("</select>", 1)[0]
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Graph Applications", selector)
+        self.assertIn("Resources", selector)
+        self.assertNotIn("Microsoft Graph", selector)
+        self.assertNotIn("Identity Baseline", selector)
+        self.assertNotIn("Azure inventory", selector)
+        self.assertNotIn(" / ", selector)
 
     def test_dashboard_summarises_graph_records_from_manifest_provenance(self):
         graph_filename = (

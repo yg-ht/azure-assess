@@ -116,7 +116,11 @@ class ManualEndpointAssessmentTests(unittest.TestCase):
                 "path": Path("azure-collection-manifest.json"),
             },
             filename: {
-                "data": [{"id": "one"}],
+                "data": [
+                    {"id": "one"},
+                    {"id": "two"},
+                    {"id": "three"},
+                ],
                 "path": Path(filename),
             },
         })
@@ -125,7 +129,57 @@ class ManualEndpointAssessmentTests(unittest.TestCase):
         self.assertEqual(
             findings[0]["status"], "manual_assessment_required"
         )
+        self.assertEqual(findings[0]["title"], "Graph Domains")
+        self.assertEqual(findings[0]["reason"], "")
         self.assertEqual(findings[0]["evidence"][0]["recordCount"], 3)
+        self.assertEqual(azure_findings.flat_rows(findings)[0]["count"], 3)
+
+    def test_empty_retained_dataset_is_not_a_manual_review_item(self):
+        filename = "graph_identity_baseline_domains_run-one.json"
+        manifest = {
+            "endpoint_runs": [{
+                "endpoint_id": "graph_identity_baseline_domains",
+                "endpoint_name": "Graph Domains",
+                "category": "microsoft_graph",
+                "status": "success",
+                "result_count": 3,
+                "output_files": [filename],
+            }],
+        }
+        findings, _sources = azure_findings.evaluate_manual_endpoint_findings({
+            "azure-collection-manifest.json": {
+                "data": manifest,
+                "path": Path("azure-collection-manifest.json"),
+            },
+            filename: {"data": [], "path": Path(filename)},
+        })
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["status"], "no_data_to_assess")
+        self.assertEqual(findings[0]["evidence"], [])
+
+    def test_missing_retained_dataset_is_not_a_manual_review_item(self):
+        filename = "graph_identity_baseline_domains_run-one.json"
+        manifest = {
+            "endpoint_runs": [{
+                "endpoint_id": "graph_identity_baseline_domains",
+                "endpoint_name": "Graph Domains",
+                "category": "microsoft_graph",
+                "status": "success",
+                "result_count": 3,
+                "output_files": [filename],
+            }],
+        }
+        findings, _sources = azure_findings.evaluate_manual_endpoint_findings({
+            "azure-collection-manifest.json": {
+                "data": manifest,
+                "path": Path("azure-collection-manifest.json"),
+            },
+        })
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["status"], "no_data_to_assess")
+        self.assertEqual(findings[0]["evidence"], [])
 
     def test_manual_items_are_excluded_from_sarif(self):
         sarif = azure_findings.sarif_output(

@@ -166,16 +166,6 @@ def endpoint_assessment_role(endpoint_id: Any) -> str:
     return AUTOMATED
 
 
-def manual_assessment_reason(endpoint_run: Mapping[str, Any]) -> str:
-    """Explain why an endpoint outcome requires tenant-aware analyst review."""
-    category = str(endpoint_run.get("category") or "collection")
-    return (
-        f"The {category} evidence has no current conservative, tenant-independent "
-        "automated pass/fail rule. Review the collected records in the context of "
-        "the tenant's architecture, threat model and approved configuration."
-    )
-
-
 def manual_endpoint_groups(collection_manifest: Mapping[str, Any]) -> list:
     """Group context-only executions without retaining parameter values."""
     groups = {}
@@ -198,7 +188,6 @@ def manual_endpoint_groups(collection_manifest: Mapping[str, Any]) -> list:
                 "record_count": 0,
                 "source_files": set(),
                 "usable_evidence": False,
-                "reason": manual_assessment_reason(endpoint_run),
             },
         )
         category = str(endpoint_run.get("category") or "collection")

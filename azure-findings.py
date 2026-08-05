@@ -715,12 +715,19 @@ def flat_rows(findings):
         ensure_finding_review(finding)
         ensure_finding_triage(finding)
         evidence_links = finding.get("references", {}).get("evidence_links", [])
+        display_count = finding["evidence_count"]
+        if (
+            finding.get("status") == "manual_assessment_required"
+            and finding.get("evidence")
+            and isinstance(finding["evidence"][0].get("recordCount"), int)
+        ):
+            display_count = finding["evidence"][0]["recordCount"]
         row = {
             "title": finding["title"],
             "severity": finding["severity"],
             "status": finding["status"],
             "reason": finding["reason"],
-            "count": finding["evidence_count"],
+            "count": display_count,
             "evidence": finding["evidence"] if finding["evidence"] else [],
             "viewer_links": unique_non_empty_strings(
                 item.get("href")
@@ -1015,8 +1022,8 @@ def annotate_finding_definitions(findings):
 def evaluate_manual_endpoint_findings(catalog):
     """Create one analyst-review item per collected context-only endpoint."""
     collection_manifest = collection_manifest_payload(catalog)
-    paths_by_filename = {
-        Path(str(item.get("path"))).name: str(item.get("path"))
+    entries_by_filename = {
+        Path(str(item.get("path"))).name: item
         for item in catalog.values()
         if isinstance(item, dict) and item.get("path")
     }
@@ -1025,18 +1032,33 @@ def evaluate_manual_endpoint_findings(catalog):
     for group in manual_endpoint_groups(collection_manifest):
         endpoint_id = group["endpoint_id"]
         endpoint_name = group["endpoint_name"]
-        title = f"Manual assessment required: {endpoint_name}"
+        title = endpoint_name
         source_type = (
             GRAPH
             if "microsoft_graph" in group["categories"]
             else BASE
         )
+        retained_sources = []
+        retained_record_count = 0
+        for filename in group["source_files"]:
+            entry = entries_by_filename.get(filename)
+            if entry is None:
+                continue
+            value = entry.get("data")
+            if isinstance(value, list):
+                record_count = len(value)
+            elif isinstance(value, dict) and isinstance(value.get("value"), list):
+                record_count = len(value["value"])
+            elif isinstance(value, dict):
+                record_count = 1 if value else 0
+            else:
+                record_count = 0 if value is None else 1
+            if record_count <= 0:
+                continue
+            retained_sources.append(str(entry["path"]))
+            retained_record_count += record_count
         source_files = SourceReferences(
-            [
-                paths_by_filename[filename]
-                for filename in group["source_files"]
-                if filename in paths_by_filename
-            ],
+            retained_sources,
             required_endpoint_ids=(endpoint_id,),
             endpoint_source_type=source_type,
         )
@@ -1046,17 +1068,17 @@ def evaluate_manual_endpoint_findings(catalog):
             "The context-only endpoint did not return usable evidence for "
             "manual assessment."
         )
-        if group["usable_evidence"]:
+        if group["usable_evidence"] and retained_record_count > 0:
             status = "manual_assessment_required"
-            reason = group["reason"]
+            reason = ""
             evidence = [{
                 "name": endpoint_name,
                 "endpointId": endpoint_id,
                 "collectionTypes": group["categories"],
                 "executionCount": group["execution_count"],
-                "recordCount": group["record_count"],
+                "recordCount": retained_record_count,
                 "executionStatuses": group["statuses"],
-                "sourceFiles": group["source_files"],
+                "sourceFiles": [Path(path).name for path in retained_sources],
             }]
         finding = {
             "title": title,

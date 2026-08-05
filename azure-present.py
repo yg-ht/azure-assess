@@ -105,6 +105,7 @@ FINDING_STATUS_OPTIONS = OrderedDict(
         ("all", {"label": "All Findings", "statuses": None}),
     ]
 )
+VALIDATABLE_FINDING_STATUSES = {"found", "manual_assessment_required"}
 
 OMISSION_REASON_LABELS = {
     "upstream_source_failed": "Upstream source collection failed",
@@ -1113,7 +1114,7 @@ HTML_TEMPLATE = """
             <select id="dataSourceSelect" class="form-select">
               {% for tab in tabs %}
               <option value="{{ tab.filename }}" {% if current_dataset_filename == tab.filename %}selected{% endif %}>
-                {{ tab.name }} — {{ tab.source }}{% if tab.workload %} / {{ tab.workload }}{% endif %}
+                {{ tab.name }}
               </option>
               {% endfor %}
             </select>
@@ -1885,7 +1886,10 @@ document.addEventListener('DOMContentLoaded', function () {
       } catch (err) {
         sourceRow = null;
       }
-      if (sourceRow?.status === 'found' && sourceRow?.finding_id) {
+      if (
+        ['found', 'manual_assessment_required'].includes(sourceRow?.status)
+        && sourceRow?.finding_id
+      ) {
         const validationControl = document.createElement('label');
         validationControl.className = 'finding-validation-control';
         const validationCheckbox = document.createElement('input');
@@ -1894,7 +1898,7 @@ document.addEventListener('DOMContentLoaded', function () {
         validationCheckbox.checked = sourceRow.review?.disposition === 'confirmed';
         validationCheckbox.setAttribute(
           'aria-label',
-          `Validated finding: ${sourceRow.title || sourceRow.finding_id}`
+          `Validated assessment item: ${sourceRow.title || sourceRow.finding_id}`
         );
         const validationLabel = document.createElement('span');
         validationLabel.textContent = 'Validated';
@@ -3497,7 +3501,13 @@ def review_override_from_effective_review(row, reviewer, confirmed):
     analyst = review.get("analyst") if isinstance(review.get("analyst"), dict) else {}
     override = {
         "finding_id": row["finding_id"],
-        "disposition": "confirmed" if confirmed else "candidate",
+        "disposition": (
+            "confirmed"
+            if confirmed
+            else "inconclusive"
+            if row.get("status") == "manual_assessment_required"
+            else "candidate"
+        ),
         "reviewer": reviewer,
         "reviewed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
@@ -3518,18 +3528,76 @@ def review_override_from_effective_review(row, reviewer, confirmed):
 
 
 def confirmed_finding_rows(rows):
-    """Return current raised findings carrying an analyst confirmation."""
+    """Return exportable findings carrying an analyst confirmation."""
     return [
         row
         for row in rows
-        if row.get("status") == "found"
+        if row.get("status") in VALIDATABLE_FINDING_STATUSES
         and isinstance(row.get("review"), dict)
         and row["review"].get("disposition") == "confirmed"
     ]
 
 
+def manual_assessment_sarif_rule(row):
+    """Build a SARIF rule for a confirmed manual assessment item."""
+    finding_id = row["finding_id"]
+    title = str(row.get("title") or finding_id)
+    definition = copy.deepcopy(row.get("definition") or {})
+    return {
+        "id": finding_id,
+        "name": title,
+        "shortDescription": {"text": title},
+        "fullDescription": {
+            "text": "Collected evidence was reviewed and validated by an analyst."
+        },
+        "defaultConfiguration": {"level": "note"},
+        "properties": {
+            "finding_id": finding_id,
+            "definition": definition,
+            "severity": row.get("severity") or "Informational",
+            "headline_ids": definition.get("check_ids") or [],
+            "assessment_status": "manual_assessment_required",
+        },
+    }
+
+
+def manual_assessment_sarif_result(row):
+    """Build a SARIF review result from one confirmed flat manual item."""
+    finding_id = row["finding_id"]
+    title = str(row.get("title") or finding_id)
+    record_count = row.get("count") if isinstance(row.get("count"), int) else 0
+    properties = {
+        "finding_id": finding_id,
+        "definition": copy.deepcopy(row.get("definition") or {}),
+        "reporting": copy.deepcopy(row.get("reporting") or {}),
+        "context": copy.deepcopy(row.get("context") or {}),
+        "coverage": copy.deepcopy(row.get("coverage") or {}),
+        "review": copy.deepcopy(row.get("review") or {}),
+        "triage": copy.deepcopy(row.get("triage") or {}),
+        "title": title,
+        "severity": row.get("severity") or "Informational",
+        "status": "manual_assessment_required",
+        "reason": row.get("reason") or "",
+        "record_count": record_count,
+        "references": {"source_files": copy.deepcopy(row.get("source_file") or [])},
+        "evidence": copy.deepcopy(row.get("evidence") or []),
+    }
+    return {
+        "ruleId": finding_id,
+        "level": "note",
+        "kind": "review",
+        "message": {
+            "text": (
+                f"{title} was validated by an analyst with {record_count} "
+                "viewable source record(s)."
+            )
+        },
+        "properties": properties,
+    }
+
+
 def build_validated_sarif(source, confirmed_rows):
-    """Filter an existing SARIF document to confirmed current findings."""
+    """Export confirmed findings and manual reviews as SARIF results."""
     if not isinstance(source, dict) or source.get("version") != "2.1.0":
         raise ValueError("Findings SARIF must be a SARIF 2.1.0 object")
     runs = source.get("runs")
@@ -3538,6 +3606,65 @@ def build_validated_sarif(source, confirmed_rows):
 
     output = copy.deepcopy(source)
     confirmed_by_id = {row["finding_id"]: row for row in confirmed_rows}
+    source_result_ids = set()
+    for run in output["runs"]:
+        results = run.get("results", [])
+        if not isinstance(results, list) or not all(
+            isinstance(result, dict) for result in results
+        ):
+            raise ValueError("Each findings SARIF run must contain a results list")
+        for result in results:
+            properties = result.get("properties")
+            if properties is not None and not isinstance(properties, dict):
+                raise ValueError(
+                    "Each findings SARIF result properties value must be an object"
+                )
+            properties = properties or {}
+            property_finding_id = properties.get("finding_id")
+            rule_id = result.get("ruleId")
+            if property_finding_id and rule_id and property_finding_id != rule_id:
+                raise ValueError(
+                    "A findings SARIF result has conflicting finding_id and ruleId values"
+                )
+            finding_id = property_finding_id or rule_id
+            if finding_id:
+                source_result_ids.add(finding_id)
+
+    manual_rows = [
+        row
+        for row in confirmed_rows
+        if row.get("status") == "manual_assessment_required"
+        and row.get("finding_id") not in source_result_ids
+    ]
+    if manual_rows:
+        if not output["runs"]:
+            raise ValueError("Findings SARIF must contain a run for manual results")
+        target_run = output["runs"][0]
+        target_run.setdefault("results", []).extend(
+            manual_assessment_sarif_result(row) for row in manual_rows
+        )
+        tool = target_run.get("tool")
+        if tool is None:
+            tool = target_run.setdefault("tool", {})
+        if not isinstance(tool, dict):
+            raise ValueError("Each findings SARIF run tool value must be an object")
+        driver = tool.get("driver")
+        if driver is None:
+            driver = tool.setdefault("driver", {})
+        if not isinstance(driver, dict):
+            raise ValueError("Each findings SARIF driver must be an object")
+        rules = driver.setdefault("rules", [])
+        if not isinstance(rules, list) or not all(
+            isinstance(rule, dict) for rule in rules
+        ):
+            raise ValueError("Each findings SARIF driver rules value must be a list")
+        existing_rule_ids = {rule.get("id") for rule in rules}
+        rules.extend(
+            manual_assessment_sarif_rule(row)
+            for row in manual_rows
+            if row["finding_id"] not in existing_rule_ids
+        )
+
     matched_ids = set()
     for run in output["runs"]:
         results = run.get("results", [])
@@ -3569,6 +3696,15 @@ def build_validated_sarif(source, confirmed_rows):
             matched_ids.add(finding_id)
             run_matched_ids.add(finding_id)
         run["results"] = retained_results
+        run_found_count = sum(
+            confirmed_by_id[finding_id].get("status") == "found"
+            for finding_id in run_matched_ids
+        )
+        run_manual_count = sum(
+            confirmed_by_id[finding_id].get("status")
+            == "manual_assessment_required"
+            for finding_id in run_matched_ids
+        )
 
         tool = run.get("tool")
         if tool is not None and not isinstance(tool, dict):
@@ -3595,14 +3731,19 @@ def build_validated_sarif(source, confirmed_rows):
             raise ValueError("Each findings SARIF automationDetails value must be an object")
         if isinstance(automation, dict):
             automation["description"] = {
-                "text": "Azure findings confirmed by an analyst in azure-present."
+                "text": (
+                    "Azure findings and manual assessment items confirmed by "
+                    "an analyst in azure-present."
+                )
             }
         run_properties = run.get("properties")
         if run_properties is not None and not isinstance(run_properties, dict):
             raise ValueError("Each findings SARIF run properties value must be an object")
         run_properties = run.setdefault("properties", {})
-        run_properties["result_origin"] = "azure-present confirmed findings only"
+        run_properties["result_origin"] = "azure-present confirmed assessment items"
         run_properties["validated_findings"] = len(run_matched_ids)
+        run_properties["validated_raised_findings"] = run_found_count
+        run_properties["validated_manual_assessments"] = run_manual_count
         invocations = run.get("invocations", [])
         if not isinstance(invocations, list) or not all(
             isinstance(invocation, dict) for invocation in invocations
@@ -3621,8 +3762,12 @@ def build_validated_sarif(source, confirmed_rows):
                 invocation_properties["source_found_findings"] = (
                     invocation_properties["found_findings"]
                 )
-                invocation_properties["found_findings"] = len(retained_results)
+                invocation_properties["found_findings"] = run_found_count
             invocation_properties["validated_findings"] = len(run_matched_ids)
+            invocation_properties["validated_raised_findings"] = run_found_count
+            invocation_properties["validated_manual_assessments"] = (
+                run_manual_count
+            )
 
     missing_ids = sorted(set(confirmed_by_id) - matched_ids)
     if missing_ids:
@@ -3633,7 +3778,15 @@ def build_validated_sarif(source, confirmed_rows):
     output_properties = output.get("properties")
     if output_properties is not None and not isinstance(output_properties, dict):
         raise ValueError("Findings SARIF properties must be an object")
-    output.setdefault("properties", {})["validated_findings"] = len(matched_ids)
+    output_properties = output.setdefault("properties", {})
+    output_properties["validated_findings"] = len(matched_ids)
+    output_properties["validated_raised_findings"] = sum(
+        row.get("status") == "found" for row in confirmed_rows
+    )
+    output_properties["validated_manual_assessments"] = sum(
+        row.get("status") == "manual_assessment_required"
+        for row in confirmed_rows
+    )
     return output
 
 
@@ -4521,8 +4674,13 @@ def update_finding_review():
             row = rows_by_id.get(finding_id)
             if row is None:
                 return jsonify({"error": "The finding is not in the current assessment."}), 404
-            if row.get("status") != "found":
-                return jsonify({"error": "Only raised findings can be validated."}), 409
+            if row.get("status") not in VALIDATABLE_FINDING_STATUSES:
+                return jsonify({
+                    "error": (
+                        "Only raised findings and manual assessment items can "
+                        "be validated."
+                    )
+                }), 409
 
             override = review_override_from_effective_review(
                 row,
