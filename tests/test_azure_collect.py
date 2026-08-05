@@ -747,6 +747,9 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             data_dir = Path(tmpdir)
             dataset = data_dir / "az_resource_list_20260804-120000.json"
             dataset.write_text("[]", encoding="utf-8")
+            (data_dir / "azure-collection-manifest_20260804-120000.json").write_text(
+                "{}", encoding="utf-8"
+            )
             for filename in (
                 azure_present.FINDINGS_REVIEW_FILENAME,
                 azure_present.VALIDATED_FINDINGS_SARIF_FILENAME,
@@ -1647,6 +1650,276 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             self.assertEqual(groups[0]["record_count"], 2)
             self.assertEqual(loaded_paths, [latest_path.name])
 
+    def test_graph_datasets_keep_friendly_names_and_show_collection_metadata(self):
+        filename = "graph_identity_baseline_applications_20260805-120000.json"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / filename).write_text(
+                json.dumps([{"id": "app-one"}]), encoding="utf-8"
+            )
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                groups = azure_present.dataset_groups(load_record_counts=True)
+                response = azure_present.app.test_client().get("/datasets")
+
+        self.assertEqual(groups[0]["name"], "Graph Applications")
+        self.assertEqual(groups[0]["source"], "Microsoft Graph")
+        self.assertEqual(groups[0]["workload"], "Identity Baseline")
+        self.assertEqual(groups[0]["api_channel"], "v1.0")
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Collection Source", body)
+        self.assertIn("Workload", body)
+        self.assertIn("Graph Applications", body)
+        self.assertIn("Microsoft Graph", body)
+        self.assertIn("Identity Baseline", body)
+        self.assertNotIn(">graph_identity_baseline_applications<", body)
+
+    def test_dashboard_summarises_graph_records_from_manifest_provenance(self):
+        graph_filename = (
+            "graph_identity_baseline_applications_20260805-120000.json"
+        )
+        manifest = {
+            "schema_version": "2.5",
+            "run_id": "20260805-120000",
+            "status": "partial",
+            "endpoint_runs": [
+                {
+                    "endpoint_id": "graph_identity_baseline_applications",
+                    "endpoint_name": "Graph Applications",
+                    "category": "microsoft_graph",
+                    "status": "success",
+                    "result_count": 2,
+                    "output_files": [graph_filename],
+                    "parameter_context": {
+                        "profile": "IdentityBaseline",
+                        "api_channel": "v1.0",
+                    },
+                },
+                {
+                    "endpoint_id": "graph_identity_baseline_domains",
+                    "endpoint_name": "Graph Domains",
+                    "category": "microsoft_graph",
+                    "status": "empty",
+                    "result_count": 0,
+                    "output_files": [],
+                },
+                {
+                    "endpoint_id": "graph_identity_baseline_security_defaults",
+                    "endpoint_name": "Graph Security Defaults Policy",
+                    "category": "microsoft_graph",
+                    "status": "unauthorised",
+                    "result_count": None,
+                    "output_files": [],
+                    "error": "Required Graph permission was unavailable",
+                },
+            ],
+            "datasets": [
+                {
+                    "filename": graph_filename,
+                    "source_endpoint_id": (
+                        "graph_identity_baseline_applications"
+                    ),
+                    "source_endpoint_ids": [
+                        "graph_identity_baseline_applications"
+                    ],
+                    "record_count": 2,
+                    "size_bytes": 42,
+                    "sha256": "a" * 64,
+                }
+            ],
+            "errors": [],
+            "limitations": [],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / graph_filename).write_text(
+                json.dumps([{"id": "one"}, {"id": "two"}]),
+                encoding="utf-8",
+            )
+            (data_dir / "azure-collection-manifest_20260805-120000.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                summary = azure_present.graph_collection_summary()
+                response = azure_present.app.test_client().get("/")
+
+        self.assertEqual(summary["selected_endpoints"], 3)
+        self.assertEqual(summary["endpoints_with_data"], 1)
+        self.assertEqual(summary["records_written"], 2)
+        self.assertEqual(summary["dataset_files"], 1)
+        self.assertEqual(summary["outcome"], "Partial — data retained")
+        self.assertEqual(
+            summary["status_counts"],
+            {"empty": 1, "success": 1, "unauthorised": 1},
+        )
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Microsoft Graph Collection", body)
+        self.assertIn("Graph Endpoints With Data", body)
+        self.assertIn("Graph Records Written", body)
+        self.assertIn("Graph Endpoint Results", body)
+        self.assertIn("Graph Applications", body)
+        self.assertIn("Graph Security Defaults Policy", body)
+        self.assertIn("Required Graph permission was unavailable", body)
+        self.assertIn("Collection Request Health", body)
+        self.assertNotIn("Azure Request Health", body)
+
+    def test_dashboard_makes_missing_graph_manifest_evidence_explicit(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                summary = azure_present.graph_collection_summary()
+                response = azure_present.app.test_client().get("/")
+
+        self.assertEqual(summary["outcome"], "Manifest unavailable")
+        self.assertEqual(summary["selected_endpoints"], 0)
+        self.assertEqual(summary["records_written"], 0)
+        body = response.get_data(as_text=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Microsoft Graph Collection", body)
+        self.assertIn("Manifest unavailable", body)
+        self.assertIn(
+            "Microsoft Graph collection cannot be verified", body
+        )
+
+    def test_graph_summary_distinguishes_complete_empty_collection(self):
+        manifest = {
+            "endpoint_runs": [
+                {
+                    "endpoint_id": "graph_identity_baseline_domains",
+                    "endpoint_name": "Graph Domains",
+                    "category": "microsoft_graph",
+                    "status": "empty",
+                    "result_count": 0,
+                    "output_files": [],
+                }
+            ],
+            "datasets": [],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                azure_present, "DATA_DIR", Path(tmpdir)
+            ):
+                summary = azure_present.graph_collection_summary(manifest)
+
+        self.assertEqual(summary["selected_endpoints"], 1)
+        self.assertEqual(summary["endpoints_with_data"], 0)
+        self.assertEqual(summary["records_written"], 0)
+        self.assertEqual(
+            summary["outcome"], "Complete — no records returned"
+        )
+
+    def test_manifest_routes_expose_versioned_summary_and_raw_json_safely(self):
+        dataset_filename = "graph_identity_baseline_domains_20260805-120000.json"
+        newest_manifest = {
+            "schema_version": "2.5",
+            "run_id": "new-run",
+            "status": "success",
+            "started_at": "2026-08-05T12:00:00Z",
+            "completed_at": "2026-08-05T12:01:00Z",
+            "context": {"tenant_id": "tenant-one"},
+            "options": {"graph_lookback_days": 30},
+            "access_verification": {
+                "graph": {"status": "access_verified"}
+            },
+            "endpoint_runs": [
+                {
+                    "endpoint_name": "Graph Domains",
+                    "category": "microsoft_graph",
+                    "status": "success",
+                    "result_count": 1,
+                    "output_files": [dataset_filename],
+                }
+            ],
+            "datasets": [
+                {
+                    "filename": dataset_filename,
+                    "record_count": 1,
+                    "size_bytes": 20,
+                    "sha256": "b" * 64,
+                }
+            ],
+            "limitations": [
+                "Example beta limitation",
+                "<script>alert(1)</script>",
+            ],
+            "errors": [],
+        }
+        older_manifest = {
+            **newest_manifest,
+            "run_id": "old-run",
+            "status": "partial",
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir)
+            (data_dir / dataset_filename).write_text(
+                json.dumps([{"id": "domain-one"}]), encoding="utf-8"
+            )
+            newest_filename = "azure-collection-manifest_20260805-120000.json"
+            older_filename = "azure-collection-manifest_20260804-120000.json"
+            (data_dir / newest_filename).write_text(
+                json.dumps(newest_manifest), encoding="utf-8"
+            )
+            (data_dir / older_filename).write_text(
+                json.dumps(older_manifest), encoding="utf-8"
+            )
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                client = azure_present.app.test_client()
+                summary_response = client.get("/manifest")
+                old_response = client.get(
+                    f"/manifest?filename={older_filename}"
+                )
+                raw_response = client.get(
+                    f"/manifest/raw?filename={newest_filename}"
+                )
+                unsafe_response = client.get(
+                    "/manifest/raw?filename=../outside.json"
+                )
+
+        summary_body = summary_response.get_data(as_text=True)
+        self.assertEqual(summary_response.status_code, 200)
+        self.assertIn("Collection Manifest", summary_body)
+        self.assertIn("new-run", summary_body)
+        self.assertIn("Graph Domains", summary_body)
+        self.assertIn("View Raw Manifest JSON", summary_body)
+        self.assertIn("Example beta limitation", summary_body)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", summary_body)
+        self.assertNotIn("<script>alert(1)</script>", summary_body)
+        self.assertIn("can contain tenant identifiers", summary_body)
+        self.assertIn(newest_filename, summary_body)
+        self.assertIn(older_filename, summary_body)
+        self.assertEqual(summary_response.headers["Cache-Control"], "no-store")
+        self.assertEqual(
+            summary_response.headers["X-Content-Type-Options"], "nosniff"
+        )
+        self.assertEqual(old_response.status_code, 200)
+        self.assertIn("old-run", old_response.get_data(as_text=True))
+        self.assertEqual(raw_response.status_code, 200)
+        self.assertEqual(raw_response.get_json()["run_id"], "new-run")
+        self.assertEqual(raw_response.headers["Cache-Control"], "no-store")
+        self.assertEqual(raw_response.headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(unsafe_response.status_code, 404)
+
+    def test_manifest_route_does_not_follow_manifest_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data_dir = root / "data"
+            data_dir.mkdir()
+            outside = root / "outside.json"
+            outside.write_text(
+                json.dumps({"run_id": "outside"}), encoding="utf-8"
+            )
+            link = data_dir / "azure-collection-manifest_20260805-120000.json"
+            link.symlink_to(outside)
+
+            with mock.patch.object(azure_present, "DATA_DIR", data_dir):
+                response = azure_present.app.test_client().get("/manifest/raw")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_dataset_counts_endpoint_returns_counts_for_valid_dataset_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir)
@@ -1840,6 +2113,14 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                     "result_count": 2,
                 },
                 {
+                    "endpoint_name": "Partially Collected Graph Endpoint",
+                    "category": "microsoft_graph",
+                    "status": "incomplete",
+                    "returncode": 1,
+                    "result_count": 1,
+                    "error": "A later Graph page failed after data was retained",
+                },
+                {
                     "endpoint_name": "Empty Endpoint — Visibility Unverified",
                     "category": "base",
                     "status": "empty",
@@ -1918,13 +2199,14 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             1,
         )
         self.assertNotIn("permission_blocked", summary)
-        self.assertEqual(requests["attempted"], 8)
+        self.assertEqual(requests["attempted"], 9)
         self.assertEqual(requests["success"], 1)
         self.assertEqual(requests["empty"], 3)
         self.assertEqual(requests["empty_access_verified"], 1)
         self.assertEqual(requests["empty_scope_restricted"], 1)
         self.assertEqual(requests["empty_visibility_unverified"], 1)
         self.assertEqual(requests["failed"], 1)
+        self.assertEqual(requests["incomplete"], 1)
         self.assertEqual(requests["unauthorised"], 1)
         self.assertEqual(requests["not_applicable"], 2)
         self.assertEqual(requests["unattempted"], 2)
@@ -1960,7 +2242,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         )
         self.assertEqual(failed_card["value"], 1)
         self.assertEqual(unauthorised_card["value"], 1)
-        self.assertEqual(request_attempts_card["value"], 8)
+        self.assertEqual(request_attempts_card["value"], 9)
         self.assertEqual(not_applicable_card["value"], 2)
         self.assertEqual(
             cards["requests"]["unrecorded"][0],
@@ -1975,7 +2257,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertNotIn('"label": "Permission Blocked"', body)
         self.assertIn("Collection Snapshot", body)
         self.assertIn("Finding Outcomes", body)
-        self.assertIn("Azure Request Health", body)
+        self.assertIn("Collection Request Health", body)
         self.assertIn("Request Attempt Outcomes", body)
         self.assertIn("Skipped Endpoint Definitions", body)
         self.assertIn("Unrecorded Endpoint Definitions", body)
@@ -1985,6 +2267,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Returned No Data — Access Verified", body)
         self.assertIn("Returned No Data — Scope Restricted", body)
         self.assertIn("Returned No Data — Visibility Unverified", body)
+        self.assertIn("Incomplete", body)
         self.assertIn("Checks Without Sufficient Data", body)
         self.assertNotIn("Rows in azure-findings-flat.json", body)
         self.assertNotIn("Status: not_found", body)
@@ -2006,7 +2289,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Reason unavailable in legacy manifest", body)
         self.assertIn("Skipped Endpoint (parameterised)", body)
         self.assertIn("Unattempted Endpoint (base)", body)
-        self.assertIn("Unsuccessful Azure Requests", body)
+        self.assertIn("Unsuccessful Collection Requests", body)
         self.assertIn('<details class="dashboard-request-details">', body)
         self.assertNotIn('<details class="dashboard-request-details" open>', body)
         self.assertIn("dashboard-request-table", body)
@@ -2026,7 +2309,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("filter.addEventListener('change', applyFilters)", body)
         self.assertIn("cellValue === query", body)
         self.assertIn(
-            "one row is shown for each failed, unauthorised or tenant-restricted",
+            "one row is shown for each failed, incomplete, unauthorised or tenant-restricted",
             body.lower(),
         )
         self.assertIn("function applyFilters()", body)
@@ -2034,6 +2317,8 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Storage Account Keys", body)
         self.assertIn("AuthorizationFailed", body)
         self.assertIn("Principal cannot list storage account keys.", body)
+        self.assertIn("Partially Collected Graph Endpoint", body)
+        self.assertIn("Microsoft Graph", body)
         self.assertIn("Legacy manifest error message", body)
         self.assertNotIn("Flow Logs (legacy manifest)", body)
         self.assertNotIn("Unavailable Service", body)
@@ -2231,6 +2516,13 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertEqual(
             azure_present.DATASET_NAME_MAP[legacy_prefix],
             "Graph Directory Roles",
+        )
+        self.assertEqual(
+            azure_present.dataset_collection_metadata(
+                "az_rest_--method_get_--url_https_graph.microsoft.com_"
+                "v1.0_directoryroles_20260727-120000.json"
+            )["source"],
+            "Microsoft Graph",
         )
 
 

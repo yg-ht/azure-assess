@@ -59,6 +59,7 @@ from azure_assess.findings_review import (
     save_review_overrides,
     validate_finding_review,
 )
+from azure_assess.graph_endpoints import GRAPH_ENDPOINTS
 
 app = Flask(__name__)
 DATA_DIR = Path("azure-collect")
@@ -74,6 +75,17 @@ FINDINGS_FILENAMES = {
     FINDINGS_REVIEW_FILENAME,
     VALIDATED_FINDINGS_SARIF_FILENAME,
     LEGACY_FINDINGS_SARIF_FILENAME,
+}
+GRAPH_ENDPOINTS_BY_OUTPUT = {
+    endpoint["output"]: endpoint for endpoint in GRAPH_ENDPOINTS
+}
+GRAPH_PROFILE_LABELS = {
+    "IdentityBaseline": "Identity Baseline",
+    "PIM": "Privileged Identity Management",
+    "M365Audit": "Microsoft 365 Audit",
+    "EndpointIntune": "Microsoft Intune",
+    "GlobalSecureAccess": "Global Secure Access",
+    "DefenderHunting": "Microsoft Defender Hunting",
 }
 FINDING_STATUS_OPTIONS = OrderedDict(
     [
@@ -568,6 +580,7 @@ HTML_TEMPLATE = """
           <button id="returnToDashboard" class="btn btn-secondary">Dashboard</button>
           <button id="findingsView" class="btn btn-secondary">Findings</button>
           <button id="dataViewerIndex" class="btn btn-secondary">Data Viewer</button>
+          <button id="manifestView" class="btn btn-secondary">Manifest</button>
         </div>
         <button id="darkModeToggle" class="btn btn-secondary">Toggle Dark Mode</button>
       </div>
@@ -625,9 +638,74 @@ HTML_TEMPLATE = """
         </section>
         {% endif %}
 
+        {% if graph_collection %}
+        <section class="dashboard-section mt-4" aria-labelledby="graphCollectionHeading">
+          <h3 id="graphCollectionHeading" class="h4">Microsoft Graph Collection</h3>
+          <p class="dashboard-muted">{{ graph_collection.message }}</p>
+          {{ dashboard_card_grid([
+            {"label": "Graph Endpoints Selected", "value": graph_collection.selected_endpoints, "detail": "Logical Microsoft Graph endpoint executions recorded"},
+            {"label": "Graph Endpoints With Data", "value": graph_collection.endpoints_with_data, "detail": "Endpoints that returned one or more records"},
+            {"label": "Graph Records Written", "value": graph_collection.records_written, "detail": "Records retained in Graph dataset files"},
+            {"label": "Graph Collection Outcome", "value": graph_collection.outcome, "detail": graph_collection.dataset_files|string + " Graph dataset files written"}
+          ]) }}
+          {% if graph_collection.status_counts %}<p class="dashboard-muted">
+            Outcomes:
+            {% for status, count in graph_collection.status_counts.items() %}
+            <span class="badge text-bg-secondary me-1">{{ status }}: {{ count }}</span>
+            {% endfor %}
+          </p>{% endif %}
+          {% if graph_collection.endpoints %}
+          <div class="card dashboard-chart-card mt-3">
+            <div class="card-body">
+              <details class="dashboard-request-details">
+                <summary><span class="h5">Graph Endpoint Results</span></summary>
+                <p class="dashboard-muted my-3">A successful endpoint with a positive record count confirms that Graph data was collected. Empty means the request completed but returned no records; incomplete means retained evidence may be partial.</p>
+                <div class="table-responsive">
+                  <table id="graphEndpointResultsTable" class="table table-striped align-middle dashboard-request-table">
+                    <thead>
+                      <tr>
+                        <th>Endpoint</th>
+                        <th>Workload</th>
+                        <th>API Channel</th>
+                        <th>Status</th>
+                        <th>Records</th>
+                        <th>Collected Data</th>
+                        <th>Recorded Detail</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {% for endpoint in graph_collection.endpoints %}
+                      <tr>
+                        <td>{{ endpoint.name }}</td>
+                        <td>{{ endpoint.profile }}</td>
+                        <td>{{ endpoint.api_channel }}</td>
+                        <td>{{ endpoint.status }}</td>
+                        <td>{{ endpoint.record_count if endpoint.record_count is not none else "Unavailable" }}</td>
+                        <td>
+                          {% if endpoint.output_files %}
+                            {% for output in endpoint.output_files %}
+                            <a href="/query/{{ output.filename }}">{{ output.name }}</a>{% if not loop.last %}<br>{% endif %}
+                            {% endfor %}
+                          {% else %}
+                            No dataset file
+                          {% endif %}
+                        </td>
+                        <td><pre class="dashboard-error-message">{{ endpoint.message or "No error or limitation recorded" }}</pre></td>
+                      </tr>
+                      {% endfor %}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </div>
+          </div>
+          {% endif %}
+        </section>
+        {% endif %}
+
         {% if summary_cards.requests %}
         <section class="dashboard-section mt-4" aria-labelledby="requestHealthHeading">
-          <h3 id="requestHealthHeading" class="h4">Azure Request Health</h3>
+          <h3 id="requestHealthHeading" class="h4">Collection Request Health</h3>
           <p class="dashboard-muted">Collection activity is separated into attempted requests, deliberately skipped endpoint definitions and endpoint definitions with no recorded outcome. These populations use a different denominator from assessment checks.</p>
           <h4 class="h5 mt-4">Request Attempt Outcomes</h4>
           <p class="dashboard-muted">Each attempted request has one mutually exclusive outcome. The outcome cards below add up to Total Attempts.</p>
@@ -699,13 +777,13 @@ HTML_TEMPLATE = """
         <div class="card dashboard-chart-card mt-4">
           <div class="card-body">
             <details class="dashboard-request-details">
-            <summary><span class="h5">Unsuccessful Azure Requests</span></summary>
-            <p class="dashboard-muted my-3">One row is shown for each failed, unauthorised or tenant-restricted logical execution in the latest collection manifest. Successful, empty and not-applicable outcomes are excluded.</p>
+            <summary><span class="h5">Unsuccessful Collection Requests</span></summary>
+            <p class="dashboard-muted my-3">One row is shown for each failed, incomplete, unauthorised or tenant-restricted logical execution in the latest collection manifest. Successful, empty and not-applicable outcomes are excluded.</p>
             <div class="table-responsive">
-              <table id="failedAzureRequestsTable" class="table table-striped align-middle dashboard-request-table dashboard-filterable-table">
+              <table id="failedCollectionRequestsTable" class="table table-striped align-middle dashboard-request-table dashboard-filterable-table">
                 <thead>
                   <tr>
-                    {% for heading in ["Endpoint", "Category", "Status", "Azure Error Code", "CLI Return Code", "Parameters", "Returned Error"] %}
+                    {% for heading in ["Endpoint", "Collection Category", "Status", "Service Error Code", "CLI Return Code", "Parameters", "Returned Error"] %}
                     <th aria-sort="none">
                       <div class="dashboard-column-heading">
                         <button type="button" class="dashboard-sort-button" data-column-index="{{ loop.index0 }}" aria-label="Sort by {{ heading }}">{{ heading }}</button>
@@ -749,6 +827,123 @@ HTML_TEMPLATE = """
         {% endif %}
       </div>
 
+      {% elif manifest_page %}
+      <!-- COLLECTION MANIFEST PAGE -->
+      <div class="mt-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+          <div>
+            <h2>Collection Manifest</h2>
+            <p class="dashboard-muted">The manifest is the authoritative record of collection scope, request outcomes, retained datasets and limitations.</p>
+          </div>
+          <div>
+            <label for="manifestVersionSelect" class="form-label">Manifest version</label>
+            <select id="manifestVersionSelect" class="form-select manifest-version-select">
+              {% for version in manifest_versions %}
+              <option value="/manifest?filename={{ version.filename }}" {% if version.filename == manifest_filename %}selected{% endif %}>{{ version.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </div>
+
+        <div class="alert alert-warning" role="alert">
+          Collection manifests can contain tenant identifiers, parameter values and returned error evidence. Protect this local view and retained file as assessment evidence.
+        </div>
+
+        <div class="row g-3 mb-4">
+          {% for label, value, detail in [
+            ("Run Status", manifest.get("status") or "Unknown", "Overall collection outcome"),
+            ("Run ID", manifest.get("run_id") or "Unavailable", "Stable collection execution identifier"),
+            ("Started", manifest.get("started_at") or "Unavailable", "Recorded UTC start"),
+            ("Completed", manifest.get("completed_at") or "Unavailable", "Recorded UTC completion")
+          ] %}
+          <div class="col-12 col-md-6 col-xl-3">
+            <div class="card h-100 bg-transparent dashboard-summary-card">
+              <div class="card-body">
+                <h3 class="h6 text-uppercase dashboard-muted">{{ label }}</h3>
+                <div class="fs-5 fw-bold text-break">{{ value }}</div>
+                <div class="small dashboard-muted">{{ detail }}</div>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+
+        <div class="d-flex gap-2 mb-4">
+          <a class="btn btn-primary" href="/manifest/raw?filename={{ manifest_filename }}" target="_blank" rel="noopener">View Raw Manifest JSON</a>
+        </div>
+
+        <section class="dashboard-section mt-4">
+          <h3 class="h4">Run Context and Options</h3>
+          <div class="row g-3">
+            <div class="col-12 col-xl-6"><pre class="dashboard-error-message">{{ manifest.get("context", {})|tojson(indent=2) }}</pre></div>
+            <div class="col-12 col-xl-6"><pre class="dashboard-error-message">{{ manifest.get("options", {})|tojson(indent=2) }}</pre></div>
+          </div>
+        </section>
+
+        <section class="dashboard-section mt-4">
+          <h3 class="h4">Access Verification</h3>
+          <pre class="dashboard-error-message">{{ manifest.get("access_verification", {})|tojson(indent=2) }}</pre>
+        </section>
+
+        <section class="dashboard-section mt-4">
+          <h3 class="h4">Endpoint Outcomes</h3>
+          <div class="table-responsive">
+            <table class="table table-striped align-middle dashboard-request-table">
+              <thead><tr><th>Endpoint</th><th>Category</th><th>Status</th><th>Records</th><th>Output</th><th>Recorded Detail</th></tr></thead>
+              <tbody>
+                {% for endpoint in manifest_endpoint_rows %}
+                <tr>
+                  <td>{{ endpoint.endpoint_name or "Unknown" }}</td>
+                  <td>{{ endpoint.category_label }}</td>
+                  <td>{{ endpoint.status or "unknown" }}</td>
+                  <td>{{ endpoint.result_count if endpoint.result_count is not none else "Unavailable" }}</td>
+                  <td>
+                    {% for filename in endpoint.get("output_files", []) %}
+                      {% if filename in manifest_dataset_links %}<a href="/query/{{ filename }}">{{ manifest_dataset_links[filename] }}</a>{% else %}{{ filename }}{% endif %}{% if not loop.last %}<br>{% endif %}
+                    {% else %}No dataset file{% endfor %}
+                  </td>
+                  <td><pre class="dashboard-error-message">{{ endpoint.response_error or endpoint.error or "No error or limitation recorded" }}</pre></td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="dashboard-section mt-4">
+          <h3 class="h4">Retained Datasets</h3>
+          <div class="table-responsive">
+            <table class="table table-striped align-middle">
+              <thead><tr><th>Data Source</th><th>Collection Source</th><th>Records</th><th>Size</th><th>SHA-256</th><th>Action</th></tr></thead>
+              <tbody>
+                {% for dataset in manifest_datasets %}
+                <tr>
+                  <td>{{ dataset.name }}</td>
+                  <td>{{ dataset.source }}</td>
+                  <td>{{ dataset.record_count }}</td>
+                  <td>{{ dataset.size_bytes }} bytes</td>
+                  <td><code>{{ dataset.sha256 }}</code></td>
+                  <td>{% if dataset.available %}<a class="btn btn-primary btn-sm" href="/query/{{ dataset.filename }}">View Data</a>{% else %}File unavailable{% endif %}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="dashboard-section mt-4">
+          <h3 class="h4">Limitations and Errors</h3>
+          {% if manifest.get("limitations") %}
+          <h4 class="h5">Limitations</h4>
+          <ul>{% for limitation in manifest.get("limitations", []) %}<li>{{ limitation }}</li>{% endfor %}</ul>
+          {% else %}<p>No limitations were recorded.</p>{% endif %}
+          {% if manifest.get("errors") %}
+          <h4 class="h5">Errors</h4>
+          <pre class="dashboard-error-message">{{ manifest.get("errors", [])|tojson(indent=2) }}</pre>
+          {% else %}<p>No errors were recorded.</p>{% endif %}
+        </section>
+      </div>
+
       {% elif dataset_index %}
       <!-- DATASET INDEX PAGE -->
       <div class="mt-4">
@@ -757,6 +952,8 @@ HTML_TEMPLATE = """
           <thead>
             <tr>
               <th>Data Source</th>
+              <th>Collection Source</th>
+              <th>Workload</th>
               <th>Version</th>
               <th>Record Count</th>
               <th>Actions</th>
@@ -766,6 +963,11 @@ HTML_TEMPLATE = """
             {% for tab in tabs %}
             <tr>
               <td>{{ tab.name }}</td>
+              <td>{{ tab.source }}</td>
+              <td>
+                {{ tab.workload }}
+                {% if tab.api_channel %}<span class="badge text-bg-secondary">{{ tab.api_channel }}</span>{% endif %}
+              </td>
               <td>
                 {% if tab.versions|length > 1 %}
                 <select class="form-select form-select-sm dataset-version-select" data-default-target="/query/{{ tab.filename }}">
@@ -799,7 +1001,7 @@ HTML_TEMPLATE = """
             <select id="dataSourceSelect" class="form-select">
               {% for tab in tabs %}
               <option value="{{ tab.filename }}" {% if current_dataset_filename == tab.filename %}selected{% endif %}>
-                {{ tab.name }}
+                {{ tab.name }} — {{ tab.source }}{% if tab.workload %} / {{ tab.workload }}{% endif %}
               </option>
               {% endfor %}
             </select>
@@ -928,6 +1130,20 @@ HTML_TEMPLATE = """
     <script>
       document.getElementById('findingsView').addEventListener('click', function() {
           window.location.href = "/findings";
+      });
+    </script>
+
+    <script>
+      document.getElementById('manifestView').addEventListener('click', function() {
+          window.location.href = "/manifest";
+      });
+    </script>
+
+    <script>
+      document.querySelectorAll('.manifest-version-select').forEach(function(select) {
+        select.addEventListener('change', function() {
+          window.location.href = this.value;
+        });
       });
     </script>
 
@@ -1701,6 +1917,48 @@ def display_name_for_dataset(filename):
     return normalized_stem.replace("_", " ").strip().title()
 
 
+def dataset_collection_metadata(filename):
+    """Return human-facing collection-plane metadata for a dataset."""
+    dataset_key = dataset_key_for_filename(filename)
+    graph_endpoint = GRAPH_ENDPOINTS_BY_OUTPUT.get(dataset_key)
+    if graph_endpoint is not None:
+        return {
+            "source": "Microsoft Graph",
+            "workload": GRAPH_PROFILE_LABELS.get(
+                graph_endpoint["profile"], graph_endpoint["profile"]
+            ),
+            "api_channel": graph_endpoint["api"],
+        }
+    if dataset_key.startswith(COLLECTION_MANIFEST_PREFIX):
+        return {
+            "source": "Collection metadata",
+            "workload": "Collection manifest",
+            "api_channel": None,
+        }
+    if (
+        dataset_key.startswith("graph_")
+        or "graph.microsoft.com" in dataset_key
+        or dataset_key.startswith("az_rest_--url_graph_")
+        or dataset_key.startswith("az_ad_")
+    ):
+        return {
+            "source": "Microsoft Graph",
+            "workload": "Historical Graph dataset",
+            "api_channel": None,
+        }
+    if dataset_key.startswith("az_"):
+        return {
+            "source": "Azure",
+            "workload": "Azure inventory",
+            "api_channel": None,
+        }
+    return {
+        "source": "Assessment output",
+        "workload": "Derived or supporting data",
+        "api_channel": None,
+    }
+
+
 def dataset_key_for_filename(filename):
     return TIMESTAMP_SUFFIX_PATTERN.sub("", Path(filename).stem)
 
@@ -1754,7 +2012,11 @@ def record_count_for_file(path):
 
 
 def standard_data_files():
-    return [path for path in sorted(DATA_DIR.glob("*.json")) if path.name not in FINDINGS_FILENAMES]
+    return [
+        path for path in sorted(DATA_DIR.glob("*.json"))
+        if path.name not in FINDINGS_FILENAMES
+        and not path.name.startswith(f"{COLLECTION_MANIFEST_PREFIX}_")
+    ]
 
 
 def dataset_groups(load_record_counts=False):
@@ -1772,9 +2034,11 @@ def dataset_groups(load_record_counts=False):
         latest = versions[0]
         latest_record_count = record_count_for_file(sorted_paths[0]) if load_record_counts else None
         latest["record_count"] = latest_record_count
+        collection_metadata = dataset_collection_metadata(latest["filename"])
         grouped_tabs.append({
             "dataset_key": key,
             "name": display_name_for_dataset(latest["filename"]),
+            **collection_metadata,
             "filename": latest["filename"],
             "record_count": latest_record_count if latest_record_count is not None else "Loading...",
             "version_label": latest["label"],
@@ -1808,19 +2072,191 @@ def latest_resource_object_count(tabs):
     )
 
 
-def latest_collection_manifest():
-    """Load the latest collection manifest without inferring request outcomes."""
-    paths = sorted(
-        DATA_DIR.glob(f"{COLLECTION_MANIFEST_PREFIX}_*.json"),
+def collection_manifest_paths():
+    """Return available collection manifests from newest to oldest."""
+    return sorted(
+        (
+            path for path in DATA_DIR.glob(
+                f"{COLLECTION_MANIFEST_PREFIX}_*.json"
+            )
+            if path.is_file() and not path.is_symlink()
+        ),
         key=dataset_sort_key,
         reverse=True,
     )
+
+
+def collection_manifest_versions():
+    return [
+        {
+            "filename": path.name,
+            "label": format_dataset_version_label(path),
+        }
+        for path in collection_manifest_paths()
+    ]
+
+
+def collection_manifest_path(filename=None):
+    paths = collection_manifest_paths()
+    if not paths:
+        return None
+    if filename is None:
+        return paths[0]
+    return next((path for path in paths if path.name == filename), None)
+
+
+def latest_collection_manifest():
+    """Load the latest collection manifest without inferring request outcomes."""
+    paths = collection_manifest_paths()
     if not paths:
         return None
     manifest = load_json_file(paths[0])
     if not isinstance(manifest, dict) or not isinstance(manifest.get("endpoint_runs"), list):
         return None
     return manifest
+
+
+def graph_collection_summary(manifest=None):
+    """Summarise Graph records and outcomes using manifest provenance."""
+    manifest = latest_collection_manifest() if manifest is None else manifest
+    empty_summary = {
+        "selected_endpoints": 0,
+        "endpoints_with_data": 0,
+        "records_written": 0,
+        "dataset_files": 0,
+        "status_counts": {},
+        "endpoints": [],
+    }
+    if not isinstance(manifest, dict):
+        return {
+            **empty_summary,
+            "outcome": "Manifest unavailable",
+            "message": (
+                "No collection manifest is available, so Microsoft Graph "
+                "collection cannot be verified from this assessment output."
+            ),
+        }
+    graph_runs = [
+        item for item in manifest.get("endpoint_runs", [])
+        if isinstance(item, dict)
+        and item.get("category") == "microsoft_graph"
+    ]
+    if not graph_runs:
+        return {
+            **empty_summary,
+            "outcome": "Not recorded",
+            "message": (
+                "The latest manifest contains no Microsoft Graph endpoint "
+                "outcomes. No Graph collection can be confirmed for this run."
+            ),
+        }
+
+    graph_endpoint_ids = {
+        str(item.get("endpoint_id"))
+        for item in graph_runs if item.get("endpoint_id")
+    }
+    graph_datasets = []
+    for dataset in manifest.get("datasets", []):
+        if not isinstance(dataset, dict):
+            continue
+        source_ids = dataset.get("source_endpoint_ids") or [
+            dataset.get("source_endpoint_id")
+        ]
+        if any(str(source_id) in graph_endpoint_ids for source_id in source_ids):
+            graph_datasets.append(dataset)
+
+    status_counts = Counter(str(item.get("status") or "unknown") for item in graph_runs)
+    problem_statuses = {
+        "failed", "incomplete", "unauthorised", "tenant_unavailable",
+        "not_attempted",
+    }
+
+    def record_count(value):
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    records_written = sum(
+        record_count(dataset.get("record_count")) for dataset in graph_datasets
+    )
+    available_dataset_filenames = {
+        path.name for path in standard_data_files()
+    }
+    endpoint_rows = []
+    for item in graph_runs:
+        context = (
+            item.get("parameter_context")
+            if isinstance(item.get("parameter_context"), dict) else {}
+        )
+        endpoint_definition = GRAPH_ENDPOINTS_BY_OUTPUT.get(item.get("endpoint_id"))
+        profile = context.get("profile")
+        api_channel = context.get("api_channel")
+        if endpoint_definition is not None:
+            profile = profile or endpoint_definition.get("profile")
+            api_channel = api_channel or endpoint_definition.get("api")
+        profile = GRAPH_PROFILE_LABELS.get(profile, profile)
+        output_files = [
+            {
+                "filename": filename,
+                "name": display_name_for_dataset(filename),
+            }
+            for filename in item.get("output_files", [])
+            if filename in available_dataset_filenames
+        ]
+        endpoint_rows.append(
+            {
+                "name": item.get("endpoint_name") or "Unknown Graph endpoint",
+                "profile": profile or "Unknown workload",
+                "api_channel": api_channel or "Unknown",
+                "status": item.get("status") or "unknown",
+                "record_count": item.get("result_count"),
+                "output_files": output_files,
+                "message": (
+                    item.get("response_error")
+                    or item.get("error")
+                    or ""
+                ),
+            }
+        )
+    endpoint_rows.sort(key=lambda item: (str(item["profile"]), str(item["name"])))
+    has_problem = any(
+        str(item.get("status") or "unknown") in problem_statuses
+        or (
+            item.get("status") == "skipped"
+            and item.get("reason_code") not in {
+                "upstream_source_returned_no_data",
+                "no_applicable_source_records",
+            }
+        )
+        for item in graph_runs
+    )
+    if has_problem:
+        outcome = (
+            "Partial — data retained"
+            if records_written else "Partial — no data retained"
+        )
+    else:
+        outcome = (
+            "Complete — data collected"
+            if records_written else "Complete — no records returned"
+        )
+    return {
+        "selected_endpoints": len(graph_runs),
+        "endpoints_with_data": sum(
+            1 for item in graph_runs if record_count(item.get("result_count")) > 0
+        ),
+        "records_written": records_written,
+        "dataset_files": len(graph_datasets),
+        "outcome": outcome,
+        "status_counts": dict(sorted(status_counts.items())),
+        "endpoints": endpoint_rows,
+        "message": (
+            "These figures come from the latest collection manifest and show "
+            "whether Microsoft Graph returned assessment data. Friendly "
+            "workload and endpoint names are used throughout."
+        ),
+    }
 
 
 def endpoint_omission_reason(request_record):
@@ -1844,6 +2280,11 @@ def endpoint_omission_reason(request_record):
     )
 
 
+def collection_category_label(value):
+    category = str(value or "Unknown")
+    return "Microsoft Graph" if category == "microsoft_graph" else category
+
+
 def grouped_endpoint_omissions(records):
     """Group omitted endpoint definitions by their structured operational reason."""
     groups = {}
@@ -1863,7 +2304,7 @@ def grouped_endpoint_omissions(records):
         )
         group["count"] += 1
         endpoint_name = str(record.get("endpoint_name") or "Unknown")
-        category = str(record.get("category") or "Unknown")
+        category = collection_category_label(record.get("category"))
         group["endpoints"].append(f"{endpoint_name} ({category})")
         detail = str(record.get("error") or "No reason was recorded")
         reason_details = record.get("reason_details")
@@ -1880,9 +2321,9 @@ def grouped_endpoint_omissions(records):
     )
 
 
-def collection_request_summary():
+def collection_request_summary(manifest=None):
     """Summarise mutually exclusive request and non-attempt outcomes."""
-    manifest = latest_collection_manifest()
+    manifest = latest_collection_manifest() if manifest is None else manifest
     if manifest is None:
         return None
     status_counts = Counter()
@@ -1926,12 +2367,16 @@ def collection_request_summary():
             empty_visibility_counts[verification_status] += 1
         if status in {"skipped", "not_attempted"}:
             omissions.append(request_record)
-        if status not in {"failed", "unauthorised", "tenant_unavailable"}:
+        if status not in {
+            "failed", "incomplete", "unauthorised", "tenant_unavailable",
+        }:
             continue
         failures.append(
             {
                 "endpoint_name": request_record.get("endpoint_name") or "Unknown",
-                "category": request_record.get("category") or "Unknown",
+                "category": collection_category_label(
+                    request_record.get("category")
+                ),
                 "status": status,
                 "error_code": (
                     request_record.get("error_code")
@@ -1962,6 +2407,7 @@ def collection_request_summary():
         for status in (
             "success",
             "empty",
+            "incomplete",
             "failed",
             "unauthorised",
             "tenant_unavailable",
@@ -1978,6 +2424,7 @@ def collection_request_summary():
             "visibility_unverified"
         ],
         "failed": status_counts["failed"],
+        "incomplete": status_counts["incomplete"],
         "unauthorised": status_counts["unauthorised"],
         "tenant_unavailable": status_counts["tenant_unavailable"],
         "not_applicable": status_counts["not_applicable"],
@@ -2054,7 +2501,7 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
             "detail": object_detail,
             "count_filenames": object_count_filenames,
         },
-        {"label": "Dataset Families", "value": len(tabs), "detail": "Distinct types of collected Azure data"},
+        {"label": "Dataset Families", "value": len(tabs), "detail": "Distinct types of collected assessment data"},
         {
             "label": "Dataset Snapshots",
             "value": total_versions,
@@ -2118,6 +2565,11 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
                     "detail": "Empty responses where complete visibility could not be demonstrated",
                 },
                 {
+                    "label": "Incomplete",
+                    "value": collection_requests["incomplete"],
+                    "detail": "Requests retained partial data but did not complete",
+                },
+                {
                     "label": "Failed",
                     "value": collection_requests["failed"],
                     "detail": "Requests returned a non-authorisation error",
@@ -2135,7 +2587,7 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
                 {
                     "label": "Not Applicable",
                     "value": collection_requests["not_applicable"],
-                    "detail": "Azure reported that the requested service or scope was not applicable",
+                    "detail": "The service reported that the requested workload or scope was not applicable",
                 },
             ],
             "skipped": [
@@ -3004,7 +3456,9 @@ def dashboard():
         return "<p>Data directory not found. Please create a 'data' folder with JSON files.</p>"
     tabs = dataset_groups()
     findings = findings_summary()
-    collection_requests = collection_request_summary()
+    manifest = latest_collection_manifest()
+    collection_requests = collection_request_summary(manifest)
+    graph_collection = graph_collection_summary(manifest)
     findings_chart_data = None
     if findings is not None:
         findings_chart_data = [
@@ -3033,8 +3487,101 @@ def dashboard():
         dashboard=True,
         findings_chart_data=findings_chart_data,
         collection_requests=collection_requests,
+        graph_collection=graph_collection,
         dataset_index=False,
     )
+
+
+def manifest_dataset_rows(manifest):
+    """Prepare retained manifest datasets for human-facing presentation."""
+    available_filenames = {path.name for path in standard_data_files()}
+    rows = []
+    for dataset in manifest.get("datasets", []):
+        if not isinstance(dataset, dict) or not dataset.get("filename"):
+            continue
+        filename = str(dataset["filename"])
+        metadata = dataset_collection_metadata(filename)
+        rows.append(
+            {
+                **dataset,
+                **metadata,
+                "name": display_name_for_dataset(filename),
+                "available": filename in available_filenames,
+            }
+        )
+    return rows
+
+
+def manifest_endpoint_rows(manifest):
+    """Prepare well-formed endpoint rows without changing retained evidence."""
+    return [
+        {
+            **endpoint,
+            "category_label": collection_category_label(endpoint.get("category")),
+        }
+        for endpoint in manifest.get("endpoint_runs", [])
+        if isinstance(endpoint, dict)
+    ]
+
+
+@app.route('/manifest')
+def manifest_view():
+    if not DATA_DIR.exists():
+        return "<p>Data directory not found.</p>", 404
+    requested_filename = request.args.get("filename")
+    path = collection_manifest_path(requested_filename)
+    if path is None:
+        message = (
+            "The requested collection manifest was not found."
+            if requested_filename else "No collection manifest was found."
+        )
+        return f"<p>{message}</p>", 404
+    manifest = load_json_file(path)
+    if not isinstance(manifest, dict):
+        return "<p>The collection manifest could not be loaded.</p>", 500
+    dataset_rows = manifest_dataset_rows(manifest)
+    dataset_links = {
+        item["filename"]: item["name"]
+        for item in dataset_rows if item["available"]
+    }
+    response = app.make_response(
+        render_template_string(
+            HTML_TEMPLATE,
+            tabs=dataset_groups(),
+            summary_cards=None,
+            dashboard=False,
+            findings_chart_data=None,
+            dataset_index=False,
+            manifest_page=True,
+            manifest=manifest,
+            manifest_filename=path.name,
+            manifest_versions=collection_manifest_versions(),
+            manifest_endpoint_rows=manifest_endpoint_rows(manifest),
+            manifest_datasets=dataset_rows,
+            manifest_dataset_links=dataset_links,
+        )
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@app.route('/manifest/raw')
+def raw_manifest():
+    requested_filename = request.args.get("filename")
+    path = collection_manifest_path(requested_filename)
+    if path is None:
+        return jsonify({"error": "Collection manifest not found"}), 404
+    manifest = load_json_file(path)
+    if not isinstance(manifest, dict):
+        return jsonify({"error": "Collection manifest could not be loaded"}), 500
+    response = Response(
+        json.dumps(manifest, indent=2) + "\n",
+        content_type="application/json; charset=utf-8",
+    )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @app.route('/datasets')
