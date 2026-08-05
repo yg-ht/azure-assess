@@ -815,21 +815,28 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             {
                 "status": "found",
                 "definition": {"category": "Identity"},
-                "reporting": {"provenance": {"required_endpoints": [
-                    {"endpoint_id": "endpoint-a", "category": "base"},
-                ]}},
+                "reporting": {"provenance": {
+                    "collection_run": {"run_id": "run-one"},
+                    "required_endpoints": [
+                        {"endpoint_id": "endpoint-a", "category": "base"},
+                    ],
+                }},
             },
             {
                 "status": "not_found",
                 "definition": {"category": "Identity"},
-                "reporting": {"provenance": {"required_endpoints": [
-                    {"endpoint_id": "endpoint-a", "category": "base"},
-                    {"endpoint_id": "endpoint-b", "category": "microsoft_graph"},
-                ]}},
+                "reporting": {"provenance": {
+                    "collection_run": {"run_id": "run-one"},
+                    "required_endpoints": [
+                        {"endpoint_id": "endpoint-a", "category": "base"},
+                        {"endpoint_id": "endpoint-b", "category": "microsoft_graph"},
+                    ],
+                }},
             },
         ]
         manifest = {
             "schema_version": "2.5",
+            "run_id": "run-one",
             "endpoint_runs": [
                 {
                     "endpoint_id": "endpoint-a",
@@ -2358,6 +2365,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                 {
                     "status": "no_data_to_assess",
                     "reporting": {"provenance": {
+                        "collection_run": {"run_id": "run-one"},
                         "insufficient_data": {"cause": "unauthorised_source"},
                         "required_endpoints": [{
                             "endpoint_id": "graph_identity_baseline_report_settings",
@@ -2388,7 +2396,13 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
                 },
             ]
         }
+        for row in findings_rows["rows"]:
+            provenance = row.setdefault("reporting", {}).setdefault(
+                "provenance", {}
+            )
+            provenance["collection_run"] = {"run_id": "run-one"}
         manifest = {
+            "run_id": "run-one",
             "endpoint_runs": [
                 {
                     "endpoint_name": "Storage Account Keys",
@@ -2513,7 +2527,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
             with mock.patch.object(azure_present, "DATA_DIR", data_dir):
-                summary = azure_present.findings_summary()
+                summary = azure_present.findings_summary(manifest)
                 requests = azure_present.collection_request_summary()
                 cards = azure_present.build_dashboard_summary_cards(
                     [],

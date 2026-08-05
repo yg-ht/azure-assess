@@ -27,7 +27,11 @@ RETEST_OUTCOMES = {
     "inconclusive",
 }
 NON_DETECTED_STATUSES = {"not_found"}
-INCOMPLETE_STATUSES = {"no_data_to_assess", "not_implemented"}
+INCOMPLETE_STATUSES = {
+    "manual_assessment_required",
+    "no_data_to_assess",
+    "not_implemented",
+}
 EXPOSURE_ATTRIBUTE_NAMES = {
     "access_actions",
     "destination_addresses",
@@ -489,6 +493,7 @@ def load_baseline_findings(path: Path) -> Dict[str, Dict[str, Any]]:
             raise ValueError(f"Duplicate baseline finding ID: {finding_id}")
         if row.get("status") not in {
             "found",
+            "manual_assessment_required",
             "not_found",
             "no_data_to_assess",
             "not_implemented",
@@ -544,6 +549,7 @@ def apply_findings_triage(
             raise ValueError(f"Baseline finding ID does not match its key: {finding_id}")
         if baseline.get("status") not in {
             "found",
+            "manual_assessment_required",
             "not_found",
             "no_data_to_assess",
             "not_implemented",
@@ -719,6 +725,7 @@ def validate_finding_triage(finding: Mapping[str, Any]) -> None:
             raise ValueError("Finding triage unperformed retest metadata is inconsistent")
     elif retest.get("baseline_status") not in {
         "found",
+        "manual_assessment_required",
         "not_found",
         "no_data_to_assess",
         "not_implemented",

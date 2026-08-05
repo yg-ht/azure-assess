@@ -60,6 +60,11 @@ from azure_assess.findings_review import (
     validate_finding_review,
 )
 from azure_assess.graph_endpoints import GRAPH_ENDPOINTS
+from azure_assess.endpoint_assessment import (
+    MANUAL,
+    SUPPORTING,
+    endpoint_assessment_role,
+)
 
 app = Flask(__name__)
 DATA_DIR = Path("azure-collect")
@@ -95,6 +100,7 @@ FINDING_STATUS_OPTIONS = OrderedDict(
         ("found", {"label": "Found Items", "statuses": {"found"}}),
         ("not_found", {"label": "Not Found Items", "statuses": {"not_found"}}),
         ("no_data_to_assess", {"label": "No Data To Assess", "statuses": {"no_data_to_assess"}}),
+        ("manual_assessment_required", {"label": "Manual Assessment Required", "statuses": {"manual_assessment_required"}}),
         ("not_implemented", {"label": "Not Implemented", "statuses": {"not_implemented"}}),
         ("all", {"label": "All Findings", "statuses": None}),
     ]
@@ -138,6 +144,7 @@ FINDING_CHART_OUTCOMES = OrderedDict(
     [
         ("findings_raised", ("Findings Raised", "#dc3545")),
         ("checks_passed", ("Checks Passed", "#198754")),
+        ("manual_assessment_required", ("Manual Assessment Required", "#446df6")),
         ("missing_source", ("Missing Source", "#adb5bd")),
         ("empty_upstream_source", ("Empty Upstream Source", "#0dcaf0")),
         ("scope_restricted", ("Scope Restricted", "#8a6d3b")),
@@ -750,7 +757,10 @@ HTML_TEMPLATE = """
         {% if summary_cards.findings %}
         <section class="dashboard-section" aria-labelledby="findingOutcomesHeading">
           <h3 id="findingOutcomesHeading" class="h4">Finding Outcomes</h3>
-          <p class="dashboard-muted">One mutually exclusive outcome for every assessment check.</p>
+          <p class="dashboard-muted">One mutually exclusive outcome for every automated check or manual assessment item.</p>
+          {% if findings.collection_alignment.warning %}
+          <div class="alert alert-warning" role="alert">{{ findings.collection_alignment.warning }}</div>
+          {% endif %}
           {{ dashboard_card_grid(summary_cards.findings, "col-12 col-md-6 dashboard-five-column") }}
         {% if findings_chart_data %}
         <div class="row g-3 mt-1">
@@ -2420,6 +2430,109 @@ def latest_collection_manifest():
     return manifest
 
 
+def finding_collection_run_ids(rows):
+    """Return collection run IDs retained by flat finding provenance."""
+    return sorted({
+        str(run_id)
+        for row in rows
+        if isinstance(row, dict)
+        for run_id in [
+            (
+                ((row.get("reporting") or {}).get("provenance") or {})
+                .get("collection_run") or {}
+            ).get("run_id")
+        ]
+        if run_id
+    })
+
+
+def manifest_for_finding_rows(
+    rows,
+    preferred_manifest=None,
+):
+    """Use only a manifest belonging to the collection represented by findings."""
+    finding_run_ids = finding_collection_run_ids(rows)
+    rows_without_run_id = sum(
+        1
+        for row in rows
+        if not isinstance(row, dict)
+        or not isinstance(
+            ((row.get("reporting") or {}).get("provenance") or {}).get(
+                "collection_run"
+            ),
+            dict,
+        )
+        or not (
+            ((row.get("reporting") or {}).get("provenance") or {})
+            .get("collection_run", {})
+            .get("run_id")
+        )
+    )
+    preferred_run_id = (
+        preferred_manifest.get("run_id")
+        if isinstance(preferred_manifest, dict)
+        else None
+    )
+    if not rows and isinstance(preferred_manifest, dict):
+        return preferred_manifest, {
+            "status": "no_findings",
+            "warning": None,
+            "finding_run_ids": [],
+            "manifest_run_id": preferred_run_id,
+        }
+    if rows_without_run_id:
+        return {}, {
+            "status": "unverifiable",
+            "warning": (
+                "One or more finding rows have no collection run ID. Endpoint-to-finding "
+                "flows are withheld; regenerate findings from the collected data."
+            ),
+            "finding_run_ids": [],
+            "manifest_run_id": preferred_run_id,
+        }
+    if len(finding_run_ids) != 1:
+        return {}, {
+            "status": "inconsistent",
+            "warning": (
+                "Finding rows refer to multiple collection runs. Endpoint-to-finding "
+                "flows are withheld; regenerate one coherent findings output."
+            ),
+            "finding_run_ids": finding_run_ids,
+            "manifest_run_id": preferred_run_id,
+        }
+
+    finding_run_id = finding_run_ids[0]
+    if preferred_run_id == finding_run_id:
+        return preferred_manifest, {
+            "status": "matched",
+            "warning": None,
+            "finding_run_ids": finding_run_ids,
+            "manifest_run_id": preferred_run_id,
+        }
+    for path in collection_manifest_paths():
+        candidate = load_json_file(path)
+        if isinstance(candidate, dict) and candidate.get("run_id") == finding_run_id:
+            return candidate, {
+                "status": "matched_historical",
+                "warning": (
+                    "The findings belong to an earlier collection run. The "
+                    "endpoint-to-finding flow uses its matching manifest; regenerate "
+                    "findings to assess the latest collection shown elsewhere."
+                ),
+                "finding_run_ids": finding_run_ids,
+                "manifest_run_id": finding_run_id,
+            }
+    return {}, {
+        "status": "manifest_missing",
+        "warning": (
+            "No collection manifest matches the findings run. Endpoint-to-finding "
+            "flows are withheld; regenerate findings from the current collection."
+        ),
+        "finding_run_ids": finding_run_ids,
+        "manifest_run_id": preferred_run_id,
+    }
+
+
 def graph_collection_summary(manifest=None):
     """Summarise Graph records and outcomes using manifest provenance."""
     manifest = latest_collection_manifest() if manifest is None else manifest
@@ -2902,6 +3015,8 @@ def finding_check_classification(row, status, outcome_key):
         check_status = "No Data to Assess"
     elif status == "not_implemented":
         check_status = "Not Implemented"
+    elif status == "manual_assessment_required":
+        check_status = "Awaiting Analyst Assessment"
     else:
         check_status = "Unknown Check Status"
 
@@ -2941,13 +3056,19 @@ def findings_summary(manifest=None):
         "not_found": 0,
         "no_data_to_assess": 0,
         "not_implemented": 0,
+        "manual_assessment_required": 0,
         "insufficient_data_causes": Counter(),
         "chart_segments": Counter(),
         "sankey_paths": Counter(),
         "sankey_node_counts": Counter(),
         "sankey_relationship_count": 0,
     }
-    manifest = latest_collection_manifest() if manifest is None else manifest
+    preferred_manifest = latest_collection_manifest() if manifest is None else manifest
+    manifest, collection_alignment = manifest_for_finding_rows(
+        rows,
+        preferred_manifest,
+    )
+    counts["collection_alignment"] = collection_alignment
     schema_version = manifest.get("schema_version") if isinstance(manifest, dict) else None
     endpoint_runs = []
     endpoint_runs_by_id = {}
@@ -3004,6 +3125,8 @@ def findings_summary(manifest=None):
             outcome_key = "findings_raised"
         elif status == "not_found":
             outcome_key = "checks_passed"
+        elif status == "manual_assessment_required":
+            outcome_key = "manual_assessment_required"
         if status == "no_data_to_assess" and isinstance(row, dict):
             insufficient_data = provenance.get("insufficient_data")
             cause = (
@@ -3018,15 +3141,26 @@ def findings_summary(manifest=None):
 
         segment_label, segment_color = FINDING_CHART_OUTCOMES[outcome_key]
         counts["chart_segments"][(outcome_key, segment_label, segment_color)] += 1
-        check_group, check_status, finding_result = finding_check_classification(
-            row,
-            status,
-            outcome_key,
-        )
-        result_color = FINDING_RESULT_OPTIONS[finding_result]
-        counts["sankey_node_counts"][(2, check_group, "finding checks")] += 1
-        counts["sankey_node_counts"][(3, check_status, "finding checks")] += 1
-        counts["sankey_node_counts"][(4, finding_result, "finding checks")] += 1
+        manual_assessment = status == "manual_assessment_required"
+        if manual_assessment:
+            check_group = "Awaiting Analyst Assessment"
+            check_status = finding_result = None
+            result_color = "#446df6"
+            counts["sankey_node_counts"][(
+                2,
+                check_group,
+                "manual assessment items",
+            )] += 1
+        else:
+            check_group, check_status, finding_result = finding_check_classification(
+                row,
+                status,
+                outcome_key,
+            )
+            result_color = FINDING_RESULT_OPTIONS[finding_result]
+            counts["sankey_node_counts"][(2, check_group, "finding checks")] += 1
+            counts["sankey_node_counts"][(3, check_status, "finding checks")] += 1
+            counts["sankey_node_counts"][(4, finding_result, "finding checks")] += 1
 
         insufficient_data = provenance.get("insufficient_data")
         root_cause_ids = (
@@ -3099,11 +3233,15 @@ def findings_summary(manifest=None):
 
         for family, endpoint_status in relationships:
             path = (
-                family,
-                endpoint_status,
-                check_group,
-                check_status,
-                finding_result,
+                (family, endpoint_status, check_group)
+                if manual_assessment
+                else (
+                    family,
+                    endpoint_status,
+                    check_group,
+                    check_status,
+                    finding_result,
+                )
             )
             counts["sankey_paths"][(path, result_color)] += 1
             counts["sankey_relationship_count"] += 1
@@ -3111,16 +3249,26 @@ def findings_summary(manifest=None):
     for execution in endpoint_runs:
         if execution["run_index"] in linked_run_indexes:
             continue
+        assessment_role = endpoint_assessment_role(execution["endpoint_id"])
+        if assessment_role == SUPPORTING:
+            terminal = "Supporting Endpoint Execution — Not Assessed"
+            unit = "supporting endpoint executions"
+        elif assessment_role == MANUAL:
+            terminal = "Awaiting Analyst Assessment"
+            unit = "endpoint executions requiring manual assessment"
+        else:
+            terminal = "No Linked Finding Check"
+            unit = "endpoint executions"
         path = (
             execution["family"],
             execution["outcome_label"],
-            "No Linked Finding Check",
+            terminal,
         )
         counts["sankey_paths"][(path, "#adb5bd")] += 1
         counts["sankey_node_counts"][(
             2,
-            "No Linked Finding Check",
-            "endpoint executions",
+            terminal,
+            unit,
         )] += 1
     return counts
 
@@ -3158,10 +3306,11 @@ def build_dashboard_summary_cards(tabs, findings=None, collection_requests=None)
     finding_cards = []
     if findings is not None:
         finding_cards.extend([
-            {"label": "Checks Assessed", "value": findings["executed"], "detail": "Total assessment checks with a recorded outcome"},
+            {"label": "Finding and Review Items", "value": findings["executed"], "detail": "Automated checks and manual assessment items with a recorded outcome"},
             {"label": "Findings Raised", "value": findings["found"], "detail": "Checks that identified an issue"},
             {"label": "Checks Passed", "value": findings["not_found"], "detail": "Checks that did not identify an issue"},
             {"label": "Checks Without Sufficient Data", "value": findings["no_data_to_assess"], "detail": "Checks that could not assess the required evidence"},
+            {"label": "Manual Assessment Required", "value": findings["manual_assessment_required"], "detail": "Collected context that requires tenant-aware analyst judgement"},
             {"label": "Checks Not Implemented", "value": findings["not_implemented"], "detail": "Defined checks without an implemented assessment"},
         ])
 

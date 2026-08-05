@@ -13,6 +13,15 @@ from azure_assess.endpoint_requirements import (
     source_options_for_type,
     source_type_for_options,
 )
+from azure_assess.endpoint_assessment import (
+    AUTOMATED,
+    MANUAL,
+    SUPPORTING,
+    MANUAL_ASSESSMENT_ENDPOINTS,
+    SUPPORTING_ONLY_ENDPOINTS,
+    endpoint_assessment_role,
+    manual_endpoint_groups,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +36,134 @@ def load_script(module_name, filename):
 
 azure_collect = load_script("azure_collect_endpoint_audit", "azure-collect.py")
 azure_findings = load_script("azure_findings_endpoint_audit", "azure-findings.py")
+
+
+class ManualEndpointAssessmentTests(unittest.TestCase):
+    def test_parameterised_executions_become_one_manual_item(self):
+        manifest = {
+            "endpoint_runs": [
+                {
+                    "endpoint_id": "az_monitor_metrics_list-namespaces_--resource_id",
+                    "endpoint_name": "Azure Metrics Namespaces",
+                    "category": "parameterised",
+                    "status": "success",
+                    "result_count": 2,
+                    "parameter_context": {"resource_id": f"secret-{index}"},
+                    "output_files": [f"metrics-{index}.json"],
+                }
+                for index in range(349)
+            ]
+        }
+
+        groups = manual_endpoint_groups(manifest)
+
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["execution_count"], 349)
+        self.assertEqual(groups[0]["record_count"], 698)
+        self.assertTrue(groups[0]["usable_evidence"])
+        self.assertNotIn("parameter_context", groups[0])
+        self.assertNotIn("secret-", repr(groups[0]))
+
+    def test_supporting_endpoint_does_not_create_a_manual_item(self):
+        groups = manual_endpoint_groups({
+            "endpoint_runs": [{
+                "endpoint_id": "az_vm_list",
+                "category": "base",
+                "status": "success",
+                "result_count": 10,
+            }],
+        })
+
+        self.assertEqual(groups, [])
+
+    def test_manual_finding_requires_usable_evidence(self):
+        endpoint_id = "graph_identity_baseline_domains"
+        manifest = {
+            "endpoint_runs": [{
+                "endpoint_id": endpoint_id,
+                "endpoint_name": "Graph Domains",
+                "category": "microsoft_graph",
+                "status": "unauthorised",
+                "result_count": 0,
+            }],
+        }
+        findings, _sources = azure_findings.evaluate_manual_endpoint_findings({
+            "azure-collection-manifest.json": {
+                "data": manifest,
+                "path": Path("azure-collection-manifest.json"),
+            },
+        })
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["status"], "no_data_to_assess")
+        self.assertEqual(findings[0]["_endpoint_source_type"], GRAPH)
+
+    def test_retained_manual_evidence_creates_one_review_item(self):
+        filename = "graph_identity_baseline_domains_run-one.json"
+        manifest = {
+            "endpoint_runs": [{
+                "endpoint_id": "graph_identity_baseline_domains",
+                "endpoint_name": "Graph Domains",
+                "category": "microsoft_graph",
+                "status": "success",
+                "result_count": 3,
+                "output_files": [filename],
+            }],
+        }
+        findings, _sources = azure_findings.evaluate_manual_endpoint_findings({
+            "azure-collection-manifest.json": {
+                "data": manifest,
+                "path": Path("azure-collection-manifest.json"),
+            },
+            filename: {
+                "data": [{"id": "one"}],
+                "path": Path(filename),
+            },
+        })
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(
+            findings[0]["status"], "manual_assessment_required"
+        )
+        self.assertEqual(findings[0]["evidence"][0]["recordCount"], 3)
+
+    def test_manual_items_are_excluded_from_sarif(self):
+        sarif = azure_findings.sarif_output(
+            "/tmp/input",
+            {},
+            [{"status": "manual_assessment_required"}],
+        )
+
+        self.assertEqual(sarif["runs"][0]["results"], [])
+        self.assertEqual(sarif["runs"][0]["tool"]["driver"]["rules"], [])
+
+    def test_function_app_auth_uses_its_own_collector_output(self):
+        catalog = {
+            "az_functionapp_auth_show.json": {
+                "data": [{
+                    "enabled": False,
+                    "_collectionContext": {
+                        "parameters": {
+                            "name": "function-one",
+                            "resourceGroup": "rg-one",
+                        },
+                    },
+                }],
+                "path": Path("az_functionapp_auth_show.json"),
+            },
+        }
+
+        finding = next(
+            item for item in azure_findings.evaluate_findings(catalog)
+            if item["title"]
+            == "Azure Function Apps do not have authentication configured"
+        )
+
+        self.assertEqual(finding["status"], "found")
+        self.assertEqual(
+            finding["references"]["required_endpoint_patterns"],
+            [["az_functionapp_auth_show"]],
+        )
 
 
 class EndpointRequirementModelTests(unittest.TestCase):
@@ -247,7 +384,7 @@ class FindingEndpointCoverageTests(unittest.TestCase):
 
         self.assertEqual(
             source_types,
-            Counter({BASE: 213, GRAPH: 17, BASE_AND_GRAPH: 3}),
+            Counter({BASE: 214, GRAPH: 17, BASE_AND_GRAPH: 3}),
         )
 
     def test_graph_and_cross_plane_examples_are_classified_correctly(self):
@@ -268,3 +405,63 @@ class FindingEndpointCoverageTests(unittest.TestCase):
             ["references"]["endpoint_source_type"],
             GRAPH,
         )
+
+    def test_every_registered_endpoint_has_exactly_one_assessment_role(self):
+        current_ids = set(self.current_endpoints)
+
+        self.assertFalse(
+            MANUAL_ASSESSMENT_ENDPOINTS & SUPPORTING_ONLY_ENDPOINTS
+        )
+        self.assertEqual(
+            MANUAL_ASSESSMENT_ENDPOINTS | SUPPORTING_ONLY_ENDPOINTS,
+            {
+                endpoint_id
+                for endpoint_id in current_ids
+                if endpoint_assessment_role(endpoint_id) != AUTOMATED
+            },
+        )
+        self.assertTrue(MANUAL_ASSESSMENT_ENDPOINTS <= current_ids)
+        self.assertTrue(SUPPORTING_ONLY_ENDPOINTS <= current_ids)
+        self.assertEqual(
+            {
+                endpoint_assessment_role(endpoint_id)
+                for endpoint_id in current_ids
+            },
+            {AUTOMATED, SUPPORTING, MANUAL},
+        )
+
+    def test_every_automated_endpoint_is_referenced_by_a_current_check(self):
+        # The two fan-out/conditional checks need representative parents in
+        # order to appear in evaluate_findings' endpoint declarations.
+        catalog = {
+            "graph_probe.json": {
+                "data": [],
+                "path": Path("graph_probe.json"),
+            },
+            "graph_endpoint_intune_settings_catalog.json": {
+                "data": [{"id": "policy-one"}],
+                "path": Path("graph_endpoint_intune_settings_catalog.json"),
+            },
+            "graph_endpoint_intune_settings_catalog_settings.json": {
+                "data": [{"parentId": "policy-one"}],
+                "path": Path(
+                    "graph_endpoint_intune_settings_catalog_settings.json"
+                ),
+            },
+            "az_functionapp_auth_show.json": {
+                "data": [],
+                "path": Path("az_functionapp_auth_show.json"),
+            },
+        }
+        matched = set()
+        for finding in azure_findings.evaluate_findings(catalog):
+            matched.update(self.current_matches(finding["references"]))
+
+        missing = {
+            endpoint_id
+            for endpoint_id in self.current_endpoints
+            if endpoint_assessment_role(endpoint_id) == AUTOMATED
+            and endpoint_id not in matched
+        }
+
+        self.assertEqual(missing, set())

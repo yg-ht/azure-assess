@@ -20,6 +20,7 @@ from azure_assess.findings_definitions import (
     EXISTING_FINDING_HEADLINES,
     REQUESTED_HEADLINES,
     finding_definition,
+    slug_finding_id,
     validate_finding_definitions,
 )
 from azure_assess.findings_shared import (
@@ -51,6 +52,7 @@ from azure_assess.findings_correlation import (
     merge_correlation_results,
 )
 from azure_assess.endpoint_requirements import (
+    BASE,
     GRAPH,
     alternative_source_options,
     required_source_options,
@@ -59,6 +61,8 @@ from azure_assess.endpoint_requirements import (
     source_options_for_type,
     source_type_for_options,
 )
+from azure_assess.endpoint_assessment import manual_endpoint_groups
+from azure_assess.finding_inventory import manifest as collection_manifest_payload
 from azure_assess.findings_governance import (
     analyse_advisor_defender,
     analyse_critical_resource_locks,
@@ -998,10 +1002,78 @@ def annotate_requested_headlines(findings):
 def annotate_finding_definitions(findings):
     """Attach canonical identity and status-independent report metadata."""
     for finding in findings:
-        definition = finding_definition(finding["title"], finding["severity"])
+        definition = finding_definition(
+            finding["title"],
+            finding["severity"],
+            finding_id=finding.get("_finding_id"),
+        )
         finding["finding_id"] = definition["finding_id"]
         finding["definition"] = definition
     return validate_finding_definitions(findings)
+
+
+def evaluate_manual_endpoint_findings(catalog):
+    """Create one analyst-review item per collected context-only endpoint."""
+    collection_manifest = collection_manifest_payload(catalog)
+    paths_by_filename = {
+        Path(str(item.get("path"))).name: str(item.get("path"))
+        for item in catalog.values()
+        if isinstance(item, dict) and item.get("path")
+    }
+    findings = []
+    sources = {}
+    for group in manual_endpoint_groups(collection_manifest):
+        endpoint_id = group["endpoint_id"]
+        endpoint_name = group["endpoint_name"]
+        title = f"Manual assessment required: {endpoint_name}"
+        source_type = (
+            GRAPH
+            if "microsoft_graph" in group["categories"]
+            else BASE
+        )
+        source_files = SourceReferences(
+            [
+                paths_by_filename[filename]
+                for filename in group["source_files"]
+                if filename in paths_by_filename
+            ],
+            required_endpoint_ids=(endpoint_id,),
+            endpoint_source_type=source_type,
+        )
+        evidence = []
+        status = "no_data_to_assess"
+        reason = (
+            "The context-only endpoint did not return usable evidence for "
+            "manual assessment."
+        )
+        if group["usable_evidence"]:
+            status = "manual_assessment_required"
+            reason = group["reason"]
+            evidence = [{
+                "name": endpoint_name,
+                "endpointId": endpoint_id,
+                "collectionTypes": group["categories"],
+                "executionCount": group["execution_count"],
+                "recordCount": group["record_count"],
+                "executionStatuses": group["statuses"],
+                "sourceFiles": group["source_files"],
+            }]
+        finding = {
+            "title": title,
+            "severity": "Informational",
+            "status": status,
+            "reason": reason,
+            "evidence_count": len(evidence),
+            "evidence": evidence,
+            "_finding_id": slug_finding_id(
+                f"manual_assessment_required_{endpoint_id}"
+            ),
+            "_required_endpoint_ids": [endpoint_id],
+            "_endpoint_source_type": source_type,
+        }
+        findings.append(finding)
+        sources[title] = source_files
+    return findings, sources
 
 
 def correlation_finding(title, severity, reason, correlation):
@@ -1078,7 +1150,7 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     web_app_appsettings = dataset_records(catalog, "az_webapp_config_appsettings_list")
     function_apps = dataset_records(catalog, "az_functionapp_list")
     function_app_configs = dataset_records(catalog, "az_functionapp_config_show")
-    function_app_auth_settings = dataset_records(catalog, "az_webapp_auth_show", "az_functionapp_list")
+    function_app_auth_settings = dataset_records(catalog, "az_functionapp_auth_show")
     function_app_appsettings = dataset_records(catalog, "az_functionapp_config_appsettings_list")
     function_app_keys = dataset_records(catalog, "az_functionapp_keys_list")
     function_app_access_restrictions = dataset_records(catalog, "az_functionapp_config_access-restriction_show")
@@ -1185,7 +1257,7 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "web_app_appsettings": dataset_references(catalog, "az_webapp_config_appsettings_list"),
         "function_apps": dataset_references(catalog, "az_functionapp_list"),
         "function_app_configs": dataset_references(catalog, "az_functionapp_config_show"),
-        "function_app_auth_settings": dataset_references(catalog, "az_webapp_auth_show"),
+        "function_app_auth_settings": dataset_references(catalog, "az_functionapp_auth_show"),
         "function_app_appsettings": dataset_references(catalog, "az_functionapp_config_appsettings_list"),
         "function_app_keys": dataset_references(catalog, "az_functionapp_keys_list"),
         "function_app_access_restrictions": dataset_references(catalog, "az_functionapp_config_access-restriction_show"),
@@ -1729,6 +1801,15 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
             "Azure App Services do not have authentication configured",
             "Low",
             "No Web App auth settings dataset was found.",
+        )
+    )
+    findings.append(
+        find_functionapp_auth_not_configured(function_app_auth_settings)
+        if function_app_auth_settings
+        else unsupported(
+            "Azure Function Apps do not have authentication configured",
+            "Low",
+            "No Function App auth settings dataset was found.",
         )
     )
     findings.append(
@@ -3539,6 +3620,7 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "Azure App Services do not disable FTP deployment": source_map["web_apps"],
         "Azure App Services are not registered with a managed identity": source_map["web_apps"],
         "Azure App Services do not have authentication configured": source_map["web_app_auth_settings"],
+        "Azure Function Apps do not have authentication configured": source_map["function_app_auth_settings"],
         "Azure App Services are missing Application Insights configuration": source_map["web_apps"] + source_map["web_app_appsettings"],
         "Function Apps are missing Application Insights configuration": source_map["function_apps"] + source_map["function_app_appsettings"],
         "Function Apps do not have access keys configured": source_map["function_apps"] + source_map["function_app_keys"],
@@ -3713,6 +3795,10 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
     graph_findings, graph_sources = evaluate_graph_findings(catalog, result, unsupported)
     findings.extend(graph_findings)
     reference_sources.update(graph_sources)
+
+    manual_findings, manual_sources = evaluate_manual_endpoint_findings(catalog)
+    findings.extend(manual_findings)
+    reference_sources.update(manual_sources)
 
     # The current collector obtains both application and service-principal
     # inventories from Graph. Historical az ad datasets remain readable, but

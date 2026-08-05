@@ -180,6 +180,21 @@ def normalise_finding_coverage(
         )
         validate_finding_coverage(finding)
         return finding
+    if status == "manual_assessment_required":
+        coverage = unavailable_coverage(
+            "unavailable",
+            [
+                "The collected evidence requires analyst judgement, so no "
+                "automated assessment denominator is claimed"
+            ],
+        )
+        coverage["affected"]["observations"] = int(
+            finding.get("evidence_count") or 0
+        )
+        coverage["affected"]["assets"] = len(affected_asset_ids(finding))
+        finding["coverage"] = coverage
+        validate_finding_coverage(finding)
+        return finding
 
     source_files = list(
         ordered_source_files

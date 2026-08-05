@@ -47,6 +47,7 @@ def finding_default_disposition(finding: Mapping[str, Any]) -> str:
         "not_found": "not_detected",
         "no_data_to_assess": "inconclusive",
         "not_implemented": "not_implemented",
+        "manual_assessment_required": "inconclusive",
     }.get(finding.get("status"), "inconclusive")
 
 

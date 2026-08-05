@@ -1563,6 +1563,26 @@ def find_appservice_auth_not_configured(web_app_auth_settings):
         evidence,
     )
 
+
+def find_functionapp_auth_not_configured(function_app_auth_settings):
+    evidence = []
+    for auth in function_app_auth_settings:
+        enabled = first_value(auth, "enabled", ("properties", "enabled"))
+        if enabled is not True:
+            params = collection_parameters(auth)
+            evidence.append({
+                "functionApp": params.get("name"),
+                "resourceGroup": params.get("resourceGroup"),
+                "enabled": enabled,
+            })
+    return result(
+        "Azure Function Apps do not have authentication configured",
+        "Low",
+        "Uses Function App auth settings to flag apps where built-in "
+        "authentication is disabled or unset.",
+        evidence,
+    )
+
 def find_webapp_missing_app_insights(web_apps, web_app_appsettings):
     settings_by_app = {}
     for setting in web_app_appsettings:

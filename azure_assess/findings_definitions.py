@@ -24,6 +24,7 @@ REQUESTED_HEADLINES = [
     "app_ensure_using_http20",
     "app_ftp_deployment_disabled",
     "app_function_access_keys_configured",
+    "app_function_auth_is_set_up",
     "app_function_application_insights_enabled",
     "app_function_ftps_deployment_disabled",
     "app_function_identity_is_configured",
@@ -339,6 +340,9 @@ EXISTING_FINDING_HEADLINES = {
     ],
     "Azure App Services do not have authentication configured": [
         "app_ensure_auth_is_set_up",
+    ],
+    "Azure Function Apps do not have authentication configured": [
+        "app_function_auth_is_set_up",
     ],
     "Azure App Services are missing Application Insights configuration": [
         "appinsights_ensure_is_configured",
@@ -1053,9 +1057,9 @@ def finding_category(finding_id):
     return "Azure configuration"
 
 
-def finding_definition(title, severity):
+def finding_definition(title, severity, finding_id=None):
     """Build status-independent report metadata for one finding definition."""
-    finding_id = canonical_finding_id(title)
+    finding_id = finding_id or canonical_finding_id(title)
     guidance = GUIDANCE_BY_TITLE.get(title)
     check_ids = list(dict.fromkeys(EXISTING_FINDING_HEADLINES.get(title, [])))
     if guidance:
