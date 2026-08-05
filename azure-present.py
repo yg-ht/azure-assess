@@ -3153,12 +3153,21 @@ def findings_summary(manifest=None):
         counts["chart_segments"][(outcome_key, segment_label, segment_color)] += 1
         manual_assessment = status == "manual_assessment_required"
         if manual_assessment:
-            check_group = "Awaiting Analyst Assessment"
-            check_status = finding_result = None
+            check_group, check_status, _finding_result = finding_check_classification(
+                row,
+                status,
+                outcome_key,
+            )
+            finding_result = None
             result_color = "#446df6"
             counts["sankey_node_counts"][(
                 2,
                 check_group,
+                "finding checks",
+            )] += 1
+            counts["sankey_node_counts"][(
+                3,
+                check_status,
                 "manual assessment items",
             )] += 1
         else:
@@ -3243,7 +3252,7 @@ def findings_summary(manifest=None):
 
         for family, endpoint_status in relationships:
             path = (
-                (family, endpoint_status, check_group)
+                (family, endpoint_status, check_group, check_status)
                 if manual_assessment
                 else (
                     family,
@@ -3264,8 +3273,8 @@ def findings_summary(manifest=None):
             terminal = "Supporting Endpoint Execution — Not Assessed"
             unit = "supporting endpoint executions"
         elif assessment_role == MANUAL:
-            terminal = "Awaiting Analyst Assessment"
-            unit = "endpoint executions requiring manual assessment"
+            terminal = "No Linked Finding Check"
+            unit = "manual endpoint executions without a review item"
         elif assessment_role == CONTEXT:
             terminal = "Context or Inventory — No Assessment"
             unit = "context-only endpoint executions"

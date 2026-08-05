@@ -36,10 +36,11 @@ class EndpointAssessmentDashboardTests(unittest.TestCase):
         ):
             return azure_present.findings_summary(manifest)
 
-    def test_manual_item_terminates_at_awaiting_analyst_assessment(self):
+    def test_manual_item_places_awaiting_analyst_under_check_status(self):
         endpoint_id = "az_policy_definition_list_--filter_policytype_eq_custom"
         rows = [{
             "status": "manual_assessment_required",
+            "definition": {"category": "Governance"},
             "reporting": {"provenance": {
                 "collection_run": {"run_id": "run-one"},
                 "required_endpoints": [{
@@ -61,10 +62,53 @@ class EndpointAssessmentDashboardTests(unittest.TestCase):
         self.assertEqual(paths, {(
             "Base Endpoints",
             "Returned Data",
+            "Governance Finding Checks",
             "Awaiting Analyst Assessment",
         )})
         self.assertEqual(summary["manual_assessment_required"], 1)
-        self.assertTrue(all(len(path) == 3 for path in paths))
+        self.assertTrue(all(len(path) == 4 for path in paths))
+        self.assertEqual(
+            summary["sankey_node_counts"][(
+                2,
+                "Governance Finding Checks",
+                "finding checks",
+            )],
+            1,
+        )
+        self.assertEqual(
+            summary["sankey_node_counts"][(
+                3,
+                "Awaiting Analyst Assessment",
+                "manual assessment items",
+            )],
+            1,
+        )
+        self.assertNotIn(
+            (4, "Could Not Assess", "finding checks"),
+            summary["sankey_node_counts"],
+        )
+
+    def test_unlinked_manual_execution_is_not_awaiting_analyst_assessment(self):
+        manifest = {"endpoint_runs": [{
+            "endpoint_id": "az_policy_definition_list_--filter_policytype_eq_custom",
+            "category": "parameterised",
+            "status": "empty",
+            "result_count": 0,
+            "access_verification": {"status": "access_verified"},
+        }]}
+
+        summary = self.summary([], manifest)
+
+        paths = {path for path, _colour in summary["sankey_paths"]}
+        self.assertEqual(paths, {(
+            "Base Endpoints",
+            "No Data — Access Verified",
+            "No Linked Finding Check",
+        )})
+        self.assertNotIn(
+            "Awaiting Analyst Assessment",
+            {node for path in paths for node in path},
+        )
 
     def test_supporting_execution_is_not_a_manual_finding(self):
         manifest = {"endpoint_runs": [{
