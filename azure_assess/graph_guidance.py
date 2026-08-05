@@ -67,6 +67,16 @@ GRAPH_GUIDANCE_BASELINE = {
             ],
         ),
         _requirement(
+            "guest_mfa_capability",
+            "https://learn.microsoft.com/entra/external-id/b2b-tutorial-require-mfa",
+            "Active guest users are protected by multifactor authentication appropriate to the tenant's external-access design.",
+            "Complete Microsoft Entra user and authentication-method registration inventories are available; Conditional Access and cross-tenant MFA trust require separate review.",
+            "Review every enabled guest without positive locally reported MFA capability and confirm effective Conditional Access or trusted home-tenant MFA protection.",
+            ["Active guest users without reported MFA capability"],
+            capability_field="isMfaCapable",
+            applicable_account_state="enabled",
+        ),
+        _requirement(
             "entitlement_management",
             "https://learn.microsoft.com/entra/id-governance/entitlement-management-access-package-lifecycle-policy",
             "Access-package assignments expire or are reviewed according to policy.",

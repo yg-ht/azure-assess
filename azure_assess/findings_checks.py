@@ -38,6 +38,7 @@ from azure_assess.findings_shared import (
     parse_iso_datetime,
     ports_match,
     record_key,
+    registration_detail_maps,
     registration_has_mfa,
     resource_brief,
     result,
@@ -2234,19 +2235,32 @@ def find_unattached_disks_not_cmk(managed_disks):
         evidence,
     )
 
-def find_guest_users_present(ad_users, registration_details):
-    registrations = {}
-    for item in registration_details:
-        registrations[normalize_text(item.get("userPrincipalName"))] = item
+def find_guest_users_present(
+    ad_users,
+    registration_details,
+    registration_inventory_complete=True,
+):
+    """Find enabled guests without positive locally reported MFA capability."""
+    registrations_by_id, registrations_by_upn = registration_detail_maps(
+        registration_details
+    )
 
     evidence = []
     for user in ad_users:
         if normalize_text(user.get("userType")) != "guest":
             continue
+        if user.get("accountEnabled") is not True:
+            continue
+        user_id = normalize_text(user.get("id"))
         upn = normalize_text(user.get("userPrincipalName"))
-        registration = registrations.get(upn, {})
+        registration = (
+            registrations_by_id.get(user_id)
+            or registrations_by_upn.get(upn)
+        )
+        if registration is None and not registration_inventory_complete:
+            continue
         is_mfa_capable = first_value(registration, "isMfaCapable", ("isMfaCapable",))
-        if registration and is_mfa_capable is True:
+        if is_mfa_capable is True:
             continue
         evidence.append(
             {
@@ -2256,12 +2270,18 @@ def find_guest_users_present(ad_users, registration_details):
                 "userType": user.get("userType"),
                 "accountEnabled": user.get("accountEnabled"),
                 "isMfaCapable": is_mfa_capable,
+                "registrationRecordFound": registration is not None,
+                "evidenceBasis": (
+                    "isMfaCapable_false"
+                    if is_mfa_capable is False
+                    else "no_matching_registration_record"
+                ),
             }
         )
     return result(
-        "Unauthenticated Guest Users Present in Azure AD",
+        "Active guest users without reported MFA capability",
         "Medium",
-        "Flags guest users lacking positive MFA capability evidence in the collected Microsoft Graph registration details.",
+        "Flags enabled guest users lacking positive local MFA-capability evidence in the collected Microsoft Graph registration details. This does not establish whether Conditional Access or trusted home-tenant MFA protects the guest.",
         evidence,
     )
 

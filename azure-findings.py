@@ -118,6 +118,17 @@ OFFLINE_CORRELATION_DATASETS = (
         expand_value=True,
     ),
     DatasetSpec(
+        "users",
+        ("graph_identity_baseline_users", "az_ad_user_list"),
+        ("graph_identity_baseline_users", "az_ad_user_list"),
+    ),
+    DatasetSpec(
+        "user_registration_details",
+        ("graph_identity_baseline_user_registration_details",),
+        ("graph_identity_baseline_user_registration_details",),
+        expand_value=True,
+    ),
+    DatasetSpec(
         "applications",
         ("graph_identity_baseline_applications", "az_ad_app_list"),
         ("graph_identity_baseline_applications", "az_ad_app_list"),
@@ -1408,15 +1419,28 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
             "Role definitions and enriched role assignments are required.",
         )
     )
-    findings.append(
-        find_guest_users_present(ad_users, graph_user_registration_details)
-        if ad_users
-        else unsupported(
-            "Unauthenticated Guest Users Present in Azure AD",
-            "Medium",
-            "Azure AD user inventory is required.",
-        )
+    guest_registration_input = offline_inputs.get("user_registration_details")
+    guest_mfa_finding = find_guest_users_present(
+        ad_users,
+        graph_user_registration_details,
+        registration_inventory_complete=(
+            guest_registration_input.supports_negative_conclusion()
+        ),
     )
+    if (
+        guest_mfa_finding["status"] != "found"
+        and offline_inputs.conclusion_support(("users", "user_registration_details"))
+        != "positive_and_negative"
+    ):
+        guest_mfa_finding = unsupported(
+            "Active guest users without reported MFA capability",
+            "Medium",
+            "Complete Microsoft Entra user and Graph registration-detail datasets are required.",
+        )
+    # Current collection obtains both required inputs from Graph. Historical
+    # Azure CLI user datasets remain readable compatibility inputs.
+    guest_mfa_finding["_endpoint_source_type"] = GRAPH
+    findings.append(guest_mfa_finding)
     findings.append(
         find_storage_keys_not_rotated(
             storage_accounts,
@@ -3740,7 +3764,9 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
         "Unattached managed disks are not encrypted with customer-managed keys": source_map["managed_disks"],
         "Linux virtual machines allow password-based SSH authentication": source_map["vm_details"],
         "Virtual machine scale sets are not associated with a load balancer": source_map["vm_scale_sets"],
-        "Unauthenticated Guest Users Present in Azure AD": source_map["ad_users"] + source_map["graph_user_registration_details"],
+        "Active guest users without reported MFA capability": offline_sources(
+            "users", "user_registration_details"
+        ),
         "App Service Running Outdated .NET Version": source_map["web_app_configs"],
         "App Service Running Outdated Java Version": source_map["web_app_configs"],
         "App Service Running Outdated PHP Version": source_map["web_app_configs"],
