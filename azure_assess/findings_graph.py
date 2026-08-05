@@ -374,6 +374,30 @@ def evaluate_graph_findings(catalog, result, unsupported):
         [record for record in pim_azure["records"] if _no_expiration(record)],
         "Active Azure-resource schedules explicitly configured without expiration were observed.")
 
+    pim_directory_eligible = _inventory(catalog, "pim_directory_eligible")
+    add("Permanent eligible privileged directory assignments", "High",
+        [pim_directory_eligible], [
+            record for record in pim_directory_eligible["records"]
+            if _no_expiration(record)
+        ], "Eligible directory-role schedules explicitly configured without expiration were observed.")
+
+    pim_group_eligible = _inventory(catalog, "pim_group_eligible")
+    add("Permanent eligible privileged group assignments", "High",
+        [pim_group_eligible], [
+            record for record in pim_group_eligible["records"]
+            if _no_expiration(record)
+        ], "Eligible privileged-group schedules explicitly configured without expiration were observed.")
+
+    pim_azure_eligible = _inventory(
+        catalog, "arm_pim_azure_resource_eligibility_schedules",
+        prefix="arm_pim_azure_resource_eligibility_schedules",
+    )
+    add("Permanent eligible privileged Azure-resource assignments", "High",
+        [pim_azure_eligible], [
+            record for record in pim_azure_eligible["records"]
+            if _no_expiration(record)
+        ], "Eligible Azure-resource schedules explicitly configured without expiration were observed.")
+
     alerts = _inventory(catalog, "pim_alerts")
     add("Active privileged identity management alerts", "High", [alerts], [
         record for record in alerts["records"]
@@ -383,6 +407,13 @@ def evaluate_graph_findings(catalog, result, unsupported):
             and int(record.get("incidentCount") or 0) > 0
         )
     ], "Active PIM alerts or alerts with incidents were directly observed.")
+
+    alert_configurations = _inventory(catalog, "pim_alert_configurations")
+    add("PIM alert configurations are disabled", "High", [alert_configurations], [
+        record for record in alert_configurations["records"]
+        if _truth(record, "isEnabled", "enabled") is False
+        or _state(record, "status", "state") == "disabled"
+    ], "PIM alert configurations explicitly set to disabled were directly observed.")
 
     sharepoint = _inventory(catalog, "settings_sharepoint")
     apps_settings = _inventory(catalog, "settings_apps_services")
@@ -626,13 +657,30 @@ def evaluate_graph_findings(catalog, result, unsupported):
 
     pim_directory_requests = _inventory(catalog, "pim_directory_requests")
     pim_group_requests = _inventory(catalog, "pim_group_requests")
+    pim_directory_eligibility_requests = _inventory(
+        catalog, "pim_directory_eligibility_requests"
+    )
+    pim_group_eligibility_requests = _inventory(
+        catalog, "pim_group_eligibility_requests"
+    )
     pim_azure_requests = _inventory(
         catalog, "arm_pim_azure_resource_assignment_requests",
         prefix="arm_pim_azure_resource_assignment_requests",
     )
+    pim_azure_eligibility_requests = _inventory(
+        catalog, "arm_pim_azure_resource_eligibility_requests",
+        prefix="arm_pim_azure_resource_eligibility_requests",
+    )
     permanent_requests = [
         record
-        for item in (pim_directory_requests, pim_group_requests, pim_azure_requests)
+        for item in (
+            pim_directory_requests,
+            pim_group_requests,
+            pim_azure_requests,
+            pim_directory_eligibility_requests,
+            pim_group_eligibility_requests,
+            pim_azure_eligibility_requests,
+        )
         for record in item["records"]
         if _no_expiration(record)
         and _state(record, "status", "properties.status") not in {
@@ -640,7 +688,14 @@ def evaluate_graph_findings(catalog, result, unsupported):
         }
     ]
     add("Privileged activation or assignment requests seek permanent access", "High",
-        [pim_directory_requests, pim_group_requests, pim_azure_requests],
+        [
+            pim_directory_requests,
+            pim_group_requests,
+            pim_azure_requests,
+            pim_directory_eligibility_requests,
+            pim_group_eligibility_requests,
+            pim_azure_eligibility_requests,
+        ],
         permanent_requests,
         "Non-rejected privileged requests explicitly seeking no-expiration access were observed.")
 

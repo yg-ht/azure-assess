@@ -8,7 +8,7 @@ def _requirement(identifier, source_url, expected_state, eligibility, threshold,
     return {
         "id": identifier,
         "source_url": source_url,
-        "retrieved": "2026-08-04",
+        "retrieved": "2026-08-05",
         "expected_state": expected_state,
         "eligibility": eligibility,
         "threshold": threshold,
@@ -19,7 +19,7 @@ def _requirement(identifier, source_url, expected_state, eligibility, threshold,
 
 GRAPH_GUIDANCE_BASELINE = {
     "schema_version": "1.0",
-    "baseline_version": "2026-08-04",
+    "baseline_version": "2026-08-05",
     "publisher": "Microsoft",
     "requirements": [
         _requirement(
@@ -76,16 +76,28 @@ GRAPH_GUIDANCE_BASELINE = {
         ),
         _requirement(
             "pim_eligible_assignments",
-            "https://learn.microsoft.com/entra/id-governance/privileged-identity-management/pim-configure",
+            "https://learn.microsoft.com/entra/id-governance/privileged-identity-management/pim-deployment-plan",
             "Privileged access uses eligible, time-bound activation where supported.",
-            "The applicable active PIM schedule inventory is licensed and complete.",
-            "No active schedule explicitly has no expiration.",
+            "The applicable active or eligible PIM schedule inventory is licensed and complete.",
+            "No active or eligible schedule explicitly has no expiration, except separately controlled emergency access.",
             [
                 "Permanent privileged directory assignments",
                 "Permanent privileged group assignments",
                 "Permanent privileged Azure-resource assignments",
+                "Permanent eligible privileged directory assignments",
+                "Permanent eligible privileged group assignments",
+                "Permanent eligible privileged Azure-resource assignments",
+                "Privileged activation or assignment requests seek permanent access",
                 "Active privileged identity management alerts",
             ],
+        ),
+        _requirement(
+            "pim_alert_configuration",
+            "https://learn.microsoft.com/entra/architecture/security-operations-privileged-identity-management",
+            "PIM alerts remain enabled so suspicious or unsafe privileged activity is visible.",
+            "The PIM alert-configuration inventory is licensed and complete.",
+            "No PIM alert configuration is explicitly disabled.",
+            ["PIM alert configurations are disabled"],
         ),
         _requirement(
             "sharepoint_sharing",

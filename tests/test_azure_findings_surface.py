@@ -141,6 +141,57 @@ class CollectionSurfaceFindingTests(unittest.TestCase):
         ):
             self.assertEqual("finding", by_title[title]["status"])
 
+    def test_function_app_wildcard_cors_is_reported(self):
+        cors_output = (
+            "az_functionapp_cors_show_--name_name_"
+            "--resource-group_resourcegroup"
+        )
+        data = catalogue({
+            f"{cors_output}_20260804.json": [
+                {"name": "unsafe", "allowedOrigins": ["*"]},
+                {"name": "scoped", "allowedOrigins": ["https://example.test"]},
+            ],
+        }, **{cors_output: "success"})
+
+        findings, _ = evaluate_collection_surface_findings(
+            data, result, unsupported
+        )
+        finding = next(
+            item for item in findings
+            if item["title"] == "Function Apps allow every cross-origin caller"
+        )
+
+        self.assertEqual("finding", finding["status"])
+        self.assertEqual(["unsafe"], [item["name"] for item in finding["evidence"]])
+
+    def test_batch_and_data_factory_public_or_local_access_is_reported(self):
+        data = catalogue({
+            "az_batch_account_list_20260804.json": [{
+                "name": "batch",
+                "publicNetworkAccess": "Enabled",
+                "allowedAuthenticationModes": ["AAD", "SharedKey"],
+            }],
+            "az_datafactory_list_20260804.json": [{
+                "name": "factory",
+                "publicNetworkAccess": "Enabled",
+            }],
+        }, **{
+            "az_batch_account_list": "success",
+            "az_datafactory_list": "success",
+        })
+
+        findings, _ = evaluate_collection_surface_findings(
+            data, result, unsupported
+        )
+        by_title = {item["title"]: item for item in findings}
+
+        for title in (
+            "Batch accounts permit public network access",
+            "Batch accounts permit local shared-key authentication",
+            "Data Factory instances permit public network access",
+        ):
+            self.assertEqual("finding", by_title[title]["status"])
+
     def test_service_and_custom_role_findings(self):
         apim_output = "az_apim_show_--name_name_--resource-group_resourcegroup"
         data = catalogue({

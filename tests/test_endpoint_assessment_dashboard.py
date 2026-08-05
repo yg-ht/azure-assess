@@ -37,7 +37,7 @@ class EndpointAssessmentDashboardTests(unittest.TestCase):
             return azure_present.findings_summary(manifest)
 
     def test_manual_item_terminates_at_awaiting_analyst_assessment(self):
-        endpoint_id = "az_monitor_metrics_list-namespaces_--resource_id"
+        endpoint_id = "az_policy_definition_list_--filter_policytype_eq_custom"
         rows = [{
             "status": "manual_assessment_required",
             "reporting": {"provenance": {
@@ -81,6 +81,24 @@ class EndpointAssessmentDashboardTests(unittest.TestCase):
             "Base Endpoints",
             "Returned Data",
             "Supporting Endpoint Execution — Not Assessed",
+        )})
+        self.assertEqual(summary["manual_assessment_required"], 0)
+
+    def test_context_execution_is_accounted_for_without_creating_review_work(self):
+        manifest = {"endpoint_runs": [{
+            "endpoint_id": "az_monitor_metrics_list-namespaces_--resource_id",
+            "category": "parameterised",
+            "status": "success",
+            "result_count": 20,
+        }]}
+
+        summary = self.summary([], manifest)
+
+        paths = {path for path, _colour in summary["sankey_paths"]}
+        self.assertEqual(paths, {(
+            "Base Endpoints",
+            "Returned Data",
+            "Context or Inventory — No Assessment",
         )})
         self.assertEqual(summary["manual_assessment_required"], 0)
 

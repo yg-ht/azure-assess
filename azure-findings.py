@@ -764,6 +764,8 @@ def flat_rows(findings):
             ),
             "finding_id": finding["finding_id"],
         }
+        if isinstance(finding.get("manual_assessment"), dict):
+            row["manual_assessment"] = finding["manual_assessment"]
         rows.append(row)
     return rows
 
@@ -1094,6 +1096,7 @@ def evaluate_manual_endpoint_findings(catalog):
                 "recordCount": retained_record_count,
                 "executionStatuses": group["statuses"],
                 "sourceFiles": [Path(path).name for path in retained_sources],
+                "reviewDefinition": group["review_definition"],
             }]
         finding = {
             "title": title,
@@ -1107,6 +1110,7 @@ def evaluate_manual_endpoint_findings(catalog):
             ),
             "_required_endpoint_ids": [endpoint_id],
             "_endpoint_source_type": source_type,
+            "manual_assessment": group["review_definition"],
         }
         findings.append(finding)
         sources[title] = source_files

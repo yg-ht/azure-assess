@@ -261,6 +261,65 @@ def evaluate_collection_surface_findings(catalog, result, unsupported):
         if _truth(record, "disableLocalAuth", "properties.disableLocalAuth") is False
     ], "App Configuration stores explicitly retaining local access-key authentication were observed.")
 
+    function_cors = inv(
+        "az_functionapp_cors_show_--name_name_--resource-group_resourcegroup"
+    )
+    wildcard_function_cors = []
+    for record in function_cors["records"]:
+        origins = _value(
+            record,
+            "allowedOrigins",
+            "cors.allowedOrigins",
+            "properties.cors.allowedOrigins",
+        )
+        if isinstance(origins, list) and any(
+            str(origin).strip() == "*" for origin in origins
+        ):
+            wildcard_function_cors.append(record)
+    add("Function Apps allow every cross-origin caller", "High",
+        [function_cors], wildcard_function_cors,
+        "A Function App CORS configuration explicitly allowed the wildcard origin.")
+
+    batch_accounts = inv("az_batch_account_list")
+    add("Batch accounts permit public network access", "Medium",
+        [batch_accounts], [
+            record for record in batch_accounts["records"]
+            if _state(
+                record,
+                "publicNetworkAccess",
+                "properties.publicNetworkAccess",
+                "networkProfile.publicNetworkAccess",
+            ) == "enabled"
+        ], "Batch accounts explicitly permitting public network access were observed.")
+    local_batch_auth = []
+    for record in batch_accounts["records"]:
+        modes = _value(
+            record,
+            "allowedAuthenticationModes",
+            "properties.allowedAuthenticationModes",
+        )
+        shared_key = isinstance(modes, list) and any(
+            str(mode).strip().casefold() == "sharedkey" for mode in modes
+        )
+        if shared_key or _truth(
+            record, "disableLocalAuth", "properties.disableLocalAuth"
+        ) is False:
+            local_batch_auth.append(record)
+    add("Batch accounts permit local shared-key authentication", "High",
+        [batch_accounts], local_batch_auth,
+        "Batch accounts explicitly allowing shared-key authentication were observed.")
+
+    data_factories = inv("az_datafactory_list")
+    add("Data Factory instances permit public network access", "Medium",
+        [data_factories], [
+            record for record in data_factories["records"]
+            if _state(
+                record,
+                "publicNetworkAccess",
+                "properties.publicNetworkAccess",
+            ) == "enabled"
+        ], "Data Factory instances explicitly permitting public network access were observed.")
+
     log_analytics = inv("az_monitor_log-analytics_workspace_list")
     add("Log Analytics workspaces permit public query or ingestion", "Medium", [log_analytics], [
         record for record in log_analytics["records"]
