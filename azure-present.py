@@ -498,6 +498,12 @@ HTML_TEMPLATE = """
         width: 100%;
         height: 320px;
       }
+      .dashboard-sankey-wrap {
+        min-height: 420px;
+      }
+      .dashboard-sankey-canvas {
+        height: 420px;
+      }
       .chart-legend {
         display: flex;
         flex-wrap: wrap;
@@ -640,14 +646,29 @@ HTML_TEMPLATE = """
           <p class="dashboard-muted">One mutually exclusive outcome for every assessment check.</p>
           {{ dashboard_card_grid(summary_cards.findings) }}
         {% if findings_chart_data %}
-        <div class="card dashboard-chart-card">
-          <div class="card-body">
-            <h4 class="h5">Finding Outcome Distribution</h4>
-            <p class="dashboard-muted mb-3">Percentages use the total number of assessed checks as their denominator. Checks with insufficient data are split by one primary cause derived from their required endpoint outcomes.</p>
-            <div class="dashboard-chart-wrap">
-              <canvas id="findingsPieChart" class="dashboard-chart-canvas"></canvas>
+        <div class="row g-3 mt-1">
+          <div class="col-12 col-xl-6">
+            <div class="card dashboard-chart-card h-100">
+              <div class="card-body">
+                <h4 class="h5">Finding Outcome Distribution</h4>
+                <p class="dashboard-muted mb-3">Every check is counted once. Insufficient-data outcomes identify their originating endpoint type, including Microsoft Graph permission failures.</p>
+                <div class="dashboard-chart-wrap">
+                  <canvas id="findingsPieChart" class="dashboard-chart-canvas" role="img" aria-label="Pie chart of finding outcomes including endpoint source types"></canvas>
+                </div>
+                <div id="findingsPieLegend" class="chart-legend"></div>
+              </div>
             </div>
-            <div id="findingsPieLegend" class="chart-legend"></div>
+          </div>
+          <div class="col-12 col-xl-6">
+            <div class="card dashboard-chart-card h-100">
+              <div class="card-body">
+                <h4 class="h5">Endpoint Type to Finding Outcome Flow</h4>
+                <p class="dashboard-muted mb-3">Assessment checks flow from their attributed endpoint type to the same mutually exclusive outcomes shown in the pie.</p>
+                <div class="dashboard-chart-wrap dashboard-sankey-wrap">
+                  <canvas id="findingsSankeyChart" class="dashboard-chart-canvas dashboard-sankey-canvas" role="img" aria-label="Sankey chart from endpoint source types to finding outcomes"></canvas>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         {% endif %}
@@ -723,18 +744,6 @@ HTML_TEMPLATE = """
         <section class="dashboard-section mt-4" aria-labelledby="requestHealthHeading">
           <h3 id="requestHealthHeading" class="h4">Collection Request Health</h3>
           <p class="dashboard-muted">Collection activity is separated into attempted requests, deliberately skipped endpoint definitions and endpoint definitions with no recorded outcome. These populations use a different denominator from assessment checks.</p>
-        {% if request_chart_data %}
-        <div class="card dashboard-chart-card mt-4">
-          <div class="card-body">
-            <h4 class="h5">Collection Endpoint Outcome Distribution</h4>
-            <p class="dashboard-muted mb-3">Every remote endpoint execution recorded in the latest manifest is counted once, including Microsoft Graph, base and parameterised collection. Local setup operations are excluded.</p>
-            <div class="dashboard-chart-wrap">
-              <canvas id="requestsPieChart" class="dashboard-chart-canvas"></canvas>
-            </div>
-            <div id="requestsPieLegend" class="chart-legend"></div>
-          </div>
-        </div>
-        {% endif %}
         {% if collection_requests.category_outcome_rows %}
         <div class="card dashboard-chart-card mt-4">
           <div class="card-body">
@@ -1281,7 +1290,7 @@ HTML_TEMPLATE = """
     </script>
     {% endif %}
 
-    {% if dashboard and (findings_chart_data or request_chart_data) %}
+    {% if dashboard and findings_chart_data %}
     <script>
       (function() {
         function renderDashboardPie(canvasId, legendId, chartData) {
@@ -1353,12 +1362,158 @@ HTML_TEMPLATE = """
           window.addEventListener('azure-theme-change', drawPieChart);
         }
 
-        {% if findings_chart_data %}
+        function renderDashboardSankey(canvasId, links) {
+          const canvas = document.getElementById(canvasId);
+          if (!canvas) return;
+          const activeLinks = links.filter(function(link) { return link.value > 0; });
+          if (activeLinks.length === 0) return;
+
+          function drawSankeyChart() {
+            const ratio = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            const width = Math.max(rect.width, 480);
+            const targetCount = new Set(activeLinks.map(function(link) {
+              return link.target;
+            })).size;
+            const height = Math.max(rect.height, 420, targetCount * 44);
+            canvas.style.height = height + 'px';
+            canvas.width = width * ratio;
+            canvas.height = height * ratio;
+
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+            ctx.clearRect(0, 0, width, height);
+
+            const sources = [];
+            const targets = [];
+            const sourceTotals = new Map();
+            const targetTotals = new Map();
+            activeLinks.forEach(function(link) {
+              if (!sourceTotals.has(link.source)) sources.push(link.source);
+              if (!targetTotals.has(link.target)) targets.push(link.target);
+              sourceTotals.set(link.source, (sourceTotals.get(link.source) || 0) + link.value);
+              targetTotals.set(link.target, (targetTotals.get(link.target) || 0) + link.value);
+            });
+
+            const total = Array.from(sourceTotals.values()).reduce(function(sum, value) {
+              return sum + value;
+            }, 0);
+            const marginY = 18;
+            const gap = 10;
+            const largestGapTotal = Math.max(sources.length - 1, targets.length - 1) * gap;
+            const scale = Math.max(0.25, (height - (marginY * 2) - largestGapTotal) / total);
+            const sourceX = Math.min(145, width * 0.3);
+            const targetX = Math.max(width - 165, width * 0.68);
+            const nodeWidth = 14;
+
+            function layoutNodes(names, totals) {
+              const nodes = new Map();
+              const usedHeight = names.reduce(function(sum, name) {
+                return sum + totals.get(name) * scale;
+              }, 0) + Math.max(0, names.length - 1) * gap;
+              let y = Math.max(marginY, (height - usedHeight) / 2);
+              names.forEach(function(name) {
+                const nodeHeight = totals.get(name) * scale;
+                nodes.set(name, {y: y, height: nodeHeight, offset: 0});
+                y += nodeHeight + gap;
+              });
+              return nodes;
+            }
+
+            const sourceNodes = layoutNodes(sources, sourceTotals);
+            const targetNodes = layoutNodes(targets, targetTotals);
+            activeLinks.forEach(function(link) {
+              const source = sourceNodes.get(link.source);
+              const target = targetNodes.get(link.target);
+              const linkHeight = link.value * scale;
+              const sourceTop = source.y + source.offset;
+              const targetTop = target.y + target.offset;
+              const controlX = (sourceX + targetX) / 2;
+
+              ctx.save();
+              ctx.globalAlpha = 0.34;
+              ctx.fillStyle = link.color;
+              ctx.beginPath();
+              ctx.moveTo(sourceX + nodeWidth, sourceTop);
+              ctx.bezierCurveTo(controlX, sourceTop, controlX, targetTop, targetX, targetTop);
+              ctx.lineTo(targetX, targetTop + linkHeight);
+              ctx.bezierCurveTo(
+                controlX,
+                targetTop + linkHeight,
+                controlX,
+                sourceTop + linkHeight,
+                sourceX + nodeWidth,
+                sourceTop + linkHeight
+              );
+              ctx.closePath();
+              ctx.fill();
+              ctx.restore();
+              source.offset += linkHeight;
+              target.offset += linkHeight;
+            });
+
+            const textColor = getComputedStyle(document.body).getPropertyValue('--text-color').trim() || '#212529';
+            ctx.font = '12px sans-serif';
+
+            function drawWrappedLabel(text, x, y, maxWidth, alignment) {
+              const words = text.split(/\\s+/);
+              const lines = [];
+              let line = '';
+              words.forEach(function(word) {
+                const candidate = line ? line + ' ' + word : word;
+                if (line && ctx.measureText(candidate).width > maxWidth) {
+                  lines.push(line);
+                  line = word;
+                } else {
+                  line = candidate;
+                }
+              });
+              if (line) lines.push(line);
+              ctx.textAlign = alignment;
+              ctx.textBaseline = 'middle';
+              const lineHeight = 13;
+              const firstY = y - ((lines.length - 1) * lineHeight) / 2;
+              lines.forEach(function(value, index) {
+                ctx.fillText(value, x, firstY + index * lineHeight);
+              });
+            }
+
+            sources.forEach(function(name) {
+              const node = sourceNodes.get(name);
+              ctx.fillStyle = '#446df6';
+              ctx.fillRect(sourceX, node.y, nodeWidth, node.height);
+              ctx.fillStyle = textColor;
+              drawWrappedLabel(
+                name + ': ' + sourceTotals.get(name),
+                sourceX - 6,
+                node.y + node.height / 2,
+                Math.max(90, sourceX - 12),
+                'right'
+              );
+            });
+            targets.forEach(function(name) {
+              const node = targetNodes.get(name);
+              const link = activeLinks.find(function(item) { return item.target === name; });
+              ctx.fillStyle = link.color;
+              ctx.fillRect(targetX, node.y, nodeWidth, node.height);
+              ctx.fillStyle = textColor;
+              drawWrappedLabel(
+                name + ': ' + targetTotals.get(name),
+                targetX + nodeWidth + 6,
+                node.y + node.height / 2,
+                Math.max(120, width - targetX - nodeWidth - 12),
+                'left'
+              );
+            });
+          }
+
+          drawSankeyChart();
+          window.addEventListener('resize', drawSankeyChart);
+          window.addEventListener('azure-theme-change', drawSankeyChart);
+        }
+
         renderDashboardPie('findingsPieChart', 'findingsPieLegend', {{ findings_chart_data|tojson }});
-        {% endif %}
-        {% if request_chart_data %}
-        renderDashboardPie('requestsPieChart', 'requestsPieLegend', {{ request_chart_data|tojson }});
-        {% endif %}
+        renderDashboardSankey('findingsSankeyChart', {{ findings_sankey_data|tojson }});
       })();
     </script>
     {% endif %}
@@ -2342,6 +2497,15 @@ def collection_category_label(value):
     return "Microsoft Graph" if category == "microsoft_graph" else category
 
 
+def finding_endpoint_type_label(value):
+    """Use concise human-facing endpoint types in finding visualisations."""
+    return {
+        "base": "Azure Base",
+        "parameterised": "Azure Parameterised",
+        "microsoft_graph": "Microsoft Graph",
+    }.get(str(value or "Unknown"), collection_category_label(value))
+
+
 def grouped_endpoint_omissions(records):
     """Group omitted endpoint definitions by their structured operational reason."""
     groups = {}
@@ -2547,17 +2711,43 @@ def findings_summary():
         "no_data_to_assess": 0,
         "not_implemented": 0,
         "insufficient_data_causes": Counter(),
+        "chart_segments": Counter(),
+        "sankey_links": Counter(),
     }
     for row in rows:
         status = canonical_finding_status(row.get("status") if isinstance(row, dict) else None)
         if status in counts:
             counts[status] += 1
+        provenance = (
+            row.get("reporting", {}).get("provenance", {})
+            if isinstance(row, dict) else {}
+        )
+        required_endpoints = provenance.get("required_endpoints", [])
+        endpoint_types = {
+            finding_endpoint_type_label(endpoint.get("category"))
+            for endpoint in required_endpoints
+            if isinstance(endpoint, dict) and endpoint.get("category")
+        }
+        endpoint_types.discard("Unknown")
+        if len(endpoint_types) == 1:
+            endpoint_type = next(iter(endpoint_types))
+        elif endpoint_types:
+            endpoint_type = "Multiple Endpoint Types"
+        else:
+            endpoint_type = "Missing or Unattributed Source"
+
+        segment_label = None
+        segment_color = "#6c757d"
+        if status == "found":
+            segment_label, segment_color = "Findings Raised", "#dc3545"
+        elif status == "not_found":
+            segment_label, segment_color = "Checks Passed", "#198754"
+        elif status == "not_implemented":
+            segment_label = "Not Implemented"
+        elif status != "no_data_to_assess":
+            segment_label = "Other Finding Outcome"
         if status == "no_data_to_assess" and isinstance(row, dict):
-            insufficient_data = (
-                row.get("reporting", {})
-                .get("provenance", {})
-                .get("insufficient_data")
-            )
+            insufficient_data = provenance.get("insufficient_data")
             cause = (
                 insufficient_data.get("cause")
                 if isinstance(insufficient_data, dict)
@@ -2566,6 +2756,13 @@ def findings_summary():
             if cause not in INSUFFICIENT_DATA_CAUSES:
                 cause = "missing_or_unattributed_source"
             counts["insufficient_data_causes"][cause] += 1
+            cause_label, segment_color = INSUFFICIENT_DATA_CAUSES[cause]
+            segment_label = (
+                f"Insufficient Data — {endpoint_type} — {cause_label}"
+            )
+        if segment_label:
+            counts["chart_segments"][(segment_label, segment_color)] += 1
+            counts["sankey_links"][(endpoint_type, segment_label, segment_color)] += 1
     return counts
 
 
@@ -3545,31 +3742,24 @@ def dashboard():
     collection_requests = collection_request_summary(manifest)
     graph_collection = graph_collection_summary(manifest)
     findings_chart_data = None
-    request_chart_data = None
-    if findings is not None:
+    findings_sankey_data = None
+    if findings is not None and findings["executed"]:
         findings_chart_data = [
-            {"label": "Findings Raised", "value": findings["found"], "color": "#dc3545"},
-            {"label": "Checks Passed", "value": findings["not_found"], "color": "#198754"},
-        ]
-        findings_chart_data.extend(
-            {
-                "label": f"Insufficient Data — {label}",
-                "value": findings["insufficient_data_causes"][cause],
-                "color": color,
-            }
-            for cause, (label, color) in INSUFFICIENT_DATA_CAUSES.items()
-        )
-        findings_chart_data.append(
-            {"label": "Not Implemented", "value": findings["not_implemented"], "color": "#6c757d"}
-        )
-    if collection_requests is not None and collection_requests["endpoint_count"]:
-        request_chart_data = [
             {
                 "label": label,
-                "value": collection_requests["outcome_counts"][outcome],
+                "value": count,
                 "color": color,
             }
-            for outcome, (label, color) in COLLECTION_OUTCOME_OPTIONS.items()
+            for (label, color), count in findings["chart_segments"].items()
+        ]
+        findings_sankey_data = [
+            {
+                "source": source,
+                "target": target,
+                "value": count,
+                "color": color,
+            }
+            for (source, target, color), count in findings["sankey_links"].items()
         ]
     return render_template_string(
         HTML_TEMPLATE,
@@ -3581,7 +3771,7 @@ def dashboard():
         ),
         dashboard=True,
         findings_chart_data=findings_chart_data,
-        request_chart_data=request_chart_data,
+        findings_sankey_data=findings_sankey_data,
         collection_requests=collection_requests,
         graph_collection=graph_collection,
         dataset_index=False,

@@ -2058,11 +2058,23 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
             "rows": [
                 {
                     "status": "no_data_to_assess",
-                    "reporting": {"provenance": {"insufficient_data": {"cause": "unauthorised_source"}}},
+                    "reporting": {"provenance": {
+                        "insufficient_data": {"cause": "unauthorised_source"},
+                        "required_endpoints": [{
+                            "endpoint_id": "graph_identity_baseline_report_settings",
+                            "category": "microsoft_graph",
+                        }],
+                    }},
                 },
                 {
                     "status": "no_data_to_assess",
-                    "reporting": {"provenance": {"insufficient_data": {"cause": "empty_source"}}},
+                    "reporting": {"provenance": {
+                        "insufficient_data": {"cause": "empty_source"},
+                        "required_endpoints": [{
+                            "endpoint_id": "az_resource_list",
+                            "category": "base",
+                        }],
+                    }},
                 },
                 {"status": "no_data_to_assess"},
                 {"status": "found"},
@@ -2292,34 +2304,40 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         self.assertIn("Checks Without Sufficient Data", body)
         self.assertNotIn("Rows in azure-findings-flat.json", body)
         self.assertNotIn("Status: not_found", body)
-        self.assertIn('"label": "Insufficient Data \\u2014 Unauthorised Source", "value": 1', body)
-        self.assertIn('"label": "Insufficient Data \\u2014 Empty Upstream Source", "value": 1', body)
-        self.assertIn('"label": "Insufficient Data \\u2014 Missing or Unattributed Source", "value": 1', body)
+        self.assertIn('"label": "Insufficient Data \\u2014 Microsoft Graph \\u2014 Unauthorised Source", "value": 1', body)
+        self.assertIn('"label": "Insufficient Data \\u2014 Azure Base \\u2014 Empty Upstream Source", "value": 1', body)
+        self.assertIn('"label": "Insufficient Data \\u2014 Missing or Unattributed Source \\u2014 Missing or Unattributed Source", "value": 1', body)
         self.assertIn("Finding Outcome Distribution", body)
-        self.assertIn("Collection Endpoint Outcome Distribution", body)
+        self.assertIn("Endpoint Type to Finding Outcome Flow", body)
+        self.assertNotIn("Collection Endpoint Outcome Distribution", body)
         self.assertIn("Endpoint Outcomes by Collection Type", body)
         self.assertIn("reconciles to 12 endpoint executions", body)
         self.assertIn("findingsPieChart", body)
-        self.assertIn("requestsPieChart", body)
+        self.assertIn("findingsSankeyChart", body)
+        self.assertNotIn("requestsPieChart", body)
+        self.assertNotIn("requestsSankeyChart", body)
+        self.assertEqual(body.count("renderDashboardPie('findingsPieChart'"), 1)
+        self.assertEqual(body.count("renderDashboardSankey('findingsSankeyChart'"), 1)
+        self.assertEqual(body.count('aria-label="Pie chart of finding outcomes including endpoint source types"'), 1)
+        self.assertEqual(body.count('aria-label="Sankey chart from endpoint source types to finding outcomes"'), 1)
         finding_chart_call = body.split(
             "renderDashboardPie('findingsPieChart'",
             1,
         )[1].split(");", 1)[0]
-        self.assertNotIn('"label": "Failed"', finding_chart_call)
-        self.assertNotIn('"label": "Unauthorised"', finding_chart_call)
-        request_chart_call = body.split(
-            "renderDashboardPie('requestsPieChart'",
-            1,
-        )[1].split(");", 1)[0]
-        self.assertIn('"label": "Unauthorised", "value": 2', request_chart_call)
-        self.assertIn('"label": "Incomplete", "value": 1', request_chart_call)
-        self.assertIn('"label": "No Recorded Outcome", "value": 1', request_chart_call)
+        self.assertIn('"label": "Findings Raised", "value": 1', finding_chart_call)
+        self.assertIn('"label": "Insufficient Data \\u2014 Microsoft Graph \\u2014 Unauthorised Source", "value": 1', finding_chart_call)
         self.assertEqual(
             sum(item["value"] for item in json.loads(
-                request_chart_call.split(", ", 2)[2]
+                finding_chart_call.split(", ", 2)[2]
             )),
-            requests["endpoint_count"],
+            summary["executed"],
         )
+        sankey_chart_call = body.split(
+            "renderDashboardSankey('findingsSankeyChart'",
+            1,
+        )[1].split(");", 1)[0]
+        self.assertIn('"source": "Microsoft Graph"', sankey_chart_call)
+        self.assertIn('"target": "Insufficient Data \\u2014 Microsoft Graph \\u2014 Unauthorised Source", "value": 1', sankey_chart_call)
         self.assertIn("Microsoft Graph", body)
         self.assertIn("Graph Report Settings", body)
         self.assertIn("Authorization_RequestDenied", body)
@@ -2478,7 +2496,7 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
         )
         body = response.get_data(as_text=True)
         self.assertIn(
-            '"label": "Insufficient Data \\u2014 Licence or Tenant Capability", "value": 1',
+            '"label": "Insufficient Data \\u2014 Missing or Unattributed Source \\u2014 Licence or Tenant Capability", "value": 1',
             body,
         )
         self.assertIn("tenant_unavailable", body)
