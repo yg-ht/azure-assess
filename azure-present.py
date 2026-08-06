@@ -39,7 +39,7 @@ import json
 import re
 import secrets
 import threading
-from collections import Counter, OrderedDict
+from collections import Counter, OrderedDict, deque
 from datetime import datetime, timezone
 from flask import Flask, Response, jsonify, render_template_string, request
 from html import escape
@@ -76,6 +76,7 @@ FINDINGS_REVIEW_FILENAME = "azure-findings-review.json"
 VALIDATED_FINDINGS_SARIF_FILENAME = "azure-findings-validated-SARIF.json"
 LEGACY_FINDINGS_SARIF_FILENAME = "azure-findings.json"
 COLLECTION_MANIFEST_PREFIX = "azure-collection-manifest"
+GLOBAL_SEARCH_PAGE_SIZE = 100
 FINDINGS_FILENAMES = {
     FINDINGS_FLAT_FILENAME,
     FINDINGS_SARIF_FILENAME,
@@ -1063,6 +1064,20 @@ HTML_TEMPLATE = """
       <!-- DATASET INDEX PAGE -->
       <div class="mt-4">
         <h2>Data Viewer</h2>
+        <form method="get" action="/search" class="data-filter-form mb-4">
+          <div class="data-filter-controls-row">
+            <div class="data-inline-control filter-data-control">
+              <label for="globalDataSearch" class="form-label">Search All Data:</label>
+              <input type="search"
+                     class="form-control"
+                     id="globalDataSearch"
+                     name="query"
+                     placeholder="Search every retained Data Viewer dataset"
+                     value="{{ global_search_query or '' }}">
+              <button type="submit" class="btn btn-primary">Search</button>
+            </div>
+          </div>
+        </form>
         <table class="table table-striped">
           <thead>
             <tr>
@@ -1104,11 +1119,90 @@ HTML_TEMPLATE = """
         </table>
       </div>
       
+      {% elif global_search_page %}
+      <!-- WHOLE DATA STORE SEARCH PAGE -->
+      <div class="mt-4">
+        <h2>Search All Data</h2>
+        <form method="get" action="/search" class="data-filter-form mb-4">
+          <div class="data-filter-controls-row">
+            <div class="data-inline-control filter-data-control">
+              <label for="globalDataSearch" class="form-label">Search All Data:</label>
+              <input type="search"
+                     class="form-control"
+                     id="globalDataSearch"
+                     name="query"
+                     placeholder="Search every retained Data Viewer dataset"
+                     value="{{ global_search_query }}">
+              <button type="submit" class="btn btn-primary">Search</button>
+              <a href="/datasets" class="btn btn-secondary">Clear</a>
+            </div>
+          </div>
+        </form>
+
+        {% if global_search_query %}
+        <p>
+          {{ global_search_total }} matching record{% if global_search_total != 1 %}s{% endif %}
+          across {{ global_search_files_searched }} dataset file{% if global_search_files_searched != 1 %}s{% endif %}.
+          {% if global_search_unreadable %}{{ global_search_unreadable }} dataset file{% if global_search_unreadable != 1 %}s were{% else %} was{% endif %} unreadable and could not be searched.{% endif %}
+        </p>
+        {% if global_search_results %}
+        <div class="table-responsive">
+          <table class="table table-striped align-middle">
+            <thead><tr><th>Data Source</th><th>Collection Source</th><th>Version</th><th>Record</th><th>Actions</th></tr></thead>
+            <tbody>
+              {% for result in global_search_results %}
+              <tr>
+                <td>{{ result.name }}</td>
+                <td>{{ result.source }}{% if result.workload %}<br><span class="small text-secondary">{{ result.workload }}</span>{% endif %}</td>
+                <td>{{ result.version }}</td>
+                <td>
+                  <details>
+                    <summary>Record {{ result.record_number }}</summary>
+                    <pre class="dashboard-error-message">{{ result.record|tojson(indent=2) }}</pre>
+                  </details>
+                </td>
+                <td><a class="btn btn-primary btn-sm" href="{{ result.viewer_url }}">View in Dataset</a></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p>No matching records were found.</p>
+        {% endif %}
+
+        {% if global_search_total_pages > 1 %}
+        <nav aria-label="Whole data store search results">
+          <div class="d-flex align-items-center gap-2">
+            {% if global_search_page_number > 1 %}<a class="btn btn-secondary btn-sm" href="/search?query={{ global_search_query_encoded }}&page={{ global_search_page_number - 1 }}">Previous</a>{% endif %}
+            <span>Page {{ global_search_page_number }} of {{ global_search_total_pages }}</span>
+            {% if global_search_page_number < global_search_total_pages %}<a class="btn btn-secondary btn-sm" href="/search?query={{ global_search_query_encoded }}&page={{ global_search_page_number + 1 }}">Next</a>{% endif %}
+          </div>
+        </nav>
+        {% endif %}
+        {% else %}
+        <p>Enter a term to search all retained versions of every dataset shown in the Data Viewer.</p>
+        {% endif %}
+      </div>
+
       {% else %}
       <!-- DATA TABLE VIEW PAGE -->
       <div class="data-view">
         <!-- Controls: Drop-down and Search -->
         <div class="data-controls">
+          <form method="get" action="/search" class="data-filter-form mb-3">
+            <div class="data-filter-controls-row">
+              <div class="data-inline-control filter-data-control">
+                <label for="globalDataSearch" class="form-label">Search All Data:</label>
+                <input type="search"
+                       class="form-control"
+                       id="globalDataSearch"
+                       name="query"
+                       placeholder="Search every retained Data Viewer dataset">
+                <button type="submit" class="btn btn-primary">Search</button>
+              </div>
+            </div>
+          </form>
           {% if show_data_source_select %}
           <!-- Drop-down for Data Source Selection -->
           <div class="mt-3 mb-3">
@@ -2368,7 +2462,101 @@ def dataset_groups(load_record_counts=False):
             "version_label": latest["label"],
             "versions": versions,
         })
+    grouped_tabs.sort(
+        key=lambda tab: (
+            tab["name"].casefold(),
+            tab["name"],
+            tab["dataset_key"],
+        )
+    )
     return grouped_tabs
+
+
+def search_all_datasets(query_text, page=1, page_size=GLOBAL_SEARCH_PAGE_SIZE):
+    """Search every retained Data Viewer dataset while retaining one result page."""
+    normalized_query = str(query_text or "").casefold()
+    try:
+        page = max(int(page), 1)
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = max(int(page_size), 1)
+    except (TypeError, ValueError):
+        page_size = GLOBAL_SEARCH_PAGE_SIZE
+    if not normalized_query:
+        return {
+            "query": "",
+            "page": page,
+            "page_size": page_size,
+            "total": 0,
+            "total_pages": 0,
+            "files_searched": 0,
+            "unreadable": 0,
+            "results": [],
+        }
+
+    first_match = (page - 1) * page_size
+    last_match = first_match + page_size
+    total = 0
+    files_searched = 0
+    unreadable = 0
+    results = []
+    trailing_results = deque(maxlen=page_size)
+
+    for group in dataset_groups(load_record_counts=False):
+        for version in group["versions"]:
+            path = DATA_DIR / version["filename"]
+            if path.is_symlink() or not path.is_file():
+                unreadable += 1
+                continue
+            data = load_json_file(path)
+            if data is None:
+                unreadable += 1
+                continue
+            files_searched += 1
+            for record_index, record in enumerate(
+                ensure_horizontal_json_table_format(data),
+                start=1,
+            ):
+                if normalized_query not in json.dumps(
+                    record,
+                    ensure_ascii=False,
+                ).casefold():
+                    continue
+                result = {
+                    "name": group["name"],
+                    "source": group["source"],
+                    "workload": group["workload"],
+                    "version": version["label"],
+                    "filename": version["filename"],
+                    "record_number": record_index,
+                    "record": record,
+                    "viewer_url": (
+                        f"/query/{quote(version['filename'], safe='')}"
+                        f"?query={quote(str(query_text), safe='')}"
+                    ),
+                }
+                trailing_results.append(result)
+                if first_match <= total < last_match:
+                    results.append(result)
+                total += 1
+
+    total_pages = (total + page_size - 1) // page_size
+    if total_pages and page > total_pages:
+        page = total_pages
+        final_page_size = total % page_size or page_size
+        results = list(trailing_results)[-final_page_size:]
+
+    return {
+        "query": str(query_text),
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "files_searched": files_searched,
+        "unreadable": unreadable,
+        "results": results,
+    }
 
 
 def dataset_group_by_filename(filename):
@@ -4618,6 +4806,38 @@ def datasets():
         findings_chart_data=None,
         dataset_index=True,
     )
+
+
+@app.route('/search')
+def search_all_data():
+    if not DATA_DIR.exists():
+        return "<p>Data directory not found.</p>", 404
+    query_text = str(request.args.get("query") or "").strip()
+    try:
+        page = max(int(request.args.get("page", "1")), 1)
+    except (TypeError, ValueError):
+        page = 1
+    search_result = search_all_datasets(query_text, page=page)
+    response = app.make_response(render_template_string(
+        HTML_TEMPLATE,
+        tabs=dataset_groups(),
+        summary_cards=None,
+        dashboard=False,
+        findings_chart_data=None,
+        dataset_index=False,
+        global_search_page=True,
+        global_search_query=search_result["query"],
+        global_search_query_encoded=quote(search_result["query"], safe=""),
+        global_search_results=search_result["results"],
+        global_search_total=search_result["total"],
+        global_search_total_pages=search_result["total_pages"],
+        global_search_page_number=search_result["page"],
+        global_search_files_searched=search_result["files_searched"],
+        global_search_unreadable=search_result["unreadable"],
+    ))
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 @app.route('/dataset-counts')
