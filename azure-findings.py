@@ -78,6 +78,7 @@ from azure_assess.findings_network import (
     analyse_external_attack_paths,
     analyse_private_link_posture,
 )
+from azure_assess.public_endpoints import analyse_unassociated_public_addresses
 
 TIMESTAMP_SUFFIX_RE = re.compile(r"_\d{8}-\d{6}$")
 SARIF_SCHEMA_URI = "https://json.schemastore.org/sarif-2.1.0.json"
@@ -244,6 +245,11 @@ OFFLINE_CORRELATION_DATASETS = (
     DatasetSpec(
         "public_ips",
         ("az_network_public-ip_list",),
+        ("az_network_public-ip_list",),
+    ),
+    DatasetSpec(
+        "public_endpoint_topology",
+        ("azure_public_endpoint_topology",),
         ("az_network_public-ip_list",),
     ),
     DatasetSpec("nics", ("az_network_nic_list",), ("az_network_nic_list",)),
@@ -3627,6 +3633,23 @@ def evaluate_findings(catalog, review_overrides=None, baseline_findings=None):
             "High",
             "Correlates assigned public IPs, forwarding resources, backend interfaces, and effective inbound controls.",
             attack_path_result,
+        )
+    )
+
+    unassociated_public_address_result = with_input_limitations(
+        analyse_unassociated_public_addresses(
+            offline_records("public_endpoint_topology"),
+            offline_inputs.conclusion_support(("public_endpoint_topology",)),
+            offline_sources("public_endpoint_topology"),
+        ),
+        "public_endpoint_topology",
+    )
+    findings.append(
+        correlation_finding(
+            "Assigned public IP addresses have no attributable Azure component",
+            "Low",
+            "Identifies allocated Public IP resources whose current control-plane data contains no resource attachment.",
+            unassociated_public_address_result,
         )
     )
 

@@ -2315,6 +2315,10 @@ def load_collect_endpoint_name_map():
         endpoint_map[endpoint["output"]] = endpoint["name"]
 
     endpoint_map["role_enriched"] = "Role Assignments Enriched"
+    endpoint_map["azure_public_endpoint_topology"] = "Public Endpoint Topology"
+    endpoint_map["azure_public_endpoint_topology_coverage"] = (
+        "Public Endpoint Topology Coverage"
+    )
     endpoint_map["az_ams_account_list"] = "Media Services"
     endpoint_map["az_dls_account_list"] = "Data Lake Store Accounts"
     endpoint_map[
@@ -2338,6 +2342,15 @@ def display_name_for_dataset(filename):
 def dataset_collection_metadata(filename):
     """Return human-facing collection-plane metadata for a dataset."""
     dataset_key = dataset_key_for_filename(filename)
+    if dataset_key in {
+        "azure_public_endpoint_topology",
+        "azure_public_endpoint_topology_coverage",
+    }:
+        return {
+            "source": "Azure",
+            "workload": "Cross-service public endpoint topology",
+            "api_channel": None,
+        }
     graph_endpoint = GRAPH_ENDPOINTS_BY_OUTPUT.get(dataset_key)
     if graph_endpoint is not None:
         return {

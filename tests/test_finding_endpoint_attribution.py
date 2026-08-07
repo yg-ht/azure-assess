@@ -510,7 +510,7 @@ class FindingEndpointCoverageTests(unittest.TestCase):
 
         self.assertEqual(
             source_types,
-            Counter({BASE: 218, GRAPH: 17, BASE_AND_GRAPH: 3}),
+            Counter({BASE: 219, GRAPH: 17, BASE_AND_GRAPH: 3}),
         )
 
     def test_graph_and_cross_plane_examples_are_classified_correctly(self):

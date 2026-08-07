@@ -84,6 +84,10 @@ from azure_assess.graph_collection import (
 )
 from azure_assess.graph_endpoints import GRAPH_ENDPOINTS
 from azure_assess.graph_runner import GraphError, GraphRunner, GraphTransport, utc_interval
+from azure_assess.public_endpoints import (
+    build_public_endpoint_topology,
+    resolve_public_fqdns,
+)
 
 AUTH_CONFIG = {}
 GRAPH_ACCESS_TOKEN = None
@@ -639,6 +643,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "CDN Profiles", "cli_command": "az cdn profile list", "needs_pagination": False},
     {"name": "Consumption Usage", "cli_command": "az consumption usage list", "needs_pagination": True},
     {"name": "Container Instances", "cli_command": "az container list", "needs_pagination": False},
+    {"name": "Container Apps", "cli_command": "az containerapp list", "needs_pagination": False},
     {"name": "Container Registries", "cli_command": "az acr list", "needs_pagination": False},
     {"name": "Cognitive Services Accounts", "cli_command": "az cognitiveservices account list", "needs_pagination": False},
     {"name": "Cosmos DB Accounts", "cli_command": "az cosmosdb list", "needs_pagination": False},
@@ -655,6 +660,8 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Event Hubs Namespaces", "cli_command": "az eventhubs namespace list", "needs_pagination": False},
     {"name": "ExpressRoute Circuits", "cli_command": "az network express-route list", "needs_pagination": False},
     {"name": "Front Door", "cli_command": "az afd profile list", "needs_pagination": False},
+    {"name": "Azure Firewalls", "cli_command": "az network firewall list", "needs_pagination": False},
+    {"name": "Azure Firewall Policies", "cli_command": "az network firewall policy list", "needs_pagination": False},
     {"name": "Function Apps", "cli_command": "az functionapp list", "needs_pagination": False},
     {"name": "HDInsight Clusters", "cli_command": "az hdinsight list", "needs_pagination": False},
     {"name": "IoT Hubs", "cli_command": "az iot hub list", "needs_pagination": False},
@@ -684,6 +691,7 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Private DNS Zones", "cli_command": "az network private-dns zone list", "needs_pagination": False},
     {"name": "Private Endpoints", "cli_command": "az network private-endpoint list", "needs_pagination": False},
     {"name": "Public IP Addresses", "cli_command": "az network public-ip list", "needs_pagination": False},
+    {"name": "Public IP Prefixes", "cli_command": "az network public-ip prefix list", "needs_pagination": False},
     {"name": "Purview Accounts", "cli_command": "az purview account list", "needs_pagination": False},
     {"name": "Red Hat OpenShift", "cli_command": "az aro list", "needs_pagination": False},
     {"name": "Redis Caches", "cli_command": "az redis list", "needs_pagination": False},
@@ -704,10 +712,12 @@ AZURE_CLI_ENDPOINTS = [
     {"name": "Subscriptions", "cli_command": "az account list", "needs_pagination": False},
     {"name": "Synapse Workspaces", "cli_command": "az synapse workspace list", "needs_pagination": False},
     {"name": "Template Specs", "cli_command": "az ts list", "needs_pagination": False},
+    {"name": "Traffic Manager Profiles", "cli_command": "az network traffic-manager profile list", "needs_pagination": False},
     {"name": "Virtual Machines", "cli_command": "az vm list", "needs_pagination": False},
     {"name": "Virtual Machines IPs", "cli_command": "az vm list-ip-addresses", "needs_pagination": False},
     {"name": "VM Dedicated Host Groups", "cli_command": "az vm host group list", "needs_pagination": True},
     {"name": "VM Scale Sets", "cli_command": "az vmss list", "needs_pagination": False},
+    {"name": "Virtual Network Gateways", "cli_command": "az network vnet-gateway list", "needs_pagination": False},
     {"name": "Web Apps", "cli_command": "az webapp list", "needs_pagination": False},
     {"name": "Kubernetes Environments", "cli_command": "az resource list --resource-type Microsoft.Web/kubeEnvironments", "needs_pagination": False},
     {
@@ -734,6 +744,80 @@ AZURE_CLI_ENDPOINTS = [
 ]
 
 AZURE_CLI_ENDPOINTS_PARAMS = [
+    {
+        "name": "Public DNS Record Sets",
+        "cli_command": "az network dns record-set list --zone-name {name} --resource-group {resourceGroup}",
+        "required_params": {
+            "name": "az_network_dns_zone_list",
+            "resourceGroup": "az_network_dns_zone_list",
+        },
+    },
+    {
+        "name": "VM Scale Set Instance Public IPs",
+        "cli_command": "az vmss list-instance-public-ips --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_vmss_list", "resourceGroup": "az_vmss_list"},
+    },
+    {
+        "name": "Virtual Network Gateway Connections",
+        "cli_command": "az network vpn-connection list --resource-group {name}",
+        "required_params": {"name": "az_group_list"},
+    },
+    {
+        "name": "Traffic Manager Profile Details",
+        "cli_command": "az network traffic-manager profile show --name {name} --resource-group {resourceGroup}",
+        "required_params": {
+            "name": "az_network_traffic-manager_profile_list",
+            "resourceGroup": "az_network_traffic-manager_profile_list",
+        },
+    },
+    {
+        "name": "Azure Firewall Policy Rule Collection Groups",
+        "cli_command": "az network firewall policy rule-collection-group list --policy-name {name} --resource-group {resourceGroup}",
+        "required_params": {
+            "name": "az_network_firewall_policy_list",
+            "resourceGroup": "az_network_firewall_policy_list",
+        },
+    },
+    {
+        "name": "Front Door Endpoints",
+        "cli_command": "az rest --method get --url {id}/afdEndpoints?api-version=2025-04-15",
+        "required_params": {"id": "az_afd_profile_list"},
+        "output_prefix": "arm_afd_endpoints",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "Front Door Routes",
+        "cli_command": "az rest --method get --url {id}/routes?api-version=2025-04-15",
+        "required_params": {"id": "arm_afd_endpoints"},
+        "output_prefix": "arm_afd_routes",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "Front Door Origin Groups",
+        "cli_command": "az rest --method get --url {id}/originGroups?api-version=2025-04-15",
+        "required_params": {"id": "az_afd_profile_list"},
+        "output_prefix": "arm_afd_origin_groups",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "Front Door Origins",
+        "cli_command": "az rest --method get --url {id}/origins?api-version=2025-04-15",
+        "required_params": {"id": "arm_afd_origin_groups"},
+        "output_prefix": "arm_afd_origins",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
+    {
+        "name": "CDN Endpoints",
+        "cli_command": "az rest --method get --url {id}/endpoints?api-version=2025-04-15",
+        "required_params": {"id": "az_cdn_profile_list"},
+        "output_prefix": "arm_cdn_endpoints",
+        "extract_value": True,
+        "follow_next_link": True,
+    },
     {
         "name": "PIM Azure Resource Active Schedules",
         "cli_command": "az rest --method get --url https://management.azure.com/subscriptions/{id}/providers/Microsoft.Authorization/roleAssignmentSchedules?api-version=2020-10-01",
@@ -1122,6 +1206,11 @@ AZURE_CLI_ENDPOINTS_PARAMS = [
         "name": "Function App Slots",
         "cli_command": "az functionapp deployment slot list --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_functionapp_list", "resourceGroup": "az_functionapp_list"},
+    },
+    {
+        "name": "Web App Slots",
+        "cli_command": "az webapp deployment slot list --name {name} --resource-group {resourceGroup}",
+        "required_params": {"name": "az_webapp_list", "resourceGroup": "az_webapp_list"},
     },
     {
         "name": "Web App VNet Integration",
@@ -3469,6 +3558,264 @@ def load_current_dataset(prefix):
     return load_source_records(prefix, current_run_only=True)
 
 
+PUBLIC_ENDPOINT_TOPOLOGY_SOURCES = {
+    "public_ips": ("az_network_public-ip_list",),
+    "public_ip_prefixes": ("az_network_public-ip_prefix_list",),
+    "public_dns_records": (
+        "az_network_dns_record-set_list_--zone-name_name_--resource-group_resourcegroup",
+    ),
+    "nics": ("az_network_nic_list",),
+    "vm_ip_addresses": ("az_vm_list-ip-addresses",),
+    "load_balancers": ("az_network_lb_list",),
+    "application_gateways": (
+        "az_network_application-gateway_list",
+        "az_network_application-gateway_show_--name_name_--resource-group_resourcegroup",
+    ),
+    "nat_gateways": (
+        "az_network_nat_gateway_list",
+        "az_network_nat_gateway_show_--name_name_--resource-group_resourcegroup",
+    ),
+    "bastion_hosts": ("az_network_bastion_list",),
+    "firewalls": ("az_network_firewall_list",),
+    "firewall_policy_rule_groups": (
+        "az_network_firewall_policy_rule-collection-group_list_--policy-name_name_--resource-group_resourcegroup",
+    ),
+    "virtual_network_gateways": ("az_network_vnet-gateway_list",),
+    "virtual_network_connections": (
+        "az_network_vpn-connection_list_--resource-group_name",
+    ),
+    "vmss_instance_public_ips": (
+        "az_vmss_list-instance-public-ips_--name_name_--resource-group_resourcegroup",
+    ),
+    "apim_services": (
+        "az_apim_show_--name_name_--resource-group_resourcegroup",
+    ),
+    "web_apps": ("az_webapp_list",),
+    "web_app_slots": (
+        "az_webapp_deployment_slot_list_--name_name_--resource-group_resourcegroup",
+    ),
+    "function_apps": ("az_functionapp_list",),
+    "function_app_slots": (
+        "az_functionapp_deployment_slot_list_--name_name_--resource-group_resourcegroup",
+    ),
+    "app_service_environment_addresses": (
+        "az_appservice_ase_list-addresses_--name_name",
+    ),
+    "container_instances": ("az_container_list",),
+    "container_apps": ("az_containerapp_list",),
+    "aks_clusters": ("az_aks_list",),
+    "afd_endpoints": ("arm_afd_endpoints",),
+    "afd_routes": ("arm_afd_routes",),
+    "afd_origin_groups": ("arm_afd_origin_groups",),
+    "afd_origins": ("arm_afd_origins",),
+    "cdn_endpoints": ("arm_cdn_endpoints",),
+    "traffic_manager_profiles": (
+        "az_network_traffic-manager_profile_show_--name_name_--resource-group_resourcegroup",
+        "az_network_traffic-manager_profile_list",
+    ),
+    "storage_accounts": ("az_storage_account_list",),
+    "key_vaults": ("az_keyvault_list",),
+    "container_registries": ("az_acr_list",),
+    "cosmos_accounts": ("az_cosmosdb_list",),
+    "sql_servers": ("az_sql_server_list",),
+    "postgres_servers": ("az_postgres_flexible-server_list",),
+    "mysql_servers": ("az_mysql_flexible-server_list",),
+    "redis_caches": ("az_redis_list",),
+    "search_services": ("az_search_service_list",),
+    "cognitive_accounts": ("az_cognitiveservices_account_list",),
+    "event_grid_topics": ("az_eventgrid_topic_list",),
+    "event_grid_domains": ("az_eventgrid_domain_list",),
+    "event_hubs": ("az_eventhubs_namespace_list",),
+    "service_bus": ("az_servicebus_namespace_list",),
+    "relay_namespaces": ("az_relay_namespace_list",),
+    "signalr_services": (
+        "az_signalr_show_--name_name_--resource-group_resourcegroup",
+        "az_signalr_list",
+    ),
+    "iot_hubs": ("az_iot_hub_list",),
+    "iot_dps": ("az_iot_dps_list",),
+    "synapse_workspaces": ("az_synapse_workspace_list",),
+    "databricks_workspaces": ("az_databricks_workspace_list",),
+    "machine_learning_workspaces": ("az_ml_workspace_list",),
+    "batch_accounts": ("az_batch_account_list",),
+    "app_configuration": ("az_appconfig_list",),
+    "aro_clusters": ("az_aro_list",),
+    "purview_accounts": ("az_purview_account_list",),
+    "logic_apps": ("az_logicapp_list",),
+    "hdinsight_clusters": (
+        "az_hdinsight_show_--name_name_--resource-group_resourcegroup",
+    ),
+}
+
+
+def save_current_public_endpoint_topology(resolve_dns=True):
+    """Create a point-in-time, cross-service public endpoint association dataset."""
+    datasets = {
+        logical_name: [
+            record
+            for source in sources
+            for record in load_current_dataset(source)
+        ]
+        for logical_name, sources in PUBLIC_ENDPOINT_TOPOLOGY_SOURCES.items()
+    }
+    coverage = []
+    for logical_name, sources in PUBLIC_ENDPOINT_TOPOLOGY_SOURCES.items():
+        for source in sources:
+            outcomes = (
+                COLLECTION_MANIFEST.endpoint_outcomes(source)
+                if COLLECTION_MANIFEST is not None
+                else []
+            )
+            statuses = sorted(
+                {str(item.get("status")) for item in outcomes if item.get("status")}
+            )
+            incomplete = {
+                "failed", "incomplete", "unauthorised", "tenant_unavailable",
+                "not_attempted", "skipped",
+            }.intersection(statuses)
+            if incomplete:
+                state = "incomplete"
+            elif set(statuses).intersection({"success", "empty"}):
+                state = "complete"
+            else:
+                state = "not_collected"
+            coverage.append({
+                "logicalInput": logical_name,
+                "sourceEndpointId": source,
+                "collectionStatuses": statuses,
+                "coverageState": state,
+                "recordCount": len(load_current_dataset(source)),
+                "_collectionContext": {
+                    "derived": True,
+                    "generatedAt": utc_timestamp(),
+                },
+            })
+    dns_coverage = {
+        "logicalInput": "dns_snapshot",
+        "sourceEndpointId": None,
+        "collectionStatuses": [],
+        "coverageState": "pending" if resolve_dns else "disabled",
+        "recordCount": 0,
+        "hostnameCount": 0,
+        "resolvedHostnameCount": 0,
+        "noPublicAnswerCount": 0,
+        "failedCount": 0,
+        "hostnameOutcomes": [],
+        "limitation": (
+            "Collected FQDNs are sent to the collector host's configured DNS "
+            "resolver and results are retained as point-in-time observations."
+            if resolve_dns
+            else "FQDNs were retained but not resolved."
+        ),
+        "_collectionContext": {"derived": True, "generatedAt": utc_timestamp()},
+    }
+    coverage.extend([
+        dns_coverage,
+        {
+            "logicalInput": "aks_workload_data_plane",
+            "sourceEndpointId": None,
+            "collectionStatuses": [],
+            "coverageState": "not_collected",
+            "recordCount": 0,
+            "limitation": (
+                "AKS Services and Ingress objects require separate Kubernetes "
+                "data-plane authorisation and are not inferred from ARM records."
+            ),
+            "_collectionContext": {"derived": True, "generatedAt": utc_timestamp()},
+        },
+        {
+            "logicalInput": "shared_platform_runtime",
+            "sourceEndpointId": None,
+            "collectionStatuses": [],
+            "coverageState": "not_attributable",
+            "recordCount": 0,
+            "limitation": (
+                "Shared Microsoft service infrastructure and transient runtime "
+                "destinations cannot be attributed as tenant-owned components."
+            ),
+            "_collectionContext": {"derived": True, "generatedAt": utc_timestamp()},
+        },
+    ])
+    print("[*] Correlating public endpoint ownership and configured addresses...", flush=True)
+    dns_diagnostics = []
+
+    def report_dns_progress(event, details):
+        if event == "started":
+            total = int(details.get("total") or 0)
+            if total:
+                print(
+                    f"[*] Resolving {total} collected public-endpoint FQDN(s) "
+                    "with up to 8 workers and a 5-second per-name timeout...",
+                    flush=True,
+                )
+            else:
+                print("[~] No collected public-endpoint FQDNs require resolution.", flush=True)
+        elif event == "progress":
+            completed = int(details.get("completed") or 0)
+            total = int(details.get("total") or 0)
+            if completed == total or completed % 25 == 0:
+                print(
+                    f"[~] Public-endpoint DNS: {completed}/{total} complete; "
+                    f"{int(details.get('failed') or 0)} failed.",
+                    flush=True,
+                )
+
+    topology = build_public_endpoint_topology(
+        datasets,
+        collected_at=utc_timestamp(),
+        dns_resolver=resolve_public_fqdns if resolve_dns else None,
+        dns_diagnostics=dns_diagnostics,
+        dns_progress=report_dns_progress if resolve_dns else None,
+    )
+    dns_observation_count = sum(
+        1 for record in topology if record.get("addressOrigin") == "dns_snapshot"
+    )
+    dns_statuses = Counter(item["status"] for item in dns_diagnostics)
+    dns_coverage.update({
+        "collectionStatuses": sorted(dns_statuses),
+        "recordCount": dns_observation_count,
+        "hostnameCount": len(dns_diagnostics),
+        "resolvedHostnameCount": dns_statuses["resolved"],
+        "noPublicAnswerCount": dns_statuses["no_public_answer"],
+        "failedCount": dns_statuses["failed"],
+        "hostnameOutcomes": sorted(
+            dns_diagnostics,
+            key=lambda item: str(item.get("hostname") or ""),
+        ),
+    })
+    if not resolve_dns:
+        dns_coverage["coverageState"] = "disabled"
+    elif not dns_diagnostics:
+        dns_coverage["coverageState"] = "not_applicable"
+    elif dns_statuses["failed"] == len(dns_diagnostics):
+        dns_coverage["coverageState"] = "failed"
+    elif dns_statuses["failed"]:
+        dns_coverage["coverageState"] = "partial"
+    else:
+        dns_coverage["coverageState"] = "complete"
+    if dns_statuses["failed"]:
+        dns_coverage["limitation"] += (
+            f" {dns_statuses['failed']} of {len(dns_diagnostics)} hostname "
+            "resolutions failed; affected address associations are incomplete."
+        )
+    save_json(
+        topology,
+        f"azure_public_endpoint_topology_{START_TIMESTAMP}.json",
+        source_endpoint_identifiers=sorted(
+            {source for sources in PUBLIC_ENDPOINT_TOPOLOGY_SOURCES.values() for source in sources}
+        ),
+    )
+    save_json(
+        coverage,
+        f"azure_public_endpoint_topology_coverage_{START_TIMESTAMP}.json",
+        source_endpoint_identifiers=sorted(
+            {source for sources in PUBLIC_ENDPOINT_TOPOLOGY_SOURCES.values() for source in sources}
+        ),
+    )
+    print(f"[~] Public endpoint topology: {len(topology)} address relationship(s).", flush=True)
+    return topology
+
+
 def upstream_source_skip_reason(source):
     """Classify and preserve why a parameter source supplied no records."""
     outcomes = (
@@ -4620,6 +4967,10 @@ def execute_collection(args, max_workers):
         current_run_only=current_run_only,
         max_workers=max_workers,
     )
+
+    # DNS observations are explicitly labelled as point-in-time evidence and
+    # never treated as proof of exclusive tenant ownership.
+    save_current_public_endpoint_topology(resolve_dns=True)
 
     if not args.donotenrich and not args.endpoint:
         # Special handling for role assignments
