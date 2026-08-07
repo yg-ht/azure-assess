@@ -865,6 +865,9 @@ FINDING_ID_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 # The overrides cover checks which had no legacy headline ID and checks whose
 # first legacy ID collided with another independently evaluated finding.
 FINDING_ID_OVERRIDES = {
+    "Assigned public IP addresses have no attributable Azure component": (
+        "network_public_ip_unassociated"
+    ),
     "Unauthenticated Guest Users Present in Azure AD": "entra_unauthenticated_guest_users_present",
     "Active guest users without reported MFA capability": "entra_unauthenticated_guest_users_present",
     "Access to Azure Key Vault not restricted to trusted source addresses": (
