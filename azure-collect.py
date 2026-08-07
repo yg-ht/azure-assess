@@ -3650,11 +3650,17 @@ PUBLIC_ENDPOINT_TOPOLOGY_SOURCES = {
 
 def save_current_public_endpoint_topology(resolve_dns=True):
     """Create a point-in-time, cross-service public endpoint association dataset."""
+    def topology_source_records(source):
+        return [
+            {**record, "_topologySourceEndpointId": source}
+            for record in load_current_dataset(source)
+        ]
+
     datasets = {
         logical_name: [
             record
             for source in sources
-            for record in load_current_dataset(source)
+            for record in topology_source_records(source)
         ]
         for logical_name, sources in PUBLIC_ENDPOINT_TOPOLOGY_SOURCES.items()
     }

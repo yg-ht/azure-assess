@@ -178,6 +178,16 @@ class PublicEndpointTopologyTests(unittest.TestCase):
         self.assertIn(admin_nic.lower(), routes[8443]["connectedResourceIds"])
         self.assertIn(admin_vm.lower(), routes[8443]["connectedResourceIds"])
         self.assertEqual(routes[443]["relationshipType"], "load_balancing_rule")
+        self.assertEqual(
+            {item["publicIpResourceId"] for item in topology},
+            {PIP.lower()},
+        )
+        result = analyse_unassociated_public_addresses(
+            topology,
+            "positive_and_negative",
+        )
+        self.assertEqual(len(result.eligible_assets), 1)
+        self.assertEqual(result.eligible_assets[0]["id"], PIP.lower())
 
     def test_application_gateway_routes_follow_listener_and_path_map(self):
         gateway = f"{SUB}/Microsoft.Network/applicationGateways/ag-one"
@@ -221,20 +231,80 @@ class PublicEndpointTopologyTests(unittest.TestCase):
         self.assertEqual(topology[0]["relationshipType"], "url_path_rule")
         self.assertIn("api.internal.example", topology[0]["connectedTargets"])
 
-    def test_front_door_route_retains_origin_hostname(self):
+    def test_front_door_routes_retain_independent_protocols_and_origins(self):
         profile = f"{SUB}/Microsoft.Cdn/profiles/front"
         endpoint = f"{profile}/afdEndpoints/edge"
-        group = f"{profile}/originGroups/group"
-        origin = f"{group}/origins/app"
+        web_group = f"{profile}/originGroups/web"
+        admin_group = f"{profile}/originGroups/admin"
+        web_origin = f"{web_group}/origins/app"
+        admin_origin = f"{admin_group}/origins/app"
         topology = build_public_endpoint_topology({
             "afd_endpoints": [{"id": endpoint, "hostName": "edge.azurefd.net"}],
-            "afd_routes": [{"id": f"{endpoint}/routes/all", "originGroup": {"id": group}}],
-            "afd_origins": [{"id": origin, "hostName": "app.example.com"}],
+            "afd_routes": [
+                {
+                    "id": f"{endpoint}/routes/web",
+                    "originGroup": {"id": web_group},
+                    "supportedProtocols": ["Https"],
+                    "enabledState": "Enabled",
+                },
+                {
+                    "id": f"{endpoint}/routes/admin",
+                    "originGroup": {"id": admin_group},
+                    "supportedProtocols": ["Http"],
+                    "enabledState": "Disabled",
+                },
+            ],
+            "afd_origins": [
+                {"id": web_origin, "hostName": "web.example.com"},
+                {"id": admin_origin, "hostName": "admin.example.com"},
+            ],
         })
 
-        self.assertEqual(len(topology), 1)
-        self.assertIn(origin.lower(), topology[0]["connectedResourceIds"])
-        self.assertIn("app.example.com", topology[0]["connectedTargets"])
+        self.assertEqual(len(topology), 2)
+        routes = {item["relationshipId"].rsplit("/", 1)[-1]: item for item in topology}
+        self.assertEqual(routes["web"]["ports"], [443])
+        self.assertEqual(routes["web"]["protocols"], ["https"])
+        self.assertEqual(routes["web"]["accessState"], "enabled")
+        self.assertIn(web_origin.lower(), routes["web"]["connectedResourceIds"])
+        self.assertIn("web.example.com", routes["web"]["connectedTargets"])
+        self.assertNotIn(admin_origin.lower(), routes["web"]["connectedResourceIds"])
+        self.assertEqual(routes["admin"]["ports"], [80])
+        self.assertEqual(routes["admin"]["protocols"], ["http"])
+        self.assertEqual(routes["admin"]["accessState"], "disabled")
+
+    def test_traffic_manager_endpoints_remain_independent(self):
+        profile = f"{SUB}/Microsoft.Network/trafficManagerProfiles/profile"
+        web = f"{SUB}/Microsoft.Web/sites/web"
+        topology = build_public_endpoint_topology({
+            "traffic_manager_profiles": [{
+                "id": profile,
+                "dnsConfig": {"fqdn": "profile.trafficmanager.net"},
+                "endpoints": [
+                    {
+                        "id": f"{profile}/azureEndpoints/web",
+                        "targetResourceId": web,
+                        "endpointStatus": "Enabled",
+                    },
+                    {
+                        "id": f"{profile}/externalEndpoints/failover",
+                        "target": "failover.example.com",
+                        "endpointStatus": "Disabled",
+                    },
+                ],
+            }],
+        })
+
+        self.assertEqual(len(topology), 2)
+        by_state = {item["accessState"]: item for item in topology}
+        self.assertEqual(by_state["enabled"]["connectedResourceIds"], [web.lower()])
+        self.assertEqual(
+            by_state["disabled"]["connectedTargets"],
+            ["failover.example.com"],
+        )
+        self.assertEqual(
+            {item["relationshipType"] for item in topology},
+            {"traffic_manager_endpoint"},
+        )
 
     def test_public_dns_and_managed_service_sources_are_normalised(self):
         dns_record = f"{SUB}/Microsoft.Network/dnszones/example.com/A/app"
@@ -264,6 +334,49 @@ class PublicEndpointTopologyTests(unittest.TestCase):
         self.assertEqual(by_association["signalr"]["fqdn"], "signalr.example.com")
         self.assertEqual(by_association["relay"]["fqdn"], "relay.example.com")
         self.assertEqual(by_association["hdinsight"]["fqdn"], "cluster.example.com")
+
+    def test_dns_co_resolution_does_not_create_candidate_relationships(self):
+        topology = build_public_endpoint_topology(
+            {
+                "web_apps": [
+                    {"id": "web-one", "defaultHostName": "one.example.test"},
+                    {"id": "web-two", "defaultHostName": "two.example.test"},
+                ],
+            },
+            dns_resolver=lambda _hostname: ["8.8.8.8"],
+        )
+
+        observed = [
+            item for item in topology if item["addressOrigin"] == "dns_snapshot"
+        ]
+        self.assertEqual(len(observed), 2)
+        self.assertTrue(all(not item["candidateConnectedResourceIds"] for item in observed))
+
+    def test_numeric_address_is_not_accepted_as_a_hostname(self):
+        topology = build_public_endpoint_topology({
+            "redis_caches": [{"id": "redis", "hostName": "8.8.8.8"}],
+        })
+        self.assertEqual(topology, [])
+
+    def test_combined_logical_input_retains_exact_source_endpoint(self):
+        topology = build_public_endpoint_topology({
+            "signalr_services": [
+                {
+                    "id": "signalr",
+                    "hostName": "signalr.example.com",
+                    "_topologySourceEndpointId": "az_signalr_list",
+                },
+                {
+                    "id": "signalr",
+                    "hostName": "signalr.example.com",
+                    "_topologySourceEndpointId": "az_signalr_show",
+                },
+            ],
+        })
+        self.assertEqual(
+            topology[0]["sourceEndpointIds"],
+            ["az_signalr_list", "az_signalr_show"],
+        )
 
     def test_unassociated_finding_only_uses_allocated_public_ip_resources(self):
         topology = build_public_endpoint_topology({

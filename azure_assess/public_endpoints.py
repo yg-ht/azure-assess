@@ -64,6 +64,12 @@ def _hostname(value: Any) -> Optional[str]:
     hostname = parsed.hostname
     if not hostname or "." not in hostname or len(hostname) > 253:
         return None
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+    else:
+        return None
     return hostname.rstrip(".").casefold()
 
 
@@ -108,6 +114,11 @@ def _reference_ids(record: Mapping[str, Any], *paths: Sequence[str] | str) -> Li
 def _context(record: Mapping[str, Any]) -> Mapping[str, Any]:
     value = record.get("_collectionContext")
     return value if isinstance(value, Mapping) else {}
+
+
+def _source_ids(record: Mapping[str, Any], *defaults: str) -> Tuple[str, ...]:
+    source = str(record.get("_topologySourceEndpointId") or "").strip()
+    return (source,) if source else tuple(item for item in defaults if item)
 
 
 def _walk_mappings(value: Any) -> Iterable[Mapping[str, Any]]:
@@ -186,6 +197,7 @@ def build_public_endpoint_topology(
         relationship_id: Any = None,
         relationship_type: Optional[str] = None,
         connection_path: Iterable[Any] = (),
+        public_ip_resource_id: Any = None,
     ) -> None:
         public_address = _public_ip(address) if address else None
         public_prefix = None
@@ -230,6 +242,7 @@ def build_public_endpoint_topology(
         port_values = sorted({int(item) for item in ports if str(item).isdigit()})
         protocol_values = sorted({normalise_identifier(item) for item in protocols if item})
         relationship = canonical_arm_id(relationship_id)
+        public_ip_resource = canonical_arm_id(public_ip_resource_id)
         path_values = [
             canonical_arm_id(item) if str(item or "").strip().startswith("/") else str(item).strip().casefold()
             for item in connection_path
@@ -252,7 +265,14 @@ def build_public_endpoint_topology(
             ",".join(path_values),
             address_origin,
             access_state,
+            public_ip_resource,
         )
+        source_endpoint_ids = sorted(set(source_ids))
+        existing = records.get(key)
+        if existing:
+            source_endpoint_ids = sorted(set(
+                source_endpoint_ids + list(existing.get("sourceEndpointIds") or [])
+            ))
         records[key] = {
             "schemaVersion": TOPOLOGY_SCHEMA_VERSION,
             "address": public_address,
@@ -268,6 +288,7 @@ def build_public_endpoint_topology(
             "direction": direction,
             "ownerResourceId": owner or None,
             "ownerResourceType": _resource_type(owner) or None,
+            "publicIpResourceId": public_ip_resource or None,
             "attachmentResourceId": attachment or None,
             "connectedResourceIds": connected_resources,
             "connectedTargets": connected_targets,
@@ -281,7 +302,7 @@ def build_public_endpoint_topology(
             "relationshipId": relationship or None,
             "relationshipType": normalise_identifier(relationship_type) or None,
             "connectionPath": path_values,
-            "sourceEndpointIds": sorted(set(source_ids)),
+            "sourceEndpointIds": source_endpoint_ids,
             "_collectionContext": {
                 "derived": True,
                 "generatedAt": timestamp,
@@ -297,7 +318,7 @@ def build_public_endpoint_topology(
                     association,
                     connected_resources + connected_targets,
                     port_values,
-                    list(source_ids),
+                    source_endpoint_ids,
                 )
             )
 
@@ -344,7 +365,8 @@ def build_public_endpoint_topology(
                     owner_id=_owner_id(record_set),
                     connected_ids=targets,
                     association="public_dns_record",
-                    source_ids=(
+                    source_ids=_source_ids(
+                        record_set,
                         "az_network_dns_record-set_list_--zone-name_name_--resource-group_resourcegroup",
                     ),
                     relationship_id=record_set.get("id"),
@@ -357,7 +379,8 @@ def build_public_endpoint_topology(
                 owner_id=_owner_id(record_set),
                 connected_ids=targets,
                 association="public_dns_record",
-                source_ids=(
+                source_ids=_source_ids(
+                    record_set,
                     "az_network_dns_record-set_list_--zone-name_name_--resource-group_resourcegroup",
                 ),
                 relationship_id=record_set.get("id"),
@@ -388,7 +411,7 @@ def build_public_endpoint_topology(
                     connected=connected,
                     ports=[],
                     protocols=[],
-                    source="az_network_nic_list",
+                    sources=_source_ids(nic, "az_network_nic_list"),
                     attachment_id=config.get("id"),
                     relationship_id=config.get("id"),
                     relationship_type="ip_configuration",
@@ -472,7 +495,7 @@ def build_public_endpoint_topology(
                         connected=connected,
                         ports=[port] if str(port).isdigit() else [],
                         protocols=[protocol] if protocol else [],
-                        source="az_network_lb_list",
+                        sources=_source_ids(balancer, "az_network_lb_list"),
                         attachment_id=frontend_id,
                         relationship_id=rule_id,
                         relationship_type=relationship_type,
@@ -488,7 +511,7 @@ def build_public_endpoint_topology(
                         connected=[],
                         ports=[],
                         protocols=[],
-                        source="az_network_lb_list",
+                        sources=_source_ids(balancer, "az_network_lb_list"),
                         attachment_id=frontend_id,
                         relationship_id=frontend_id,
                         relationship_type="frontend",
@@ -570,7 +593,11 @@ def build_public_endpoint_topology(
                         connected=connected,
                         ports=ports,
                         protocols=[protocol] if protocol else [],
-                        source="az_network_application-gateway_list",
+                        sources=_source_ids(
+                            gateway,
+                            "az_network_application-gateway_list",
+                            "az_network_application-gateway_show_--name_name_--resource-group_resourcegroup",
+                        ),
                         attachment_id=frontend_id,
                         relationship_id=relationship_id,
                         relationship_type=relationship_type,
@@ -659,7 +686,11 @@ def build_public_endpoint_topology(
                     connected=[],
                     ports=[],
                     protocols=[],
-                    source="az_network_application-gateway_list",
+                    sources=_source_ids(
+                        gateway,
+                        "az_network_application-gateway_list",
+                        "az_network_application-gateway_show_--name_name_--resource-group_resourcegroup",
+                    ),
                     attachment_id=frontend_id,
                     relationship_id=frontend_id,
                     relationship_type="frontend",
@@ -691,12 +722,16 @@ def build_public_endpoint_topology(
                     attachment_id=attachment or relationship.get("attachment_id"),
                     connected_ids=relationship["connected"],
                     association=relationship["association"],
-                    source_ids=("az_network_public-ip_list", relationship["source"]),
+                    source_ids=tuple(dict.fromkeys(
+                        _source_ids(public_ip, "az_network_public-ip_list")
+                        + tuple(relationship["sources"])
+                    )),
                     ports=relationship["ports"],
                     protocols=relationship["protocols"],
                     relationship_id=relationship.get("relationship_id"),
                     relationship_type=relationship.get("relationship_type"),
                     connection_path=relationship.get("connection_path", ()),
+                    public_ip_resource_id=public_id,
                 )
             continue
         elif nat_gateway:
@@ -717,13 +752,13 @@ def build_public_endpoint_topology(
             attachment_id=attachment,
             connected_ids=connected,
             association=association,
-            source_ids=tuple(
-                item
-                for item in ("az_network_public-ip_list", relationship_source)
-                if item
-            ),
+            source_ids=tuple(dict.fromkeys(
+                _source_ids(public_ip, "az_network_public-ip_list")
+                + ((relationship_source,) if relationship_source else ())
+            )),
             ports=ports,
             protocols=protocols,
+            public_ip_resource_id=public_id,
         )
 
     for vm_record in datasets.get("vm_ip_addresses", ()):
@@ -740,7 +775,8 @@ def build_public_endpoint_topology(
                 owner_id=owner,
                 attachment_id=public.get("id"),
                 association="virtual_machine",
-                source_ids=("az_vm_list-ip-addresses",),
+                source_ids=_source_ids(vm_record, "az_vm_list-ip-addresses"),
+                public_ip_resource_id=public.get("id"),
             )
 
     resource_sources = (
@@ -833,7 +869,11 @@ def build_public_endpoint_topology(
                     attachment_id=public_id,
                     connected_ids=connected,
                     association=association,
-                    source_ids=(source_id, "az_network_public-ip_list"),
+                    source_ids=tuple(dict.fromkeys(
+                        _source_ids(resource, source_id)
+                        + _source_ids(public_ip, "az_network_public-ip_list")
+                    )),
+                    public_ip_resource_id=public_id,
                 )
             for prefix_id in prefix_references:
                 prefix_consumers.setdefault(prefix_id, []).append(owner)
@@ -846,7 +886,7 @@ def build_public_endpoint_topology(
             owner_id=prefix_id,
             connected_ids=prefix_consumers.get(prefix_id, ()),
             association="public_ip_prefix",
-            source_ids=("az_network_public-ip_prefix_list",),
+            source_ids=_source_ids(prefix, "az_network_public-ip_prefix_list"),
         )
 
     for item in datasets.get("vmss_instance_public_ips", ()):
@@ -859,7 +899,11 @@ def build_public_endpoint_topology(
             owner_id=_resource_parent(owner),
             attachment_id=item.get("id"),
             association="vm_scale_set_instance",
-            source_ids=("az_vmss_list-instance-public-ips_--name_name_--resource-group_resourcegroup",),
+            source_ids=_source_ids(
+                item,
+                "az_vmss_list-instance-public-ips_--name_name_--resource-group_resourcegroup",
+            ),
+            public_ip_resource_id=item.get("id"),
         )
 
     service_specs = (
@@ -882,20 +926,20 @@ def build_public_endpoint_topology(
             ) or "unknown"
             for field in address_fields:
                 for address in _split_addresses(_nested(resource, field, f"properties.{field}")):
-                    add(address=address, direction=direction, owner_id=owner, association=association, source_ids=(source_id,), access_state=access_state)
+                    add(address=address, direction=direction, owner_id=owner, association=association, source_ids=_source_ids(resource, source_id), access_state=access_state)
             for field in fqdn_fields:
                 value = _nested(resource, field, f"properties.{field}")
                 candidates = value if isinstance(value, list) else (value,)
                 for fqdn in candidates:
                     if fqdn:
-                        add(fqdn=fqdn, direction=direction, owner_id=owner, association=association, source_ids=(source_id,), access_state=access_state)
+                        add(fqdn=fqdn, direction=direction, owner_id=owner, association=association, source_ids=_source_ids(resource, source_id), access_state=access_state)
 
             if association == "api_management":
                 for location in _items(_nested(resource, "additionalLocations", "properties.additionalLocations")):
                     for address in _split_addresses(
                         _nested(location, "publicIPAddresses", "properties.publicIPAddresses")
                     ):
-                        add(address=address, direction=direction, owner_id=owner, association=association, source_ids=(source_id,), access_state=access_state)
+                        add(address=address, direction=direction, owner_id=owner, association=association, source_ids=_source_ids(resource, source_id), access_state=access_state)
 
     managed_service_specs = (
         ("storage_accounts", "az_storage_account_list", "storage_account", ("primaryEndpoints", "properties.primaryEndpoints")),
@@ -935,11 +979,12 @@ def build_public_endpoint_topology(
             for field_path in field_paths:
                 value = _nested(resource, field_path)
                 for candidate in _endpoint_strings(value):
-                    add(fqdn=candidate, direction="inbound", owner_id=owner, association=association, source_ids=(source_id,), access_state=access_state)
+                    add(fqdn=candidate, direction="inbound", owner_id=owner, association=association, source_ids=_source_ids(resource, source_id), access_state=access_state)
 
-    afd_connections: Dict[str, List[str]] = {}
+    afd_routes_by_endpoint: Dict[str, List[Dict[str, Any]]] = {}
     origins_by_group: Dict[str, List[str]] = {}
     afd_origin_targets: Dict[str, List[str]] = {}
+    afd_origin_sources: Dict[str, Tuple[str, ...]] = {}
     for origin in datasets.get("afd_origins", ()):
         origin_id = canonical_arm_id(origin.get("id"))
         group_id = origin_id.split("/origins/", 1)[0] if "/origins/" in origin_id else ""
@@ -959,6 +1004,10 @@ def build_public_endpoint_topology(
                 targets.append(str(target))
         if origin_id:
             afd_origin_targets[origin_id] = list(dict.fromkeys(targets))
+            afd_origin_sources[origin_id] = _source_ids(
+                origin,
+                "arm_afd_origins",
+            )
         if group_id:
             origins_by_group.setdefault(group_id, []).append(origin_id)
     for route in datasets.get("afd_routes", ()):
@@ -977,7 +1026,35 @@ def build_public_endpoint_topology(
         ]
         connections += _reference_ids(route, "customDomains", "properties.customDomains")
         if endpoint_id:
-            afd_connections.setdefault(endpoint_id, []).extend(connections)
+            protocols = _nested(
+                route,
+                "supportedProtocols",
+                "properties.supportedProtocols",
+            )
+            if not isinstance(protocols, list):
+                protocols = ["Http", "Https"]
+            protocol_names = [
+                normalise_identifier(protocol)
+                for protocol in protocols
+                if normalise_identifier(protocol) in {"http", "https"}
+            ]
+            source_ids = list(_source_ids(route, "arm_afd_routes"))
+            for origin_id in connections:
+                source_ids.extend(afd_origin_sources.get(origin_id, ()))
+            afd_routes_by_endpoint.setdefault(endpoint_id, []).append({
+                "id": route_id,
+                "connections": list(dict.fromkeys(connections)),
+                "protocols": list(dict.fromkeys(protocol_names)),
+                "ports": [
+                    port
+                    for protocol, port in (("http", 80), ("https", 443))
+                    if protocol in protocol_names
+                ],
+                "accessState": normalise_identifier(
+                    _nested(route, "enabledState", "properties.enabledState")
+                ) or "unknown",
+                "sourceEndpointIds": list(dict.fromkeys(source_ids)),
+            })
 
     for dataset_name, source_id, association in (
         ("container_instances", "az_container_list", "container_instance"),
@@ -994,38 +1071,124 @@ def build_public_endpoint_topology(
             if not is_public:
                 continue
             ports = [item.get("port") for item in _items(ip_config.get("ports"))]
-            add(address=ip_config.get("ip"), fqdn=ip_config.get("fqdn") or ingress.get("fqdn"), direction="inbound", owner_id=_owner_id(resource), association=association, source_ids=(source_id,), ports=ports)
+            add(address=ip_config.get("ip"), fqdn=ip_config.get("fqdn") or ingress.get("fqdn"), direction="inbound", owner_id=_owner_id(resource), association=association, source_ids=_source_ids(resource, source_id), ports=ports)
             for address in _split_addresses(_nested(resource, "outboundIpAddresses", "properties.outboundIpAddresses")):
-                add(address=address, direction="outbound", owner_id=_owner_id(resource), association=association, source_ids=(source_id,))
+                add(address=address, direction="outbound", owner_id=_owner_id(resource), association=association, source_ids=_source_ids(resource, source_id))
 
     for cluster in datasets.get("aks_clusters", ()):
         if _nested(cluster, "apiServerAccessProfile.enablePrivateCluster", "properties.apiServerAccessProfile.enablePrivateCluster") is True:
             continue
         fqdn = _nested(cluster, "fqdn", "properties.fqdn")
         if fqdn:
-            add(fqdn=fqdn, direction="management", owner_id=_owner_id(cluster), association="aks_api_server", source_ids=("az_aks_list",), ports=(443,), protocols=("https",))
+            add(fqdn=fqdn, direction="management", owner_id=_owner_id(cluster), association="aks_api_server", source_ids=_source_ids(cluster, "az_aks_list"), ports=(443,), protocols=("https",))
 
-    for dataset_name, source_id, association in (
-        ("afd_endpoints", "arm_afd_endpoints", "front_door_endpoint"),
-        ("cdn_endpoints", "arm_cdn_endpoints", "cdn_endpoint"),
-        ("traffic_manager_profiles", "az_network_traffic-manager_profile_list", "traffic_manager"),
-    ):
-        for endpoint in datasets.get(dataset_name, ()):
-            fqdn = _nested(endpoint, "hostName", "properties.hostName", "dnsConfig.fqdn", "properties.dnsConfig.fqdn")
-            if fqdn:
-                owner = _owner_id(endpoint)
-                connected = list(afd_connections.get(owner, ()))
-                connected += _reference_ids(endpoint, "origins", "properties.origins")
-                for origin in _items(_nested(endpoint, "origins", "properties.origins")):
-                    target = _nested(origin, "hostName", "properties.hostName")
-                    if target:
-                        connected.append(str(target))
-                for tm_endpoint in _items(_nested(endpoint, "endpoints", "properties.endpoints")):
-                    connected += _reference_ids(tm_endpoint, "targetResourceId", "properties.targetResourceId")
-                    target = _nested(tm_endpoint, "target", "properties.target")
-                    if target:
-                        connected.append(str(target))
-                add(fqdn=fqdn, direction="inbound", owner_id=owner, connected_ids=connected, association=association, source_ids=(source_id,), ports=(80, 443), protocols=("http", "https"))
+    for endpoint in datasets.get("afd_endpoints", ()):
+        fqdn = _nested(endpoint, "hostName", "properties.hostName")
+        if not fqdn:
+            continue
+        owner = _owner_id(endpoint)
+        endpoint_sources = _source_ids(endpoint, "arm_afd_endpoints")
+        routes = afd_routes_by_endpoint.get(owner, ())
+        if not routes:
+            add(
+                fqdn=fqdn,
+                direction="inbound",
+                owner_id=owner,
+                association="front_door_endpoint",
+                source_ids=endpoint_sources,
+            )
+            continue
+        for route in routes:
+            add(
+                fqdn=fqdn,
+                direction="inbound",
+                owner_id=owner,
+                connected_ids=route["connections"],
+                association="front_door_endpoint",
+                source_ids=tuple(dict.fromkeys(
+                    endpoint_sources + tuple(route["sourceEndpointIds"])
+                )),
+                ports=route["ports"],
+                protocols=route["protocols"],
+                access_state=route["accessState"],
+                relationship_id=route["id"],
+                relationship_type="front_door_route",
+                connection_path=(route["id"], *route["connections"]),
+            )
+
+    for endpoint in datasets.get("cdn_endpoints", ()):
+        fqdn = _nested(endpoint, "hostName", "properties.hostName")
+        if not fqdn:
+            continue
+        connected = _reference_ids(endpoint, "origins", "properties.origins")
+        for origin in _items(_nested(endpoint, "origins", "properties.origins")):
+            target = _nested(origin, "hostName", "properties.hostName")
+            if target:
+                connected.append(str(target))
+        http_allowed = _nested(endpoint, "isHttpAllowed", "properties.isHttpAllowed")
+        https_allowed = _nested(endpoint, "isHttpsAllowed", "properties.isHttpsAllowed")
+        protocols = [
+            protocol
+            for protocol, allowed in (("http", http_allowed), ("https", https_allowed))
+            if allowed is not False
+        ]
+        add(
+            fqdn=fqdn,
+            direction="inbound",
+            owner_id=_owner_id(endpoint),
+            connected_ids=connected,
+            association="cdn_endpoint",
+            source_ids=_source_ids(endpoint, "arm_cdn_endpoints"),
+            ports=(80 if "http" in protocols else None, 443 if "https" in protocols else None),
+            protocols=protocols,
+            access_state=normalise_identifier(
+                _nested(endpoint, "resourceState", "properties.resourceState")
+            ) or "unknown",
+        )
+
+    for profile in datasets.get("traffic_manager_profiles", ()):
+        fqdn = _nested(profile, "dnsConfig.fqdn", "properties.dnsConfig.fqdn")
+        if not fqdn:
+            continue
+        owner = _owner_id(profile)
+        profile_sources = _source_ids(
+            profile,
+            "az_network_traffic-manager_profile_list",
+        )
+        endpoints = _items(_nested(profile, "endpoints", "properties.endpoints"))
+        if not endpoints:
+            add(
+                fqdn=fqdn,
+                direction="inbound",
+                owner_id=owner,
+                association="traffic_manager",
+                source_ids=profile_sources,
+            )
+            continue
+        for endpoint in endpoints:
+            connected = _reference_ids(
+                endpoint,
+                "targetResourceId",
+                "properties.targetResourceId",
+            )
+            target = _nested(endpoint, "target", "properties.target")
+            if target:
+                connected.append(str(target))
+            endpoint_id = endpoint.get("id")
+            add(
+                fqdn=fqdn,
+                direction="inbound",
+                owner_id=owner,
+                connected_ids=connected,
+                association="traffic_manager",
+                source_ids=profile_sources,
+                access_state=normalise_identifier(
+                    _nested(endpoint, "endpointStatus", "properties.endpointStatus")
+                ) or "unknown",
+                relationship_id=endpoint_id,
+                relationship_type="traffic_manager_endpoint",
+                connection_path=(endpoint_id, *connected),
+            )
 
     if dns_resolver:
         unique_fqdns = {
@@ -1101,8 +1264,15 @@ def build_public_endpoint_topology(
         owner = str(record.get("ownerResourceId") or "")
         if not owner:
             continue
-        if record.get("address"):
-            owners_by_address.setdefault(str(record["address"]), set()).add(owner)
+        if record.get("address") and record.get("addressOrigin") == "control_plane":
+            address_owners = owners_by_address.setdefault(
+                str(record["address"]),
+                set(),
+            )
+            address_owners.add(owner)
+            public_ip_id = str(record.get("publicIpResourceId") or "")
+            if public_ip_id:
+                address_owners.add(public_ip_id)
         if record.get("fqdn"):
             owners_by_fqdn.setdefault(str(record["fqdn"]).casefold(), set()).add(owner)
     for record in records.values():
@@ -1150,16 +1320,29 @@ def analyse_unassociated_public_addresses(
     """Identify allocated Public IP resources without an attributable attachment."""
 
     topology = list(topology)
-    eligible = [
-        {
-            "ownerResourceId": item.get("ownerResourceId"),
-            "address": item.get("address"),
-            "addressPrefix": item.get("addressPrefix"),
-        }
-        for item in topology
-        if "az_network_public-ip_list" in (item.get("sourceEndpointIds") or [])
-        and (item.get("address") or item.get("addressPrefix"))
-    ]
+    eligible_by_public_ip = {}
+    for item in topology:
+        if "az_network_public-ip_list" not in (item.get("sourceEndpointIds") or []):
+            continue
+        if not (item.get("address") or item.get("addressPrefix")):
+            continue
+        public_ip_id = item.get("publicIpResourceId") or (
+            item.get("ownerResourceId")
+            if item.get("associationType") == "unassociated"
+            else None
+        )
+        key = str(public_ip_id or item.get("address") or item.get("addressPrefix"))
+        eligible_by_public_ip.setdefault(
+            key,
+            {
+                "id": public_ip_id or key,
+                "publicIpResourceId": public_ip_id,
+                "ownerResourceId": public_ip_id,
+                "address": item.get("address"),
+                "addressPrefix": item.get("addressPrefix"),
+            },
+        )
+    eligible = list(eligible_by_public_ip.values())
     observations = [
         dict(item)
         for item in topology
