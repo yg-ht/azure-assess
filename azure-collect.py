@@ -3629,7 +3629,7 @@ PUBLIC_ENDPOINT_TOPOLOGY_SOURCES = {
 }
 
 
-def save_current_public_endpoint_topology(resolve_dns=False):
+def save_current_public_endpoint_topology(resolve_dns=True):
     """Create a point-in-time, cross-service public endpoint association dataset."""
     datasets = {
         logical_name: [
@@ -3676,11 +3676,13 @@ def save_current_public_endpoint_topology(resolve_dns=False):
             "logicalInput": "dns_snapshot",
             "sourceEndpointId": None,
             "collectionStatuses": [],
-            "coverageState": "disabled",
+            "coverageState": "enabled" if resolve_dns else "disabled",
             "recordCount": 0,
             "limitation": (
-                "FQDNs are retained but are not resolved because implicit DNS "
-                "queries would disclose tenant-derived hostnames to the configured resolver."
+                "Collected FQDNs are sent to the collector host's configured DNS "
+                "resolver and results are retained as point-in-time observations."
+                if resolve_dns
+                else "FQDNs were retained but not resolved."
             ),
             "_collectionContext": {"derived": True, "generatedAt": utc_timestamp()},
         },
@@ -3715,6 +3717,13 @@ def save_current_public_endpoint_topology(resolve_dns=False):
         collected_at=utc_timestamp(),
         dns_resolver=resolve_public_fqdns if resolve_dns else None,
     )
+    dns_observation_count = sum(
+        1 for record in topology if record.get("addressOrigin") == "dns_snapshot"
+    )
+    for item in coverage:
+        if item.get("logicalInput") == "dns_snapshot":
+            item["recordCount"] = dns_observation_count
+            break
     save_json(
         topology,
         f"azure_public_endpoint_topology_{START_TIMESTAMP}.json",
@@ -4885,9 +4894,9 @@ def execute_collection(args, max_workers):
         max_workers=max_workers,
     )
 
-    # Topology generation is control-plane-only by default. Resolving collected
-    # FQDNs would disclose tenant-derived names to the configured DNS resolver.
-    save_current_public_endpoint_topology(resolve_dns=False)
+    # DNS observations are explicitly labelled as point-in-time evidence and
+    # never treated as proof of exclusive tenant ownership.
+    save_current_public_endpoint_topology(resolve_dns=True)
 
     if not args.donotenrich and not args.endpoint:
         # Special handling for role assignments

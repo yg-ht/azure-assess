@@ -1,7 +1,7 @@
 import importlib.util
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from azure_assess.public_endpoints import (
     analyse_unassociated_public_addresses,
@@ -143,7 +143,7 @@ class PublicEndpointRegistryTests(unittest.TestCase):
             "CDN Endpoints",
         }.issubset(parameter_names))
 
-    def test_derived_datasets_are_saved_without_implicit_dns_resolution(self):
+    def test_derived_datasets_use_the_approved_dns_resolver(self):
         saved = []
 
         class Manifest:
@@ -154,11 +154,17 @@ class PublicEndpointRegistryTests(unittest.TestCase):
         def load(prefix):
             if prefix == "az_network_public-ip_list":
                 return [{"id": PIP, "ipAddress": "8.8.8.8"}]
+            if prefix == "az_webapp_list":
+                return [{
+                    "id": f"{SUB}/Microsoft.Web/sites/app-one",
+                    "defaultHostName": "app-one.azurewebsites.net",
+                }]
             return []
 
         def save(data, filename, **_kwargs):
             saved.append((filename, data))
 
+        resolver = Mock(return_value=["8.8.4.4"])
         with (
             patch.object(self.collector, "COLLECTION_MANIFEST", Manifest()),
             patch.object(
@@ -169,21 +175,28 @@ class PublicEndpointRegistryTests(unittest.TestCase):
             ),
             patch.object(self.collector, "load_current_dataset", side_effect=load),
             patch.object(self.collector, "save_json", side_effect=save),
-            patch.object(
-                self.collector,
-                "resolve_public_fqdns",
-                side_effect=AssertionError("DNS must not be called"),
-            ),
+            patch.object(self.collector, "resolve_public_fqdns", resolver),
         ):
             topology = self.collector.save_current_public_endpoint_topology()
 
-        self.assertEqual(len(topology), 1)
+        self.assertEqual(len(topology), 3)
+        resolver.assert_called_once_with("app-one.azurewebsites.net")
         self.assertEqual(
             [item[0] for item in saved],
             [
                 "azure_public_endpoint_topology_20260807-120000.json",
                 "azure_public_endpoint_topology_coverage_20260807-120000.json",
             ],
+        )
+        coverage = saved[1][1]
+        dns_coverage = next(
+            item for item in coverage if item["logicalInput"] == "dns_snapshot"
+        )
+        self.assertEqual(dns_coverage["coverageState"], "enabled")
+        self.assertEqual(dns_coverage["recordCount"], 1)
+        self.assertEqual(
+            len([item for item in topology if item["addressOrigin"] == "dns_snapshot"]),
+            1,
         )
 
 
