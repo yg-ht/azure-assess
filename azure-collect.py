@@ -745,6 +745,14 @@ AZURE_CLI_ENDPOINTS = [
 
 AZURE_CLI_ENDPOINTS_PARAMS = [
     {
+        "name": "Public DNS Record Sets",
+        "cli_command": "az network dns record-set list --zone-name {name} --resource-group {resourceGroup}",
+        "required_params": {
+            "name": "az_network_dns_zone_list",
+            "resourceGroup": "az_network_dns_zone_list",
+        },
+    },
+    {
         "name": "VM Scale Set Instance Public IPs",
         "cli_command": "az vmss list-instance-public-ips --name {name} --resource-group {resourceGroup}",
         "required_params": {"name": "az_vmss_list", "resourceGroup": "az_vmss_list"},
@@ -3553,6 +3561,9 @@ def load_current_dataset(prefix):
 PUBLIC_ENDPOINT_TOPOLOGY_SOURCES = {
     "public_ips": ("az_network_public-ip_list",),
     "public_ip_prefixes": ("az_network_public-ip_prefix_list",),
+    "public_dns_records": (
+        "az_network_dns_record-set_list_--zone-name_name_--resource-group_resourcegroup",
+    ),
     "nics": ("az_network_nic_list",),
     "vm_ip_addresses": ("az_vm_list-ip-addresses",),
     "load_balancers": ("az_network_lb_list",),
@@ -3616,6 +3627,11 @@ PUBLIC_ENDPOINT_TOPOLOGY_SOURCES = {
     "event_grid_domains": ("az_eventgrid_domain_list",),
     "event_hubs": ("az_eventhubs_namespace_list",),
     "service_bus": ("az_servicebus_namespace_list",),
+    "relay_namespaces": ("az_relay_namespace_list",),
+    "signalr_services": (
+        "az_signalr_show_--name_name_--resource-group_resourcegroup",
+        "az_signalr_list",
+    ),
     "iot_hubs": ("az_iot_hub_list",),
     "iot_dps": ("az_iot_dps_list",),
     "synapse_workspaces": ("az_synapse_workspace_list",),
@@ -3626,6 +3642,9 @@ PUBLIC_ENDPOINT_TOPOLOGY_SOURCES = {
     "aro_clusters": ("az_aro_list",),
     "purview_accounts": ("az_purview_account_list",),
     "logic_apps": ("az_logicapp_list",),
+    "hdinsight_clusters": (
+        "az_hdinsight_show_--name_name_--resource-group_resourcegroup",
+    ),
 }
 
 
@@ -3671,21 +3690,27 @@ def save_current_public_endpoint_topology(resolve_dns=True):
                     "generatedAt": utc_timestamp(),
                 },
             })
+    dns_coverage = {
+        "logicalInput": "dns_snapshot",
+        "sourceEndpointId": None,
+        "collectionStatuses": [],
+        "coverageState": "pending" if resolve_dns else "disabled",
+        "recordCount": 0,
+        "hostnameCount": 0,
+        "resolvedHostnameCount": 0,
+        "noPublicAnswerCount": 0,
+        "failedCount": 0,
+        "hostnameOutcomes": [],
+        "limitation": (
+            "Collected FQDNs are sent to the collector host's configured DNS "
+            "resolver and results are retained as point-in-time observations."
+            if resolve_dns
+            else "FQDNs were retained but not resolved."
+        ),
+        "_collectionContext": {"derived": True, "generatedAt": utc_timestamp()},
+    }
     coverage.extend([
-        {
-            "logicalInput": "dns_snapshot",
-            "sourceEndpointId": None,
-            "collectionStatuses": [],
-            "coverageState": "enabled" if resolve_dns else "disabled",
-            "recordCount": 0,
-            "limitation": (
-                "Collected FQDNs are sent to the collector host's configured DNS "
-                "resolver and results are retained as point-in-time observations."
-                if resolve_dns
-                else "FQDNs were retained but not resolved."
-            ),
-            "_collectionContext": {"derived": True, "generatedAt": utc_timestamp()},
-        },
+        dns_coverage,
         {
             "logicalInput": "aks_workload_data_plane",
             "sourceEndpointId": None,
@@ -3712,18 +3737,67 @@ def save_current_public_endpoint_topology(resolve_dns=True):
         },
     ])
     print("[*] Correlating public endpoint ownership and configured addresses...", flush=True)
+    dns_diagnostics = []
+
+    def report_dns_progress(event, details):
+        if event == "started":
+            total = int(details.get("total") or 0)
+            if total:
+                print(
+                    f"[*] Resolving {total} collected public-endpoint FQDN(s) "
+                    "with up to 8 workers and a 5-second per-name timeout...",
+                    flush=True,
+                )
+            else:
+                print("[~] No collected public-endpoint FQDNs require resolution.", flush=True)
+        elif event == "progress":
+            completed = int(details.get("completed") or 0)
+            total = int(details.get("total") or 0)
+            if completed == total or completed % 25 == 0:
+                print(
+                    f"[~] Public-endpoint DNS: {completed}/{total} complete; "
+                    f"{int(details.get('failed') or 0)} failed.",
+                    flush=True,
+                )
+
     topology = build_public_endpoint_topology(
         datasets,
         collected_at=utc_timestamp(),
         dns_resolver=resolve_public_fqdns if resolve_dns else None,
+        dns_diagnostics=dns_diagnostics,
+        dns_progress=report_dns_progress if resolve_dns else None,
     )
     dns_observation_count = sum(
         1 for record in topology if record.get("addressOrigin") == "dns_snapshot"
     )
-    for item in coverage:
-        if item.get("logicalInput") == "dns_snapshot":
-            item["recordCount"] = dns_observation_count
-            break
+    dns_statuses = Counter(item["status"] for item in dns_diagnostics)
+    dns_coverage.update({
+        "collectionStatuses": sorted(dns_statuses),
+        "recordCount": dns_observation_count,
+        "hostnameCount": len(dns_diagnostics),
+        "resolvedHostnameCount": dns_statuses["resolved"],
+        "noPublicAnswerCount": dns_statuses["no_public_answer"],
+        "failedCount": dns_statuses["failed"],
+        "hostnameOutcomes": sorted(
+            dns_diagnostics,
+            key=lambda item: str(item.get("hostname") or ""),
+        ),
+    })
+    if not resolve_dns:
+        dns_coverage["coverageState"] = "disabled"
+    elif not dns_diagnostics:
+        dns_coverage["coverageState"] = "not_applicable"
+    elif dns_statuses["failed"] == len(dns_diagnostics):
+        dns_coverage["coverageState"] = "failed"
+    elif dns_statuses["failed"]:
+        dns_coverage["coverageState"] = "partial"
+    else:
+        dns_coverage["coverageState"] = "complete"
+    if dns_statuses["failed"]:
+        dns_coverage["limitation"] += (
+            f" {dns_statuses['failed']} of {len(dns_diagnostics)} hostname "
+            "resolutions failed; affected address associations are incomplete."
+        )
     save_json(
         topology,
         f"azure_public_endpoint_topology_{START_TIMESTAMP}.json",

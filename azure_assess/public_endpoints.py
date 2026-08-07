@@ -10,7 +10,7 @@ import subprocess
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from .findings_correlation import CorrelationResult, canonical_arm_id, normalise_identifier
 
@@ -120,6 +120,20 @@ def _walk_mappings(value: Any) -> Iterable[Mapping[str, Any]]:
             yield from _walk_mappings(child)
 
 
+def _endpoint_strings(value: Any) -> Iterable[str]:
+    """Yield hostname-like strings from a declared endpoint property."""
+
+    if isinstance(value, str):
+        if _hostname(value):
+            yield value
+    elif isinstance(value, Mapping):
+        for child in value.values():
+            yield from _endpoint_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _endpoint_strings(child)
+
+
 def _owner_id(record: Mapping[str, Any]) -> str:
     identifier = canonical_arm_id(record.get("id"))
     if identifier:
@@ -140,6 +154,8 @@ def build_public_endpoint_topology(
     datasets: Mapping[str, Iterable[Mapping[str, Any]]],
     collected_at: Optional[str] = None,
     dns_resolver: Optional[Callable[[str], Iterable[str]]] = None,
+    dns_diagnostics: Optional[List[Dict[str, Any]]] = None,
+    dns_progress: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
 ) -> List[Dict[str, Any]]:
     """Return one deterministic record per configured public address relationship.
 
@@ -167,6 +183,9 @@ def build_public_endpoint_topology(
         protocols: Iterable[Any] = (),
         address_origin: str = "control_plane",
         access_state: str = "unknown",
+        relationship_id: Any = None,
+        relationship_type: Optional[str] = None,
+        connection_path: Iterable[Any] = (),
     ) -> None:
         public_address = _public_ip(address) if address else None
         public_prefix = None
@@ -210,6 +229,12 @@ def build_public_endpoint_topology(
         )
         port_values = sorted({int(item) for item in ports if str(item).isdigit()})
         protocol_values = sorted({normalise_identifier(item) for item in protocols if item})
+        relationship = canonical_arm_id(relationship_id)
+        path_values = [
+            canonical_arm_id(item) if str(item or "").strip().startswith("/") else str(item).strip().casefold()
+            for item in connection_path
+            if str(item or "").strip()
+        ]
         key = (
             public_address or "",
             public_prefix or "",
@@ -221,6 +246,12 @@ def build_public_endpoint_topology(
             ",".join(connected_resources),
             ",".join(connected_targets),
             ",".join(str(item) for item in port_values),
+            ",".join(protocol_values),
+            relationship,
+            normalise_identifier(relationship_type),
+            ",".join(path_values),
+            address_origin,
+            access_state,
         )
         records[key] = {
             "schemaVersion": TOPOLOGY_SCHEMA_VERSION,
@@ -240,12 +271,16 @@ def build_public_endpoint_topology(
             "attachmentResourceId": attachment or None,
             "connectedResourceIds": connected_resources,
             "connectedTargets": connected_targets,
+            "candidateConnectedResourceIds": [],
             "associationType": association,
             "confidence": confidence,
             "addressOrigin": address_origin,
             "accessState": access_state,
             "ports": port_values,
             "protocols": protocol_values,
+            "relationshipId": relationship or None,
+            "relationshipType": normalise_identifier(relationship_type) or None,
+            "connectionPath": path_values,
             "sourceEndpointIds": sorted(set(source_ids)),
             "_collectionContext": {
                 "derived": True,
@@ -271,16 +306,94 @@ def build_public_endpoint_topology(
     load_balancers = list(datasets.get("load_balancers", ()))
     application_gateways = list(datasets.get("application_gateways", ()))
 
-    reverse_attachments: Dict[
-        str, Tuple[str, str, List[str], List[int], List[str], str]
-    ] = {}
+    for record_set in datasets.get("public_dns_records", ()):
+        context = _context(record_set).get("parameters") or {}
+        zone_name = str(context.get("name") or "").strip().rstrip(".")
+        relative_name = str(record_set.get("name") or "").strip().rstrip(".")
+        fqdn = _nested(record_set, "fqdn", "properties.fqdn")
+        if not fqdn and zone_name:
+            fqdn = zone_name if relative_name in {"", "@"} else f"{relative_name}.{zone_name}"
+        targets = _reference_ids(
+            record_set,
+            "targetResource",
+            "properties.targetResource",
+        )
+        cname = _nested(
+            record_set,
+            "cnameRecord.cname",
+            "properties.CNAMERecord.cname",
+            "properties.cnameRecord.cname",
+        )
+        if cname:
+            targets.append(str(cname))
+        addresses = [
+            value
+            for field, key in (("aRecords", "ipv4Address"), ("aaaaRecords", "ipv6Address"))
+            for item in _items(_nested(record_set, field, f"properties.{field}"))
+            for value in (item.get(key),)
+            if value
+        ]
+        if not addresses and not cname and not targets:
+            continue
+        if addresses:
+            for address in addresses:
+                add(
+                    address=address,
+                    fqdn=fqdn,
+                    direction="inbound",
+                    owner_id=_owner_id(record_set),
+                    connected_ids=targets,
+                    association="public_dns_record",
+                    source_ids=(
+                        "az_network_dns_record-set_list_--zone-name_name_--resource-group_resourcegroup",
+                    ),
+                    relationship_id=record_set.get("id"),
+                    relationship_type="dns_address_record",
+                )
+        elif fqdn:
+            add(
+                fqdn=fqdn,
+                direction="inbound",
+                owner_id=_owner_id(record_set),
+                connected_ids=targets,
+                association="public_dns_record",
+                source_ids=(
+                    "az_network_dns_record-set_list_--zone-name_name_--resource-group_resourcegroup",
+                ),
+                relationship_id=record_set.get("id"),
+                relationship_type="dns_alias_record",
+            )
+
+    reverse_attachments: Dict[str, List[Dict[str, Any]]] = {}
+    nic_ip_connections: Dict[str, List[str]] = {}
+
+    def register_reverse_attachment(public_id: str, **relationship: Any) -> None:
+        if public_id:
+            reverse_attachments.setdefault(public_id, []).append(relationship)
+
     for nic in nics:
         owner = _owner_id(nic)
         connected = _reference_ids(nic, "virtualMachine", "properties.virtualMachine")
         for config in _items(_nested(nic, "ipConfigurations", "properties.ipConfigurations")):
+            config_id = canonical_arm_id(config.get("id"))
+            if config_id:
+                nic_ip_connections[config_id] = list(
+                    dict.fromkeys([owner] + connected)
+                )
             for public_id in _reference_ids(config, "publicIPAddress", "properties.publicIPAddress"):
-                reverse_attachments[public_id] = (
-                    owner, "nic", connected, [], [], "az_network_nic_list"
+                register_reverse_attachment(
+                    public_id,
+                    owner=owner,
+                    association="nic",
+                    connected=connected,
+                    ports=[],
+                    protocols=[],
+                    source="az_network_nic_list",
+                    attachment_id=config.get("id"),
+                    relationship_id=config.get("id"),
+                    relationship_type="ip_configuration",
+                    connection_path=(owner, config.get("id"), *connected),
+                    direction="both",
                 )
 
     for balancer in load_balancers:
@@ -289,45 +402,269 @@ def build_public_endpoint_topology(
             canonical_arm_id(item.get("id")): item
             for item in _items(_nested(balancer, "frontendIPConfigurations", "properties.frontendIPConfigurations"))
         }
-        rules = _items(_nested(balancer, "loadBalancingRules", "properties.loadBalancingRules"))
-        rules += _items(_nested(balancer, "inboundNatRules", "properties.inboundNatRules"))
+        pool_targets: Dict[str, List[str]] = {}
+        for pool in _items(_nested(balancer, "backendAddressPools", "properties.backendAddressPools")):
+            pool_id = canonical_arm_id(pool.get("id"))
+            targets = _reference_ids(
+                pool,
+                "backendIPConfigurations",
+                "properties.backendIPConfigurations",
+            )
+            for backend in _items(
+                _nested(pool, "loadBalancerBackendAddresses", "properties.loadBalancerBackendAddresses")
+            ):
+                targets += _reference_ids(
+                    backend,
+                    "networkInterfaceIPConfiguration",
+                    "properties.networkInterfaceIPConfiguration",
+                )
+                target = _nested(backend, "ipAddress", "properties.ipAddress")
+                if target:
+                    targets.append(str(target))
+            for target in list(targets):
+                targets += nic_ip_connections.get(canonical_arm_id(target), [])
+            if pool_id:
+                pool_targets[pool_id] = list(dict.fromkeys(targets))
+        rules = [
+            (item, "load_balancing_rule", "inbound")
+            for item in _items(_nested(balancer, "loadBalancingRules", "properties.loadBalancingRules"))
+        ]
+        rules += [
+            (item, "inbound_nat_rule", "inbound")
+            for item in _items(_nested(balancer, "inboundNatRules", "properties.inboundNatRules"))
+        ]
+        rules += [
+            (item, "inbound_nat_pool", "inbound")
+            for item in _items(_nested(balancer, "inboundNatPools", "properties.inboundNatPools"))
+        ]
+        rules += [
+            (item, "outbound_rule", "outbound")
+            for item in _items(_nested(balancer, "outboundRules", "properties.outboundRules"))
+        ]
         for frontend_id, frontend in frontends.items():
-            connected: List[str] = []
-            ports: List[int] = []
-            protocols: List[str] = []
-            for rule in rules:
+            public_ids = _reference_ids(
+                frontend, "publicIPAddress", "properties.publicIPAddress"
+            )
+            matched = False
+            for rule, relationship_type, direction in rules:
                 if frontend_id not in _reference_ids(rule, "frontendIPConfiguration", "properties.frontendIPConfiguration"):
                     continue
-                connected += _reference_ids(rule, "backendAddressPool", "properties.backendAddressPool")
-                port = _nested(rule, "frontendPort", "properties.frontendPort")
-                if str(port).isdigit():
-                    ports.append(int(port))
-                protocol = _nested(rule, "protocol", "properties.protocol")
-                if protocol:
-                    protocols.append(str(protocol))
-            for public_id in _reference_ids(frontend, "publicIPAddress", "properties.publicIPAddress"):
-                reverse_attachments[public_id] = (
-                    owner, "load_balancer", connected, ports, protocols,
-                    "az_network_lb_list",
+                matched = True
+                pool_ids = _reference_ids(
+                    rule, "backendAddressPool", "properties.backendAddressPool"
                 )
+                connected = list(pool_ids)
+                for pool_id in pool_ids:
+                    connected += pool_targets.get(pool_id, [])
+                connected += _reference_ids(
+                    rule,
+                    "backendIPConfiguration",
+                    "properties.backendIPConfiguration",
+                )
+                port = _nested(rule, "frontendPort", "properties.frontendPort")
+                protocol = _nested(rule, "protocol", "properties.protocol")
+                rule_id = rule.get("id")
+                for public_id in public_ids:
+                    register_reverse_attachment(
+                        public_id,
+                        owner=owner,
+                        association="load_balancer",
+                        connected=connected,
+                        ports=[port] if str(port).isdigit() else [],
+                        protocols=[protocol] if protocol else [],
+                        source="az_network_lb_list",
+                        attachment_id=frontend_id,
+                        relationship_id=rule_id,
+                        relationship_type=relationship_type,
+                        connection_path=(frontend_id, rule_id, *pool_ids, *connected),
+                        direction=direction,
+                    )
+            if not matched:
+                for public_id in public_ids:
+                    register_reverse_attachment(
+                        public_id,
+                        owner=owner,
+                        association="load_balancer",
+                        connected=[],
+                        ports=[],
+                        protocols=[],
+                        source="az_network_lb_list",
+                        attachment_id=frontend_id,
+                        relationship_id=frontend_id,
+                        relationship_type="frontend",
+                        connection_path=(frontend_id,),
+                        direction="inbound",
+                    )
 
     for gateway in application_gateways:
         owner = _owner_id(gateway)
         frontends = _items(_nested(gateway, "frontendIPConfigurations", "properties.frontendIPConfigurations"))
         pools = _items(_nested(gateway, "backendAddressPools", "properties.backendAddressPools"))
-        connected = [value for pool in pools for value in _reference_ids(pool, "backendIPConfigurations", "properties.backendIPConfigurations")]
-        connected += [
-            str(value)
-            for pool in pools
-            for item in _items(_nested(pool, "backendAddresses", "properties.backendAddresses"))
-            for value in (item.get("ipAddress"), item.get("fqdn"))
-            if value
-        ]
-        for frontend in frontends:
-            for public_id in _reference_ids(frontend, "publicIPAddress", "properties.publicIPAddress"):
-                reverse_attachments[public_id] = (
-                    owner, "application_gateway", connected, [], [],
-                    "az_network_application-gateway_list",
+        pool_targets = {}
+        for pool in pools:
+            pool_id = canonical_arm_id(pool.get("id"))
+            targets = _reference_ids(
+                pool, "backendIPConfigurations", "properties.backendIPConfigurations"
+            )
+            targets += [
+                str(value)
+                for item in _items(_nested(pool, "backendAddresses", "properties.backendAddresses"))
+                for value in (item.get("ipAddress"), item.get("fqdn"))
+                if value
+            ]
+            for target in list(targets):
+                targets += nic_ip_connections.get(canonical_arm_id(target), [])
+            if pool_id:
+                pool_targets[pool_id] = list(dict.fromkeys(targets))
+        frontend_public_ids = {
+            canonical_arm_id(frontend.get("id")): _reference_ids(
+                frontend, "publicIPAddress", "properties.publicIPAddress"
+            )
+            for frontend in frontends
+        }
+        frontend_ports = {
+            canonical_arm_id(item.get("id")): _nested(item, "port", "properties.port")
+            for item in _items(_nested(gateway, "frontendPorts", "properties.frontendPorts"))
+        }
+        listeners = {
+            canonical_arm_id(item.get("id")): item
+            for item in _items(_nested(gateway, "httpListeners", "properties.httpListeners"))
+        }
+        path_maps = {
+            canonical_arm_id(item.get("id")): item
+            for item in _items(_nested(gateway, "urlPathMaps", "properties.urlPathMaps"))
+        }
+        redirect_configurations = {
+            canonical_arm_id(item.get("id")): item
+            for item in _items(
+                _nested(gateway, "redirectConfigurations", "properties.redirectConfigurations")
+            )
+        }
+
+        def register_gateway_route(
+            listener_id: str,
+            pool_id: str,
+            relationship_id: Any,
+            relationship_type: str,
+            path: Iterable[Any],
+            extra_connected: Iterable[Any] = (),
+        ) -> None:
+            listener = listeners.get(listener_id, {})
+            frontend_ids = _reference_ids(
+                listener, "frontendIPConfiguration", "properties.frontendIPConfiguration"
+            )
+            port_ids = _reference_ids(listener, "frontendPort", "properties.frontendPort")
+            ports = [frontend_ports[item] for item in port_ids if frontend_ports.get(item) is not None]
+            protocol = _nested(listener, "protocol", "properties.protocol")
+            connected = (
+                ([pool_id] if pool_id else [])
+                + pool_targets.get(pool_id, [])
+                + list(extra_connected)
+            )
+            for frontend_id in frontend_ids:
+                for public_id in frontend_public_ids.get(frontend_id, ()):
+                    register_reverse_attachment(
+                        public_id,
+                        owner=owner,
+                        association="application_gateway",
+                        connected=connected,
+                        ports=ports,
+                        protocols=[protocol] if protocol else [],
+                        source="az_network_application-gateway_list",
+                        attachment_id=frontend_id,
+                        relationship_id=relationship_id,
+                        relationship_type=relationship_type,
+                        connection_path=(frontend_id, listener_id, *path, pool_id, *connected),
+                        direction="inbound",
+                    )
+
+        matched_frontends = set()
+        for rule in _items(_nested(gateway, "requestRoutingRules", "properties.requestRoutingRules")):
+            rule_id = canonical_arm_id(rule.get("id"))
+            listener_ids = _reference_ids(rule, "httpListener", "properties.httpListener")
+            pool_ids = _reference_ids(rule, "backendAddressPool", "properties.backendAddressPool")
+            path_map_ids = _reference_ids(rule, "urlPathMap", "properties.urlPathMap")
+            redirect_ids = _reference_ids(
+                rule, "redirectConfiguration", "properties.redirectConfiguration"
+            )
+            for listener_id in listener_ids:
+                listener = listeners.get(listener_id, {})
+                matched_frontends.update(
+                    _reference_ids(listener, "frontendIPConfiguration", "properties.frontendIPConfiguration")
+                )
+                for pool_id in pool_ids:
+                    register_gateway_route(
+                        listener_id, pool_id, rule_id, "request_routing_rule", (rule_id,)
+                    )
+                for path_map_id in path_map_ids:
+                    path_map = path_maps.get(path_map_id, {})
+                    default_pools = _reference_ids(
+                        path_map,
+                        "defaultBackendAddressPool",
+                        "properties.defaultBackendAddressPool",
+                    )
+                    for pool_id in default_pools:
+                        register_gateway_route(
+                            listener_id,
+                            pool_id,
+                            path_map_id,
+                            "url_path_map_default",
+                            (rule_id, path_map_id),
+                        )
+                    for path_rule in _items(
+                        _nested(path_map, "pathRules", "properties.pathRules")
+                    ):
+                        for pool_id in _reference_ids(
+                            path_rule,
+                            "backendAddressPool",
+                            "properties.backendAddressPool",
+                        ):
+                            register_gateway_route(
+                                listener_id,
+                                pool_id,
+                                path_rule.get("id"),
+                                "url_path_rule",
+                                (rule_id, path_map_id, path_rule.get("id")),
+                            )
+                redirect_targets: List[str] = list(redirect_ids)
+                for redirect_id in redirect_ids:
+                    redirect = redirect_configurations.get(redirect_id, {})
+                    redirect_targets += _reference_ids(
+                        redirect,
+                        "targetListener",
+                        "properties.targetListener",
+                    )
+                    target_url = _nested(
+                        redirect, "targetUrl", "properties.targetUrl"
+                    )
+                    if target_url:
+                        redirect_targets.append(str(target_url))
+                if not pool_ids and not path_map_ids:
+                    register_gateway_route(
+                        listener_id,
+                        "",
+                        rule_id,
+                        "request_routing_rule",
+                        (rule_id,),
+                        redirect_targets,
+                    )
+        for frontend_id, public_ids in frontend_public_ids.items():
+            if frontend_id in matched_frontends:
+                continue
+            for public_id in public_ids:
+                register_reverse_attachment(
+                    public_id,
+                    owner=owner,
+                    association="application_gateway",
+                    connected=[],
+                    ports=[],
+                    protocols=[],
+                    source="az_network_application-gateway_list",
+                    attachment_id=frontend_id,
+                    relationship_id=frontend_id,
+                    relationship_type="frontend",
+                    connection_path=(frontend_id,),
+                    direction="inbound",
                 )
 
     for public_ip in public_ips:
@@ -342,11 +679,26 @@ def build_public_endpoint_topology(
             "servicePublicIPAddress.id",
             "properties.servicePublicIPAddress.id",
         )
-        reverse = reverse_attachments.get(public_id)
+        reverse = reverse_attachments.get(public_id, [])
         relationship_source = None
         if reverse:
-            owner, association, connected, ports, protocols, relationship_source = reverse
-            attachment = attachment or owner
+            for relationship in reverse:
+                add(
+                    address=address,
+                    fqdn=_nested(public_ip, "dnsSettings.fqdn", "properties.dnsSettings.fqdn"),
+                    direction=relationship.get("direction", "both"),
+                    owner_id=relationship["owner"],
+                    attachment_id=attachment or relationship.get("attachment_id"),
+                    connected_ids=relationship["connected"],
+                    association=relationship["association"],
+                    source_ids=("az_network_public-ip_list", relationship["source"]),
+                    ports=relationship["ports"],
+                    protocols=relationship["protocols"],
+                    relationship_id=relationship.get("relationship_id"),
+                    relationship_type=relationship.get("relationship_type"),
+                    connection_path=relationship.get("connection_path", ()),
+                )
+            continue
         elif nat_gateway:
             owner, association, connected, ports, protocols = nat_gateway, "nat_gateway", [], [], []
         elif linked_public_ip:
@@ -560,6 +912,8 @@ def build_public_endpoint_topology(
         ("event_grid_domains", "az_eventgrid_domain_list", "event_grid_domain", ("endpoint", "properties.endpoint")),
         ("event_hubs", "az_eventhubs_namespace_list", "event_hubs", ("serviceBusEndpoint", "properties.serviceBusEndpoint")),
         ("service_bus", "az_servicebus_namespace_list", "service_bus", ("serviceBusEndpoint", "properties.serviceBusEndpoint")),
+        ("relay_namespaces", "az_relay_namespace_list", "relay", ("serviceBusEndpoint", "properties.serviceBusEndpoint")),
+        ("signalr_services", "az_signalr_show_--name_name_--resource-group_resourcegroup", "signalr", ("hostName", "properties.hostName")),
         ("iot_hubs", "az_iot_hub_list", "iot_hub", ("properties.hostName", "hostName")),
         ("iot_dps", "az_iot_dps_list", "iot_dps", ("properties.serviceOperationsHostName", "serviceOperationsHostName")),
         ("databricks_workspaces", "az_databricks_workspace_list", "databricks", ("workspaceUrl", "properties.workspaceUrl")),
@@ -570,6 +924,7 @@ def build_public_endpoint_topology(
         ("aro_clusters", "az_aro_list", "red_hat_openshift", ("apiserverProfile.url", "consoleProfile.url", "properties.apiserverProfile.url", "properties.consoleProfile.url")),
         ("purview_accounts", "az_purview_account_list", "purview", ("endpoints", "properties.endpoints")),
         ("logic_apps", "az_logicapp_list", "logic_app", ("accessEndpoint", "properties.accessEndpoint")),
+        ("hdinsight_clusters", "az_hdinsight_show_--name_name_--resource-group_resourcegroup", "hdinsight", ("connectivityEndpoints", "properties.connectivityEndpoints")),
     )
     for dataset_name, source_id, association, field_paths in managed_service_specs:
         for resource in datasets.get(dataset_name, ()):
@@ -579,16 +934,31 @@ def build_public_endpoint_topology(
             owner = _owner_id(resource)
             for field_path in field_paths:
                 value = _nested(resource, field_path)
-                candidates = value.values() if isinstance(value, Mapping) else (value,)
-                for candidate in candidates:
-                    if _hostname(candidate):
-                        add(fqdn=candidate, direction="inbound", owner_id=owner, association=association, source_ids=(source_id,), access_state=access_state)
+                for candidate in _endpoint_strings(value):
+                    add(fqdn=candidate, direction="inbound", owner_id=owner, association=association, source_ids=(source_id,), access_state=access_state)
 
     afd_connections: Dict[str, List[str]] = {}
     origins_by_group: Dict[str, List[str]] = {}
+    afd_origin_targets: Dict[str, List[str]] = {}
     for origin in datasets.get("afd_origins", ()):
         origin_id = canonical_arm_id(origin.get("id"))
         group_id = origin_id.split("/origins/", 1)[0] if "/origins/" in origin_id else ""
+        targets = _reference_ids(
+            origin,
+            "sharedPrivateLinkResource.privateLink",
+            "properties.sharedPrivateLinkResource.privateLink",
+        )
+        for field in (
+            "hostName",
+            "properties.hostName",
+            "originHostHeader",
+            "properties.originHostHeader",
+        ):
+            target = _nested(origin, field)
+            if target:
+                targets.append(str(target))
+        if origin_id:
+            afd_origin_targets[origin_id] = list(dict.fromkeys(targets))
         if group_id:
             origins_by_group.setdefault(group_id, []).append(origin_id)
     for route in datasets.get("afd_routes", ()):
@@ -599,6 +969,11 @@ def build_public_endpoint_topology(
             origin_id
             for group_id in list(connections)
             for origin_id in origins_by_group.get(group_id, ())
+        ]
+        connections += [
+            target
+            for origin_id in list(connections)
+            for target in afd_origin_targets.get(origin_id, ())
         ]
         connections += _reference_ids(route, "customDomains", "properties.customDomains")
         if endpoint_id:
@@ -641,6 +1016,10 @@ def build_public_endpoint_topology(
                 owner = _owner_id(endpoint)
                 connected = list(afd_connections.get(owner, ()))
                 connected += _reference_ids(endpoint, "origins", "properties.origins")
+                for origin in _items(_nested(endpoint, "origins", "properties.origins")):
+                    target = _nested(origin, "hostName", "properties.hostName")
+                    if target:
+                        connected.append(str(target))
                 for tm_endpoint in _items(_nested(endpoint, "endpoints", "properties.endpoints")):
                     connected += _reference_ids(tm_endpoint, "targetResourceId", "properties.targetResourceId")
                     target = _nested(tm_endpoint, "target", "properties.target")
@@ -657,21 +1036,89 @@ def build_public_endpoint_topology(
             )
             for hostname, owner, direction, association, connected, ports, source_ids in fqdns
         }
-        resolved_by_key: Dict[Tuple[str, str, str, str], Iterable[str]] = {}
+        resolved_by_key: Dict[Tuple[str, str, str, str], List[str]] = {}
+        total_fqdns = len(unique_fqdns)
+        if dns_progress:
+            dns_progress("started", {"total": total_fqdns})
+        completed_fqdns = 0
+        failed_fqdns = 0
         with ThreadPoolExecutor(max_workers=min(8, max(1, len(unique_fqdns)))) as executor:
             futures = {
                 executor.submit(dns_resolver, key[0]): key for key in unique_fqdns
             }
             for future in as_completed(futures):
+                key = futures[future]
+                hostname = key[0]
                 try:
-                    resolved_by_key[futures[future]] = future.result()
-                except (OSError, ValueError, subprocess.SubprocessError):
-                    resolved_by_key[futures[future]] = ()
+                    returned = list(future.result())
+                    public_addresses = sorted(
+                        {
+                            address
+                            for value in returned
+                            for address in (_public_ip(value),)
+                            if address
+                        }
+                    )
+                    resolved_by_key[key] = public_addresses
+                    status = "resolved" if public_addresses else "no_public_answer"
+                    diagnostic = {
+                        "hostname": hostname,
+                        "status": status,
+                        "returnedAddressCount": len(returned),
+                        "publicAddressCount": len(public_addresses),
+                    }
+                except (OSError, ValueError, TypeError, subprocess.SubprocessError) as exc:
+                    resolved_by_key[key] = []
+                    failed_fqdns += 1
+                    diagnostic = {
+                        "hostname": hostname,
+                        "status": "failed",
+                        "returnedAddressCount": 0,
+                        "publicAddressCount": 0,
+                        "errorType": type(exc).__name__,
+                    }
+                if dns_diagnostics is not None:
+                    dns_diagnostics.append(diagnostic)
+                completed_fqdns += 1
+                if dns_progress:
+                    dns_progress(
+                        "progress",
+                        {
+                            "completed": completed_fqdns,
+                            "total": total_fqdns,
+                            "failed": failed_fqdns,
+                        },
+                    )
         for key, resolved in resolved_by_key.items():
             hostname, owner, direction, association = key
             connected, ports, source_ids = unique_fqdns[key]
             for address in resolved:
                 add(address=address, fqdn=hostname, direction=direction, owner_id=owner, connected_ids=connected, association=association, confidence="observed", source_ids=source_ids, ports=ports, address_origin="dns_snapshot")
+
+    owners_by_address: Dict[str, Set[str]] = {}
+    owners_by_fqdn: Dict[str, Set[str]] = {}
+    for record in records.values():
+        owner = str(record.get("ownerResourceId") or "")
+        if not owner:
+            continue
+        if record.get("address"):
+            owners_by_address.setdefault(str(record["address"]), set()).add(owner)
+        if record.get("fqdn"):
+            owners_by_fqdn.setdefault(str(record["fqdn"]).casefold(), set()).add(owner)
+    for record in records.values():
+        owner = str(record.get("ownerResourceId") or "")
+        candidates = set()
+        if record.get("address"):
+            candidates.update(owners_by_address.get(str(record["address"]), ()))
+        for target in record.get("connectedTargets") or []:
+            target_ip = _public_ip(target)
+            if target_ip:
+                candidates.update(owners_by_address.get(target_ip, ()))
+            target_hostname = _hostname(target)
+            if target_hostname:
+                candidates.update(owners_by_fqdn.get(target_hostname, ()))
+        candidates.discard(owner)
+        record["candidateConnectedResourceIds"] = sorted(candidates)
 
     return [records[key] for key in sorted(records)]
 

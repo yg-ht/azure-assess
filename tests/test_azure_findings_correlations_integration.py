@@ -201,6 +201,43 @@ class OfflineCorrelationIntegrationTests(unittest.TestCase):
         self.assertEqual(assignment_finding["status"], "no_data_to_assess")
         self.assertEqual(assignment_finding["evidence"], [])
 
+    def test_unassociated_public_ip_finding_uses_complete_topology_evidence(self):
+        catalog = self.catalog()
+        catalog["azure_public_endpoint_topology"] = {
+            "path": "/data/azure_public_endpoint_topology_20260721-120000.json",
+            "data": [{
+                "address": "8.8.8.8",
+                "ownerResourceId": PUBLIC_IP,
+                "associationType": "unassociated",
+                "sourceEndpointIds": ["az_network_public-ip_list"],
+            }],
+            "error": None,
+        }
+        by_id = {
+            finding["finding_id"]: finding
+            for finding in azure_findings.evaluate_findings(catalog)
+        }
+        self.assertEqual(by_id["network_public_ip_unassociated"]["status"], "found")
+
+        catalog["azure_public_endpoint_topology"]["data"][0]["associationType"] = "nic"
+        by_id = {
+            finding["finding_id"]: finding
+            for finding in azure_findings.evaluate_findings(catalog)
+        }
+        self.assertEqual(by_id["network_public_ip_unassociated"]["status"], "not_found")
+
+        for endpoint in catalog["azure-collection-manifest"]["data"]["endpoint_runs"]:
+            if endpoint["endpoint_id"] == "az_network_public-ip_list":
+                endpoint["status"] = "unauthorised"
+        by_id = {
+            finding["finding_id"]: finding
+            for finding in azure_findings.evaluate_findings(catalog)
+        }
+        self.assertEqual(
+            by_id["network_public_ip_unassociated"]["status"],
+            "no_data_to_assess",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
