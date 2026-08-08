@@ -2523,13 +2523,39 @@ class AzurePresentDatasetIndexTests(unittest.TestCase):
 
         body = response.get_data(as_text=True)
         self.assertEqual(response.status_code, 200)
+        self.assertIn('<html lang="en" data-bs-theme="dark">', body)
         self.assertIn("--dashboard-muted-text: #5c636a", body)
         self.assertIn("--dashboard-muted-text: #b8c0c8", body)
         self.assertIn("--dashboard-card-border: #6c757d", body)
         self.assertIn("--dashboard-card-border: #69737d", body)
+        self.assertIn("--link-color: #0a58ca", body)
+        self.assertIn("--link-color: #6ea8fe", body)
+        self.assertIn("--global-collapse-color: #765600", body)
+        self.assertIn("--global-collapse-color: #ffda6a", body)
+        self.assertIn("--local-collapse-color: #087990", body)
+        self.assertIn("--local-collapse-color: #6edff6", body)
         self.assertIn("dashboard-summary-card", body)
         self.assertIn("dashboard-muted", body)
         self.assertNotIn("text-secondary", body)
+        self.assertIn("table a:not(.btn)", body)
+        self.assertIn("color: var(--link-color)", body)
+        self.assertIn(".table {\n        --bs-table-color: var(--text-color)", body)
+        self.assertIn("--bs-table-border-color: var(--table-border)", body)
+        self.assertIn("color: var(--global-collapse-color)", body)
+        self.assertIn("color: var(--local-collapse-color)", body)
+        self.assertIn(
+            "document.documentElement.setAttribute(\n"
+            "          'data-bs-theme'",
+            body,
+        )
+        self.assertIn("darkModeEnabled ? 'dark' : 'light'", body)
+        table_openings = [
+            fragment.split(">", 1)[0]
+            for fragment in azure_present.HTML_TEMPLATE.split("<table")[1:]
+        ]
+        self.assertEqual(len(table_openings), 7)
+        self.assertTrue(all('class="table' in opening for opening in table_openings))
+        self.assertNotIn("text-secondary", azure_present.HTML_TEMPLATE)
         self.assertIn(
             "window.dispatchEvent(new Event('azure-theme-change'))",
             body,

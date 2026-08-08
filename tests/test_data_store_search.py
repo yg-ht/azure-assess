@@ -111,6 +111,8 @@ class DataStoreSearchTests(unittest.TestCase):
         self.assertIn("Graph Applications", body)
         self.assertIn("Resources", body)
         self.assertIn("needle application", body)
+        self.assertIn('class="small table-muted"', body)
+        self.assertNotIn('class="small text-secondary"', body)
         self.assertNotIn("needle finding", body)
         self.assertNotIn("needle manifest", body)
         self.assertIn(

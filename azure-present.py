@@ -253,7 +253,7 @@ def parse_arguments():
 # HTML Template with conditional sections for Dashboard and Data Table view.
 HTML_TEMPLATE = """
 <!doctype html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
   <head>
     <meta charset="utf-8">
     <script>document.documentElement.classList.add('js-enabled');</script>
@@ -275,6 +275,9 @@ HTML_TEMPLATE = """
         --row-odd-bg: #ffffff;
         --dashboard-muted-text: #5c636a;
         --dashboard-card-border: #6c757d;
+        --link-color: #0a58ca;
+        --global-collapse-color: #765600;
+        --local-collapse-color: #087990;
       }
       /* Dark theme overrides when .dark-mode is applied */
       .dark-mode {
@@ -286,6 +289,9 @@ HTML_TEMPLATE = """
         --row-odd-bg: #121212;
         --dashboard-muted-text: #b8c0c8;
         --dashboard-card-border: #69737d;
+        --link-color: #6ea8fe;
+        --global-collapse-color: #ffda6a;
+        --local-collapse-color: #6edff6;
       }
       /* Apply theme variables */
       body {
@@ -316,6 +322,7 @@ HTML_TEMPLATE = """
       table th, table td {
         border: 1px solid var(--table-border);
         padding: 8px;
+        color: var(--text-color);
       }
       table tr:nth-child(even) {
         background-color: var(--row-even-bg);
@@ -381,10 +388,10 @@ HTML_TEMPLATE = """
         font-weight: 700;
       }
       .global-collapse-icon {
-        color: #ffc107;
+        color: var(--global-collapse-color);
       }
       .local-collapse-icon {
-        color: #0dcaf0;
+        color: var(--local-collapse-color);
       }
       /* Keep large findings link lists compact until the user needs them. */
       .findings-links-disclosure summary {
@@ -543,6 +550,15 @@ HTML_TEMPLATE = """
       .dashboard-muted {
         color: var(--dashboard-muted-text);
       }
+      .table-muted {
+        color: var(--dashboard-muted-text);
+      }
+      table a:not(.btn) {
+        color: var(--link-color);
+      }
+      table code {
+        color: var(--text-color);
+      }
       .dashboard-chart-wrap {
         position: relative;
         width: 100%;
@@ -590,11 +606,14 @@ HTML_TEMPLATE = """
       .dashboard-request-details summary .h5 {
         display: inline;
       }
-      .dashboard-request-table {
+      .table {
         --bs-table-color: var(--text-color);
         --bs-table-bg: var(--table-bg);
+        --bs-table-border-color: var(--table-border);
         --bs-table-striped-color: var(--text-color);
         --bs-table-striped-bg: var(--row-even-bg);
+        --bs-table-active-color: var(--text-color);
+        --bs-table-hover-color: var(--text-color);
         color: var(--text-color);
       }
       .dashboard-request-table th,
@@ -1153,7 +1172,7 @@ HTML_TEMPLATE = """
               {% for result in global_search_results %}
               <tr>
                 <td>{{ result.name }}</td>
-                <td>{{ result.source }}{% if result.workload %}<br><span class="small text-secondary">{{ result.workload }}</span>{% endif %}</td>
+                <td>{{ result.source }}{% if result.workload %}<br><span class="small table-muted">{{ result.workload }}</span>{% endif %}</td>
                 <td>{{ result.version }}</td>
                 <td>
                   <details>
@@ -1259,7 +1278,7 @@ HTML_TEMPLATE = """
               <div class="table-font-controls"
                    role="group"
                    aria-label="Table font size">
-                <span class="small text-secondary">Table font size</span>
+                <span class="small table-muted">Table font size</span>
                 <button id="decreaseTableFont"
                         type="button"
                         class="btn btn-outline-secondary btn-sm"
@@ -1319,7 +1338,11 @@ HTML_TEMPLATE = """
     <!-- JavaScript for Dark Mode Toggle -->
     <script>
       document.getElementById('darkModeToggle').addEventListener('click', function() {
-        document.body.classList.toggle('dark-mode');
+        const darkModeEnabled = document.body.classList.toggle('dark-mode');
+        document.documentElement.setAttribute(
+          'data-bs-theme',
+          darkModeEnabled ? 'dark' : 'light'
+        );
         window.dispatchEvent(new Event('azure-theme-change'));
       });
     </script>
